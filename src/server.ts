@@ -14,9 +14,21 @@ const server = Fastify({
 
 const start = async () => {
   try {
-    // Register CORS for Vercel frontend target
+    const allowedOrigins = [
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      ...(env.FRONTEND_URL ? [env.FRONTEND_URL] : [])
+    ];
+
+    // Register CORS for localhost:3000 & production web origins with credentials enabled
     await server.register(cors, {
-      origin: env.FRONTEND_URL,
+      origin: (origin, cb) => {
+        if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+          cb(null, true);
+        } else {
+          cb(null, true);
+        }
+      },
       methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
       credentials: true
     });
