@@ -1,0 +1,152 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum NodeStatus {
+  LOCKED
+  AVAILABLE
+  IN_PROGRESS
+  DEMONSTRATED
+  RUSTY
+  DETOUR
+}
+
+enum IntakeType {
+  GOAL_FIRST
+  DECONSTRUCTION_LAB
+}
+
+enum AssessmentType {
+  RESOURCE_PROOF
+  PERTURBATION
+  SABOTAGE
+  EXPLAIN_IT_BACK
+}
+
+model User {
+  id              String             @id @default(uuid())
+  email           String             @unique
+  username        String
+  xp              Int                @default(0)
+  level           Int                @default(1)
+  goals           Goal[]
+  telemetryLogs   TelemetryLog[]
+  portfolioItems  PortfolioArtifact[]
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+}
+
+model Goal {
+  id               String      @id @default(uuid())
+  userId           String
+  user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title            String
+  description      String
+  intakeType       IntakeType
+  rawArtifact      String?
+  mnlDefinition    String
+  definitionOfDone String
+  skillNodes       SkillNode[]
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+}
+
+model SkillNode {
+  id                 String              @id @default(uuid())
+  goalId             String
+  goal               Goal                @relation(fields: [goalId], references: [id], onDelete: Cascade)
+  title              String
+  description        String
+  domainCategory     String
+  status             NodeStatus          @default(LOCKED)
+  isDetour           Boolean             @default(false)
+  parentNodeId       String?
+  parentNode         SkillNode?          @relation("DetourChildren", fields: [parentNodeId], references: [id], onDelete: Cascade)
+  detourChildren     SkillNode[]         @relation("DetourChildren")
+  incomingEdges      NodeEdge[]          @relation("DependentNode")
+  outgoingEdges      NodeEdge[]          @relation("PrerequisiteNode")
+  quests             Quest[]
+  fsrsRecord         FSRSRecord?
+  assessments        AssessmentAttempt[]
+  portfolioArtifacts PortfolioArtifact[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+}
+
+model NodeEdge {
+  id               String    @id @default(uuid())
+  prerequisiteId   String
+  prerequisiteNode SkillNode @relation("PrerequisiteNode", fields: [prerequisiteId], references: [id], onDelete: Cascade)
+  dependentId      String
+  dependentNode    SkillNode @relation("DependentNode", fields: [dependentId], references: [id], onDelete: Cascade)
+
+  @@unique([prerequisiteId, dependentId])
+}
+
+model FSRSRecord {
+  id             String    @id @default(uuid())
+  skillNodeId    String    @unique
+  skillNode      SkillNode @relation(fields: [skillNodeId], references: [id], onDelete: Cascade)
+  stability      Float     @default(1.0)
+  difficulty     Float     @default(5.0)
+  repetition     Int       @default(0)
+  lapses         Int       @default(0)
+  lastReview     DateTime  @default(now())
+  nextReview     DateTime  @default(now())
+  retrievability Float     @default(1.0)
+}
+
+model Quest {
+  id            String    @id @default(uuid())
+  skillNodeId   String
+  skillNode     SkillNode @relation(fields: [skillNodeId], references: [id], onDelete: Cascade)
+  title         String
+  resourceTitle String
+  resourceUrl   String
+  resourceType  String
+  focusPoints   String[]
+  skipPoints    String[]
+  proofCriteria String
+  cachedSummary String
+  completed     Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+}
+
+model AssessmentAttempt {
+  id            String         @id @default(uuid())
+  skillNodeId   String
+  skillNode     SkillNode      @relation(fields: [skillNodeId], references: [id], onDelete: Cascade)
+  type          AssessmentType
+  passed        Boolean
+  score         Float
+  userResponse  String
+  feedback      String
+  sabotageFixed Boolean?
+  createdAt     DateTime       @default(now())
+}
+
+model TelemetryLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventType String
+  eventData Json
+  timestamp DateTime @default(now())
+}
+
+model PortfolioArtifact {
+  id               String    @id @default(uuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  skillNodeId      String
+  skillNode        SkillNode @relation(fields: [skillNodeId], references: [id], onDelete: Cascade)
+  verifiedBullet   String
+  evidenceSnippet  String
+  obsidianMarkdown String
+  demonstratedAt   DateTime  @default(now())
+}
