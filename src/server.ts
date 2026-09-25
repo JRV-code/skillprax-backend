@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
-import { env } from './config/env';
+import { env, getAuthRedirectUrl } from './config/env';
 
 const server = Fastify({
   logger: {
@@ -17,10 +17,11 @@ const start = async () => {
     const allowedOrigins = [
       'http://localhost:3000',
       'http://127.0.0.1:3000',
+      'https://skillprax-frontend-3a8p.vercel.app',
       ...(env.FRONTEND_URL ? [env.FRONTEND_URL] : [])
     ];
 
-    // Register CORS for localhost:3000 & production web origins with credentials enabled
+    // Register CORS for localhost:3000, Vercel frontend, and production origins with credentials enabled
     await server.register(cors, {
       origin: (origin, cb) => {
         if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
@@ -29,7 +30,7 @@ const start = async () => {
           cb(null, true);
         }
       },
-      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       credentials: true
     });
 
@@ -41,6 +42,7 @@ const start = async () => {
       return {
         status: 'ok',
         service: 'skillprax-backend',
+        authRedirectBase: getAuthRedirectUrl(),
         timestamp: new Date().toISOString()
       };
     });
