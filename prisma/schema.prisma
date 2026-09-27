@@ -61,8 +61,6 @@ model SkillStep {
   attempts             QuizAttempt[]
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
-
-  @@unique([workspaceId, stepIndex])
 }
 
 model QuizAttempt {
