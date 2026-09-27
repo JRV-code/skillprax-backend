@@ -20,8 +20,8 @@ export const SUPPORTED_PROVIDERS: Record<string, ProviderConfig> = {
     defaultModel: 'claude-3-5-sonnet-latest',
   },
   gemini: {
-    endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
-    defaultModel: 'gemini-1.5-flash',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
+    defaultModel: 'gemini-2.5-flash',
   },
 };
 
@@ -78,6 +78,61 @@ export function parseJsonResponse<T>(rawText: string): T {
   return JSON.parse(cleaned) as T;
 }
 
+async function callGemini(cleanKey: string, prompt: string): Promise<string> {
+  const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'];
+  let lastError = '';
+
+  for (const modelName of modelsToTry) {
+    // 1. Try official SDK
+    try {
+      const ai = new GoogleGenAI({ apiKey: cleanKey });
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: prompt,
+        config: { temperature: 0.3 },
+      });
+      if (response.text) return response.text;
+    } catch (err: any) {
+      lastError = err?.message || String(err);
+    }
+
+    // 2. Fallback to direct REST endpoint
+    try {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.3 },
+        }),
+      });
+
+      if (response.ok) {
+        const data: any = await response.json();
+        return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      } else {
+        const errText = await response.text();
+        let errorMsg = errText;
+        try {
+          const errJson = JSON.parse(errText);
+          if (errJson.error?.message) {
+            errorMsg = errJson.error.message;
+          }
+        } catch (_) {}
+        lastError = errorMsg;
+        if (response.status !== 404 && !errText.includes('NOT_FOUND')) {
+          break;
+        }
+      }
+    } catch (restErr: any) {
+      lastError = restErr?.message || String(restErr);
+    }
+  }
+
+  throw new Error(lastError || 'Gemini API call failed');
+}
+
 /**
  * Universal Unified LLM Caller
  */
@@ -128,20 +183,7 @@ export async function callLLM(
   }
 
   if (targetProvider === 'gemini') {
-    try {
-      const ai = new GoogleGenAI({ apiKey: cleanKey });
-      const response = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
-        contents: `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}`,
-        config: {
-          temperature: 0.3,
-        },
-      });
-
-      return response.text || '';
-    } catch (err: any) {
-      throw new Error(err?.message || String(err));
-    }
+    return callGemini(cleanKey, `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}`);
   }
 
   // Groq and OpenAI (OpenAI Chat Completions protocol)
@@ -455,15 +497,64 @@ export async function testProviderConnection(provider: string, key?: string) {
 
     if (prov === 'gemini') {
       const cleanKey = apiKey.trim();
-      const ai = new GoogleGenAI({ apiKey: cleanKey });
-      const response = await ai.models.generateContent({
-        model: 'gemini-1.5-flash',
-        contents: 'ping',
-      });
+      const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'];
+      let lastError = '';
+
+      for (const modelName of modelsToTry) {
+        // 1. Try official SDK
+        try {
+          const ai = new GoogleGenAI({ apiKey: cleanKey });
+          const response = await ai.models.generateContent({
+            model: modelName,
+            contents: 'ping',
+          });
+          const latencyMs = Date.now() - startTime;
+          const replyText = response.text || 'ok';
+          return { ok: true, latencyMs, response: replyText };
+        } catch (err: any) {
+          lastError = err?.message || String(err);
+        }
+
+        // 2. Fallback to direct REST
+        try {
+          const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+              generationConfig: { maxOutputTokens: 10 },
+            }),
+          });
+
+          const latencyMs = Date.now() - startTime;
+
+          if (response.ok) {
+            const data: any = await response.json();
+            const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'ok';
+            return { ok: true, latencyMs, response: replyText };
+          }
+
+          const errText = await response.text();
+          let errorMsg = errText;
+          try {
+            const errJson = JSON.parse(errText);
+            if (errJson.error?.message) {
+              errorMsg = errJson.error.message;
+            }
+          } catch (_) {}
+
+          lastError = errorMsg;
+          if (response.status !== 404 && !errText.includes('NOT_FOUND')) {
+            return { ok: false, latencyMs, error: lastError };
+          }
+        } catch (restErr: any) {
+          lastError = restErr?.message || String(restErr);
+        }
+      }
 
       const latencyMs = Date.now() - startTime;
-      const replyText = response.text || 'ok';
-      return { ok: true, latencyMs, response: replyText };
+      return { ok: false, latencyMs, error: lastError || 'Gemini connection failed' };
     }
 
     const response = await callLLM(
