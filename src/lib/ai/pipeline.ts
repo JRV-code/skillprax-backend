@@ -1,5 +1,41 @@
 import { harvestLiveCandidates } from "../search/tavily";
 
+export async function getActiveGroqModel(apiKey: string): Promise<string> {
+  if (!apiKey || !apiKey.trim()) return "llama-3.1-8b-instant";
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/models", {
+      headers: { Authorization: `Bearer ${apiKey.trim()}` }
+    });
+    if (res.ok) {
+      const data: any = await res.json();
+      const availableIds: string[] = (data.data || []).map((m: any) => m.id);
+
+      // Preferred order of high-capacity models on Groq
+      const candidates = [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-70b-versatile",
+        "llama3-70b-8192",
+        "llama-3.1-8b-instant",
+        "llama3-8b-8192",
+        "mixtral-8x7b-32768"
+      ];
+
+      for (const candidate of candidates) {
+        if (availableIds.includes(candidate)) {
+          console.log(`[Groq] Dynamically selected available model: ${candidate}`);
+          return candidate;
+        }
+      }
+
+      if (availableIds.length > 0) return availableIds[0];
+    }
+  } catch (err: any) {
+    console.warn("[Groq] Model discovery failed, using fallback:", err.message);
+  }
+  // Safe universal fallback
+  return "llama-3.1-8b-instant";
+}
+
 export async function runPedagogicalCuratorPipeline({
   domain,
   topic,
@@ -77,7 +113,8 @@ Respond ONLY with this JSON schema:
 }
 `;
 
-  console.log(`[Groq] Curating step ${stepIndex} with LLaMA-3.3-70B...`);
+  const model = await getActiveGroqModel(groqKey);
+  console.log(`[Groq] Curating step ${stepIndex} with model ${model}...`);
   const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -85,7 +122,7 @@ Respond ONLY with this JSON schema:
       "Authorization": `Bearer ${groqKey.trim()}`
     },
     body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
+      model: model,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt }

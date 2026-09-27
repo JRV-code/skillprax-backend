@@ -323,7 +323,7 @@ export async function callLLM(
   // Groq and OpenAI
   const targetEndpoint =
     targetProvider === 'openai' ? AI_PROVIDERS.openai.endpoint : FREE_AI_FLEET.groq.endpoint;
-  const targetModel =
+  let targetModel =
     targetProvider === 'openai'
       ? isDeepReasoning
         ? AI_PROVIDERS.openai.models.reasoning
@@ -331,6 +331,11 @@ export async function callLLM(
       : isDeepReasoning
       ? FREE_AI_FLEET.groq.reasoningModel
       : FREE_AI_FLEET.groq.fastModel;
+
+  if (targetProvider === 'groq') {
+    const { getActiveGroqModel } = await import('./pipeline');
+    targetModel = await getActiveGroqModel(cleanKey);
+  }
 
   const response = await fetch(targetEndpoint, {
     method: 'POST',

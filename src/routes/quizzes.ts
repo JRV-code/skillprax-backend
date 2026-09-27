@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyPluginAsync } from "fastify";
 import prisma from "../lib/prisma";
 import { safeJsonParse } from "../lib/ai/orchestrator";
+import { getActiveGroqModel } from "../lib/ai/pipeline";
 
 const quizRoutes: FastifyPluginAsync = async (server: FastifyInstance) => {
   server.post("/api/quizzes/generate", async (req, reply) => {
@@ -65,6 +66,7 @@ Format your entire response as a valid JSON object:
 }
 `;
 
+      const model = await getActiveGroqModel(groqKey);
       const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -72,7 +74,7 @@ Format your entire response as a valid JSON object:
           "Authorization": `Bearer ${groqKey.trim()}`
         },
         body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
+          model: model,
           messages: [
             { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt }
