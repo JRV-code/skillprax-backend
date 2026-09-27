@@ -17,49 +17,48 @@ export async function runPedagogicalCuratorPipeline({
   groqKey: string;
   tavilyKey?: string | null;
 }) {
-  // 1. Scout live candidates
   const searchQuery = `${topic} ${stepTitle} practical tutorial guide documentation`;
   const candidates = await harvestLiveCandidates(searchQuery, tavilyKey);
 
-  // 2. Groq Master Educator Prompt
-  const systemPrompt = `You are the master instructor for SkillPrax. You reject boilerplate and empty responses.
-You provide the student with deep mental models, direct learning materials, and rigorous evaluation.
-You MUST ALWAYS curate between 1 and 4 high-yield, direct destination study resources.
-NEVER return an empty "resources" array.
-Output your response strictly as a single valid JSON object without markdown fences.`;
+  const systemPrompt = `You are the master instructor and curriculum architect for SkillPrax.
+You reject rigid templates, fixed quotas, and superficial boilerplate.
+Your mandate is genuine student mastery: you craft deep conceptual lessons, curate authentic destination materials, and determine the exact number of evaluation questions required.
+NEVER return an empty resources array.
+NEVER return search query links (no youtube.com/results, no google.com/search).
+You must respond strictly with a valid JSON object matching the requested schema.`;
 
   const userPrompt = `
-Domain: "${domain}"
+Domain Category: "${domain}"
 Discipline / Topic: "${topic}"
 Step ${stepIndex}: "${stepTitle}"
-Student's Target Goal: "${goal || 'Full-stack mastery'}"
+Student's Target Goal: "${goal || 'Deep Mastery'}"
 
-LIVE CANDIDATES HARVESTED FROM TAVILY:
+Live Web Candidates Scouted by Tavily:
 ${JSON.stringify(candidates, null, 2)}
 
-EDUCATOR MANDATE:
+EDUCATOR RESPONSIBILITIES:
 1. "whatYouWillLearn":
-   Write a rich 2-3 paragraph breakdown of foundational concepts, mechanisms, and common developer pitfalls. Teach the core mental model directly.
+   Write a rich 2-3 paragraph breakdown explaining foundational mechanics, mental models, governing principles, and common cognitive traps for this step. Teach the concepts directly.
 
 2. "coreKeyTakeaways":
-   List 3 to 5 concrete terms, architectural patterns, or syntax rules.
+   List 3 to 5 concrete terms, architectural patterns, syntax rules, or governing laws.
 
 3. "practicalApplication":
-   Explain how this step directly enables the student to achieve their real-world goal: "${goal}".
+   Explain how this specific step enables the student to achieve their real-world goal: "${goal}".
 
 4. ATOMIC COMPETENCY UNITS & QUIZ SIZING ("questionCount" & "assessableUnits"):
-   - Identify the core testable competencies (mechanisms, edge cases, trade-offs).
+   - Deconstruct this step into its core Atomic Competency Units (individual edge cases, failure points, trade-offs, and rules that must be evaluated).
    - Set "questionCount" strictly equal to the number of assessable units (typically 3 to 8). Do NOT default to 5.
 
-5. AUTONOMOUS RESOURCE CURATION ("resources"):
-   - Review Tavily's candidate links above. Pick the best direct links that genuinely teach this step.
-   - CRITICAL FALLBACK RULE: If Tavily returned 0 or weak candidates, YOU as the master educator MUST supply direct canonical, authoritative documentation links from your own knowledge (e.g. direct documentation on MDN Web Docs, React.dev, Nodejs.org, GitHub official guides, or Wikipedia articles like "https://en.wikipedia.org/wiki/Full-stack_web_development").
-   - NEVER output search query links (no "youtube.com/results?search_query=..." and no "google.com/search?q=...").
-   - Provide between 1 and 4 direct destination resources. NEVER RETURN AN EMPTY ARRAY.
-   - Give each resource a contextual badge (e.g., "Official Guide", "Core Architecture Walkthrough", "Interactive Sandbox", "Foundational Reading").
-   - In "studyGuidance", explain exactly what the student should focus on.
+5. UNCONSTRAINED RESOURCE SELECTION ("resources"):
+   - Review Tavily's candidates above. Select the direct destination links that genuinely teach this concept.
+   - If Tavily returned 0 or weak results, supply direct canonical, authoritative links from your own knowledge (e.g. direct documentation on MDN Web Docs, React.dev, official project documentation, or relevant Wikipedia articles like "https://en.wikipedia.org/wiki/Full-stack_web_development").
+   - NEVER return search query links.
+   - Choose between 1 and 4 direct destination resources based on pedagogical necessity. NEVER return an empty array.
+   - Assign each resource a custom badge (e.g., "Core Walkthrough", "Official Specification", "Interactive Sandbox", "Foundational Reading").
+   - In "studyGuidance", write actionable advice telling the student what to focus on.
 
-JSON SCHEMA:
+Respond ONLY with this JSON schema:
 {
   "whatYouWillLearn": "string",
   "coreKeyTakeaways": ["string"],
@@ -99,14 +98,11 @@ JSON SCHEMA:
 
   if (!groqRes.ok) {
     const errText = await groqRes.text();
-    console.error("[Groq Generation Error]:", errText);
+    console.error("[Groq Error]:", errText);
     throw new Error(`Groq generation failed: ${errText}`);
   }
 
   const groqData: any = await groqRes.json();
   const rawContent = groqData.choices[0]?.message?.content || "{}";
-  const parsed = JSON.parse(rawContent);
-
-  console.log(`[Groq] Curated ${parsed.resources?.length || 0} direct resources.`);
-  return parsed;
+  return JSON.parse(rawContent);
 }

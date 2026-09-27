@@ -8,22 +8,22 @@ export async function harvestLiveCandidates(
   query: string,
   apiKey?: string | null
 ): Promise<LiveCandidate[]> {
-  const cleanKey = apiKey?.trim() || process.env.TAVILY_API_KEY?.trim();
-  if (!cleanKey) {
-    console.warn("[Tavily] No API key found. Proceeding with Groq canonical knowledge.");
+  const key = apiKey?.trim() || process.env.TAVILY_API_KEY?.trim();
+  if (!key) {
+    console.warn("[Tavily] No API key found. Passing empty candidate pool to Groq.");
     return [];
   }
 
   try {
-    console.log(`[Tavily] Scouting web for: "${query}"...`);
+    console.log(`[Tavily] Querying live web: "${query}"...`);
     const res = await fetch("https://api.tavily.com/search", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${cleanKey}`
+        "Authorization": `Bearer ${key}`
       },
       body: JSON.stringify({
-        api_key: cleanKey, // Pass in body as well for 100% API compatibility
+        api_key: key,
         query: `${query}`,
         search_depth: "basic",
         max_results: 6,
@@ -32,36 +32,37 @@ export async function harvestLiveCandidates(
     });
 
     if (!res.ok) {
-      const errText = await res.text();
-      console.error(`[Tavily API Error ${res.status}]:`, errText);
+      const err = await res.text();
+      console.error(`[Tavily] HTTP Error ${res.status}:`, err);
       return [];
     }
 
     const data: any = await res.json();
-    const rawResults = data.results || [];
+    const results = data.results || [];
+    const direct: LiveCandidate[] = [];
 
-    // Filter out search aggregators
-    const candidates: LiveCandidate[] = [];
-    for (const r of rawResults) {
+    for (const r of results) {
       const u = (r.url || "").toLowerCase();
+      // Block search result pages
       const isSearchPage =
         u.includes("youtube.com/results") ||
         u.includes("google.com/search") ||
+        u.includes("bing.com/search") ||
         u.includes("/search?");
 
       if (!isSearchPage && r.url && r.title) {
-        candidates.push({
+        direct.push({
           title: r.title.trim(),
           url: r.url.trim(),
-          snippet: (r.content || "").slice(0, 250)
+          snippet: (r.content || "").slice(0, 280)
         });
       }
     }
 
-    console.log(`[Tavily] Successfully harvested ${candidates.length} direct candidates.`);
-    return candidates;
+    console.log(`[Tavily] Harvested ${direct.length} direct candidates.`);
+    return direct;
   } catch (err: any) {
-    console.error("[Tavily Search Exception]:", err.message);
+    console.error("[Tavily] Search Exception:", err.message);
     return [];
   }
 }
@@ -74,55 +75,13 @@ export interface SearchCandidate {
 }
 
 export async function searchTavilyCandidates(query: string, apiKey: string): Promise<SearchCandidate[]> {
-  if (!apiKey || !apiKey.trim()) return getFallbackCandidates(query);
-
-  try {
-    const cleanKey = apiKey.trim();
-    const res = await fetch("https://api.tavily.com/search", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${cleanKey}`
-      },
-      body: JSON.stringify({
-        api_key: cleanKey,
-        query: `${query} tutorial OR documentation OR filetype:pdf OR wikipedia`,
-        search_depth: "basic",
-        max_results: 8,
-        include_answer: false
-      })
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      console.warn(`Tavily search API error (${res.status}): ${errText}`);
-      return getFallbackCandidates(query);
-    }
-
-    const data: any = await res.json();
-    const candidates = (data.results || []).map((r: any) => {
-      let inferredType: SearchCandidate["inferredType"] = "guide";
-      const u = (r.url || "").toLowerCase();
-      if (u.includes("youtube.com") || u.includes("youtu.be")) inferredType = "video";
-      else if (u.endsWith(".pdf") || u.includes("arxiv.org") || u.includes("/pdf/")) inferredType = "pdf";
-      else if (u.includes("wikipedia.org") || u.includes("wikibooks.org")) inferredType = "wiki";
-      else if (u.includes("github.com") || u.includes("interactive") || u.includes("lab") || u.includes("playground")) inferredType = "interactive";
-      else if (u.includes("devdocs.io") || u.includes("docs.")) inferredType = "website";
-
-      return {
-        title: r.title || "Resource Reference",
-        url: r.url,
-        snippet: r.content || r.snippet || "",
-        inferredType
-      };
-    });
-
-    if (candidates.length >= 2) return candidates;
-    return [...candidates, ...getFallbackCandidates(query)];
-  } catch (err: any) {
-    console.warn("Tavily search skipped or failed:", err.message || err);
-    return getFallbackCandidates(query);
-  }
+  const candidates = await harvestLiveCandidates(query, apiKey);
+  return candidates.map(c => ({
+    title: c.title,
+    url: c.url,
+    snippet: c.snippet,
+    inferredType: c.url.includes("youtube.com") ? "video" : c.url.endsWith(".pdf") ? "pdf" : c.url.includes("wikipedia.org") ? "wiki" : "guide"
+  }));
 }
 
 export function getFallbackCandidates(topic: string): SearchCandidate[] {
@@ -155,9 +114,8 @@ export function getFallbackCandidates(topic: string): SearchCandidate[] {
   ];
 }
 
-// Backwards compatibility functions
 export async function searchWeb(topic: string, apiKey: string) {
-  const candidates = await searchTavilyCandidates(topic, apiKey);
+  const candidates = await harvestLiveCandidates(topic, apiKey);
   return candidates.map(c => ({ title: c.title, url: c.url, snippet: c.snippet }));
 }
 

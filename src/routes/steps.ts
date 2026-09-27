@@ -265,7 +265,7 @@ export async function stepRoutes(fastify: FastifyInstance) {
     try {
       const { runPedagogicalCuratorPipeline } = await import('../lib/ai/pipeline');
       pedagogicalContent = await runPedagogicalCuratorPipeline({
-        domain: workspace.category,
+        domain: workspace.domainCategory || workspace.category || 'General Knowledge',
         topic: workspace.title,
         stepIndex: nextStepIndex,
         stepTitle: nextStepTitle,
