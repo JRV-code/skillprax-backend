@@ -1,10 +1,26 @@
 // skillprax-backend/src/lib/ai/pipeline.ts
 
+export class GroqConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GroqConfigError";
+  }
+}
+
+export class PipelineExhaustionError extends Error {
+  public lastError?: Error | unknown;
+  constructor(message: string, lastError?: Error | unknown) {
+    super(message);
+    this.name = "PipelineExhaustionError";
+    this.lastError = lastError;
+  }
+}
+
 export interface RawCandidate {
   title: string;
   url: string;
-  snippet: string;
-  domain: string;
+  content?: string;
+  score?: number;
 }
 
 export interface CuratedResource {
@@ -12,6 +28,7 @@ export interface CuratedResource {
   url: string;
   badge: string;
   studyGuidance: string;
+  sourceOrigin?: "tavily" | "groq-internal" | "fallback";
 }
 
 export interface ACU {
@@ -20,8 +37,8 @@ export interface ACU {
   description: string;
 }
 
-export interface QuizOption {
-  id: string;
+export interface QuizQuestionOption {
+  id: "A" | "B" | "C" | "D";
   text: string;
 }
 
@@ -30,8 +47,8 @@ export interface QuizQuestion {
   acuId: string;
   scenario: string;
   question: string;
-  options: QuizOption[];
-  correctIndex: number;
+  options: QuizQuestionOption[];
+  correctOptionId: "A" | "B" | "C" | "D";
   distractorExplanations: Record<string, string>;
 }
 
@@ -42,376 +59,422 @@ export interface QuizBlueprint {
 
 export interface CurateAndExamineResult {
   conceptualOverview: string;
-  keyTakeaways: string[];
   resources: CuratedResource[];
   acus: ACU[];
+  questions: QuizQuestion[];
   quizBlueprint: QuizBlueprint;
 }
 
-export class PipelineExhaustionError extends Error {
-  constructor(message: string, public readonly lastError?: unknown) {
-    super(message);
-    this.name = "PipelineExhaustionError";
-  }
-}
-
-export class GroqConfigError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "GroqConfigError";
-  }
-}
-
-const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
-
-// Static whitelist in priority order
+// 1. MODEL WHITELIST NEGOTIATION
 export const STATIC_MODEL_WHITELIST = [
   "openai/gpt-oss-120b",
   "llama-3.3-70b-versatile",
   "openai/gpt-oss-20b",
-  "llama-3.1-8b-instant"
+  "llama-3.1-8b-instant",
+  "gemma2-9b-it",
 ] as const;
 
-interface CachedModels {
+interface ModelCache {
   models: string[];
-  resolvedAt: number;
+  expiresAt: number;
 }
 
-let modelsCache: CachedModels | null = null;
-const MODELS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
+const modelCacheMap = new Map<string, ModelCache>();
+const MODEL_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
-export async function getAvailableModels(apiKey?: string): Promise<string[]> {
-  if (modelsCache && Date.now() - modelsCache.resolvedAt < MODELS_CACHE_TTL_MS) {
-    return modelsCache.models;
-  }
-
-  const key = apiKey?.trim() || process.env.GROQ_API_KEY?.trim();
-  if (!key) {
-    return [...STATIC_MODEL_WHITELIST];
+export async function getAvailableModels(apiKey: string): Promise<string[]> {
+  const cleanKey = apiKey.trim();
+  const cached = modelCacheMap.get(cleanKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.models;
   }
 
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(`${GROQ_BASE_URL}/models`, {
-      headers: { Authorization: `Bearer ${key}` },
+
+    const res = await fetch("https://api.groq.com/openai/v1/models", {
+      headers: { Authorization: `Bearer ${cleanKey}` },
       signal: controller.signal,
     });
     clearTimeout(timeout);
 
     if (res.ok) {
       const data: any = await res.json();
-      const liveIds: string[] = (data.data || []).map((m: any) => m.id);
+      const liveIds: string[] = (data?.data || []).map((m: { id: string }) => m.id);
       const intersected = STATIC_MODEL_WHITELIST.filter((m) => liveIds.includes(m));
-      const result = intersected.length > 0 ? intersected : [...STATIC_MODEL_WHITELIST];
-      modelsCache = { models: result, resolvedAt: Date.now() };
-      return result;
+
+      const available = intersected.length > 0 ? intersected : Array.from(STATIC_MODEL_WHITELIST);
+      modelCacheMap.set(cleanKey, { models: available, expiresAt: Date.now() + MODEL_CACHE_TTL_MS });
+      return available;
     }
   } catch (err) {
-    console.warn("[pipeline] Model discovery GET /models failed/timed out, using static whitelist fallback:", (err as Error).message);
+    console.warn("[pipeline] Dynamic model discovery failed or timed out. Falling back to static whitelist.", err);
   }
 
-  return [...STATIC_MODEL_WHITELIST];
+  return Array.from(STATIC_MODEL_WHITELIST);
 }
 
-export async function getActiveGroqModel(apiKey?: string): Promise<string> {
+export async function getActiveGroqModel(apiKey: string): Promise<string> {
   const models = await getAvailableModels(apiKey);
-  return models[0] || "llama-3.1-8b-instant";
+  return models[0] || STATIC_MODEL_WHITELIST[0];
 }
 
-interface CallGroqOptions {
-  apiKey?: string;
-  temperature?: number;
-  maxTokens?: number;
-  jsonMode?: boolean;
+function isRetryableModelError(errorStr: string, status?: number): boolean {
+  const lower = errorStr.toLowerCase();
+  return (
+    status === 404 ||
+    status === 403 ||
+    lower.includes("model_not_found") ||
+    lower.includes("model_decommissioned") ||
+    lower.includes("does not exist") ||
+    lower.includes("terms") ||
+    lower.includes("permission")
+  );
 }
 
 export async function callGroqWithFallback(
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
-  options: CallGroqOptions = {}
-): Promise<{ content: string; usedModel: string }> {
-  const key = options.apiKey?.trim() || process.env.GROQ_API_KEY?.trim();
-  if (!key) {
-    throw new GroqConfigError("GROQ_API_KEY is missing from configuration and environment.");
-  }
-
-  const availableModels = await getAvailableModels(key);
-  let lastError: unknown = null;
+  options: { apiKey: string; jsonMode?: boolean }
+): Promise<{ content: string; modelUsed: string }> {
+  const availableModels = await getAvailableModels(options.apiKey);
+  let lastError: Error | unknown;
 
   for (const model of availableModels) {
     let attempts = 0;
-    const maxRetriesPerModel = 3;
+    const maxAttemptsOnModel = 3;
 
-    while (attempts < maxRetriesPerModel) {
+    while (attempts < maxAttemptsOnModel) {
       attempts++;
       try {
-        const body: Record<string, unknown> = {
+        const payload: Record<string, any> = {
           model,
           messages,
-          temperature: options.temperature ?? 0.3,
-          max_tokens: options.maxTokens ?? 3500,
+          temperature: 0.2,
+          max_tokens: 4000,
         };
-        if (options.jsonMode !== false) {
-          body.response_format = { type: "json_object" };
+        if (options.jsonMode) {
+          payload.response_format = { type: "json_object" };
         }
 
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 45000);
-        const res = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
+        const timeout = setTimeout(() => controller.abort(), 30000);
+
+        const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${key}`,
             "Content-Type": "application/json",
+            Authorization: `Bearer ${options.apiKey.trim()}`,
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify(payload),
           signal: controller.signal,
         });
         clearTimeout(timeout);
 
-        if (res.ok) {
-          const data: any = await res.json();
-          const content = data.choices?.[0]?.message?.content;
-          if (content) {
-            console.log(JSON.stringify({ event: "groq_completion_success", model, attempts }));
-            return { content, usedModel: model };
+        if (!res.ok) {
+          const errText = await res.text();
+          const isModelDefunct = isRetryableModelError(errText, res.status);
+
+          if (isModelDefunct) {
+            console.warn(`[pipeline] Model "${model}" returned non-retryable status (${res.status}): ${errText}. Falling through to next model.`);
+            lastError = new Error(`Model ${model} error (${res.status}): ${errText}`);
+            break;
           }
+
+          if (res.status === 429 || res.status >= 500) {
+            lastError = new Error(`Model ${model} transient error (${res.status}): ${errText}`);
+            if (attempts < maxAttemptsOnModel) {
+              const delay = Math.pow(2, attempts - 1) * 500;
+              await new Promise((resolve) => setTimeout(resolve, delay));
+              continue;
+            }
+          }
+
+          lastError = new Error(`Model ${model} failed with HTTP ${res.status}: ${errText}`);
+          break;
         }
 
-        const errText = await res.text().catch(() => "");
-        const status = res.status;
-        const isModelIncompatible =
-          status === 404 ||
-          status === 403 ||
-          /model_not_found|model_decommissioned|model_terms_required|does not exist/i.test(errText);
-
-        if (isModelIncompatible) {
-          console.warn(`[pipeline] Model ${model} rejected (${status}), falling through to next model in whitelist. Error: ${errText.slice(0, 150)}`);
-          lastError = new Error(`Model ${model} unavailable: ${errText}`);
-          break; // Break inner retry loop, try next model in whitelist
+        const data: any = await res.json();
+        const content = data?.choices?.[0]?.message?.content || "";
+        if (!content.trim()) {
+          throw new Error(`Model ${model} returned empty response content.`);
         }
 
-        // Handle rate limit (429) or 5xx server errors with exponential backoff
-        if (status === 429 || status >= 500) {
-          const delayMs = Math.pow(2, attempts) * 250; // 500ms, 1000ms, 2000ms
-          console.warn(`[pipeline] Model ${model} returned HTTP ${status}, backing off ${delayMs}ms (attempt ${attempts}/${maxRetriesPerModel})...`);
-          await new Promise((resolve) => setTimeout(resolve, delayMs));
-          lastError = new Error(`HTTP ${status}: ${errText}`);
-          continue; // Retry same model
-        }
-
-        // Any other non-retriable error
-        lastError = new Error(`HTTP ${status}: ${errText}`);
-        break;
+        console.info(`[pipeline] Successfully generated response using model: ${model}`);
+        return { content, modelUsed: model };
       } catch (err: any) {
         lastError = err;
-        if (err.name === "AbortError") {
-          console.warn(`[pipeline] Model ${model} request timed out (attempt ${attempts}/${maxRetriesPerModel})`);
+        if (err?.name === "AbortError") {
+          console.warn(`[pipeline] Model ${model} request timed out on attempt ${attempts}.`);
         }
-        const delayMs = Math.pow(2, attempts) * 250;
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (attempts < maxAttemptsOnModel) {
+          const delay = Math.pow(2, attempts - 1) * 500;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
       }
     }
   }
 
   throw new PipelineExhaustionError(
-    "All whitelisted Groq models were exhausted without successful generation. Please check API keys, rate limits, and network connectivity.",
+    "All Groq whitelist models failed or were unavailable.",
     lastError
   );
 }
 
-// Trampoline & Search URL Filter Regex List
-const TRAMPOLINE_REGEXES: RegExp[] = [
+// 2. TAVILY LIVE HARVESTER WITH URL DENYLIST
+const DENYLIST_REGEXES = [
   /youtube\.com\/results/i,
-  /google\.[a-z.]+\/search/i,
+  /google\.com\/search/i,
   /bing\.com\/search/i,
   /duckduckgo\.com\/\?q=/i,
-  /[?&]search_query=/i,
-  /\/search\?/i,
-  /\/search\/?$/i,
-  /\/results\/?$/i,
-  /baidu\.com\/s\?/i,
   /yahoo\.com\/search/i,
+  /baidu\.com\/s/i,
+  /yandex\.com\/search/i,
 ];
 
-const CANONICAL_ALLOWLIST_HOSTS = new Set([
+const CANONICAL_DOCS_ALLOWLIST = [
   "developer.mozilla.org",
   "docs.python.org",
-  "react.dev",
+  "arxiv.org",
   "en.wikipedia.org",
   "wikipedia.org",
-  "arxiv.org",
-  "w3.org",
-  "gnu.org",
-  "rust-lang.org",
+  "doc.rust-lang.org",
   "go.dev",
-  "typescriptlang.org",
   "kubernetes.io",
-  "docker.com",
-]);
+  "typescriptlang.org",
+  "react.dev",
+  "nextjs.org",
+  "nodejs.org",
+  "fastify.dev",
+  "prisma.io",
+];
 
-function isDenylistedSearchUrl(urlStr: string): boolean {
+export function normalizeUrl(rawUrl: string): string {
   try {
-    const parsed = new URL(urlStr);
-    const host = parsed.hostname.replace(/^www\./, "").toLowerCase();
-    const path = parsed.pathname;
-
-    // Check regex patterns
-    if (TRAMPOLINE_REGEXES.some((rx) => rx.test(`${parsed.hostname}${path}${parsed.search}`))) {
-      return true;
-    }
-
-    // Bare root domain check: if path is '/' or empty and not on allowlist
-    if ((path === "/" || path === "") && !CANONICAL_ALLOWLIST_HOSTS.has(host)) {
-      return true;
-    }
-
-    return false;
-  } catch {
-    return true; // Invalid URL
-  }
-}
-
-function normalizeUrl(urlStr: string): string {
-  try {
-    const parsed = new URL(urlStr);
-    const paramsToStrip = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "si", "feature", "ref", "gclid"];
+    const parsed = new URL(rawUrl);
+    const paramsToStrip = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "si", "feature", "fbclid", "gclid"];
     paramsToStrip.forEach((p) => parsed.searchParams.delete(p));
-    return parsed.toString();
-  } catch {
-    return urlStr;
+    return parsed.toString().replace(/\/$/, "");
+  } catch (_) {
+    return rawUrl;
   }
 }
 
-export async function harvestResources(topic: string, stepContext: string): Promise<RawCandidate[]> {
-  const apiKey = process.env.TAVILY_API_KEY?.trim();
+export function isDenylistedSearchUrl(rawUrl: string): boolean {
+  if (!rawUrl || typeof rawUrl !== "string") return true;
+
+  for (const regex of DENYLIST_REGEXES) {
+    if (regex.test(rawUrl)) return true;
+  }
+
+  try {
+    const parsed = new URL(rawUrl);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    const pathname = parsed.pathname;
+
+    if (pathname === "" || pathname === "/") {
+      const isAllowedCanonical = CANONICAL_DOCS_ALLOWLIST.some((allowed) => host.includes(allowed));
+      if (!isAllowedCanonical) {
+        return true;
+      }
+    }
+  } catch (_) {
+    return true;
+  }
+
+  return false;
+}
+
+export async function harvestResources(
+  topic: string,
+  stepContext: string,
+  tavilyApiKey?: string | null
+): Promise<RawCandidate[]> {
+  const apiKey = tavilyApiKey || process.env.TAVILY_API_KEY;
   if (!apiKey) {
-    console.warn("[pipeline] TAVILY_API_KEY not set. Skipping live web harvest.");
+    console.warn("[pipeline] TAVILY_API_KEY missing. Returning empty candidate pool.");
     return [];
   }
 
-  const query = `${topic} ${stepContext} documentation guide tutorial`.slice(0, 150);
-
   try {
+    const query = `${topic} ${stepContext} official guide documentation tutorial reference`.trim();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), 6000);
+
     const res = await fetch("https://api.tavily.com/search", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        api_key: apiKey,
+        api_key: apiKey.trim(),
         query,
-        search_depth: "basic",
-        max_results: 8,
-        include_answer: false,
         include_raw_content: false,
+        max_results: 10,
+        search_depth: "basic",
       }),
       signal: controller.signal,
     });
     clearTimeout(timeout);
 
     if (!res.ok) {
-      console.warn(`[pipeline] Tavily HTTP ${res.status}: ${await res.text().catch(() => "")}`);
+      console.warn(`[pipeline] Tavily API returned HTTP ${res.status}. Fallback to internal knowledge.`);
       return [];
     }
 
     const data: any = await res.json();
-    const results = data.results || [];
-    const candidates: RawCandidate[] = [];
+    const results: any[] = data?.results || [];
+
     const seenUrls = new Set<string>();
+    const candidates: RawCandidate[] = [];
 
     for (const r of results) {
-      if (!r.url || !r.title) continue;
-      const normalized = normalizeUrl(r.url);
-      if (isDenylistedSearchUrl(normalized)) continue;
-      if (seenUrls.has(normalized)) continue;
+      if (!r.url || typeof r.url !== "string") continue;
+      if (isDenylistedSearchUrl(r.url)) continue;
 
-      seenUrls.add(normalized);
+      const norm = normalizeUrl(r.url);
+      if (seenUrls.has(norm)) continue;
+      seenUrls.add(norm);
+
       candidates.push({
-        title: r.title.trim(),
-        url: normalized,
-        snippet: (r.content || "").trim().slice(0, 300),
-        domain: new URL(normalized).hostname.replace(/^www\./, ""),
+        title: r.title || topic,
+        url: norm,
+        content: r.content ? String(r.content).slice(0, 300) : "",
+        score: r.score,
       });
     }
 
     return candidates;
   } catch (err) {
-    console.warn("[pipeline] Tavily harvest error:", (err as Error).message);
+    console.warn("[pipeline] Tavily harvest failed or timed out. Returning empty pool.", err);
     return [];
   }
 }
 
-const LAST_RESORT_RESOURCES: Record<string, CuratedResource[]> = {
-  general: [
-    {
-      title: "Wikipedia Reference Portal",
-      url: "https://en.wikipedia.org/wiki/Main_Page",
-      badge: "Encyclopedia Reference",
-      studyGuidance: "Review foundational terminology and historical background.",
-    },
-    {
-      title: "MDN Web Docs",
-      url: "https://developer.mozilla.org",
-      badge: "Authoritative Reference",
-      studyGuidance: "Consult open technical documentation and standard specifications.",
-    },
-  ],
-};
-
 function cleanJsonFence(raw: string): string {
   let cleaned = raw.trim();
-  if (cleaned.startsWith("```")) {
-    cleaned = cleaned.replace(/^```(json)?/i, "").replace(/```$/, "").trim();
+  if (cleaned.startsWith("```json")) {
+    cleaned = cleaned.replace(/^```json\s*/i, "").replace(/\s*```$/, "");
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.replace(/^```\s*/, "").replace(/\s*```$/, "");
   }
-  return cleaned;
+  return cleaned.trim();
 }
 
+// PHASE B: EXPORTED QUIZ BLUEPRINT GENERATOR FOR ON-DEMAND AUTO-HEALING
+export async function generateQuizBlueprint(
+  topic: string,
+  stepTitle: string,
+  assessableUnits: ACU[],
+  takeaways: string[],
+  apiKey: string
+): Promise<QuizQuestion[]> {
+  if (!assessableUnits || assessableUnits.length === 0) {
+    return [];
+  }
+
+  const systemPrompt = `You are a diagnostic evaluation examiner. Your task is to generate scenario-based evaluation questions strictly mapped 1-to-1 with the provided Atomic Competency Units (ACUs).
+
+YOUR MANDATES:
+1. Generate EXACTLY one scenario-based multiple choice question per ACU in the provided list.
+2. Tag each question with the "acuId" of the ACU it evaluates.
+3. Provide 4 options (A, B, C, D) for each question.
+4. Set "correctOptionId" to "A", "B", "C", or "D".
+5. Provide specific diagnostic "distractorExplanations" for EVERY option (A, B, C, D) detailing why that specific option is correct or represents a misconception.
+
+OUTPUT STRICT JSON MATCHING THIS SCHEMA:
+{
+  "questions": [
+    {
+      "id": "q1",
+      "acuId": "acu-1",
+      "scenario": "string",
+      "question": "string",
+      "options": [{ "id": "A", "text": "string" }, { "id": "B", "text": "string" }, { "id": "C", "text": "string" }, { "id": "D", "text": "string" }],
+      "correctOptionId": "A",
+      "distractorExplanations": { "A": "string", "B": "string", "C": "string", "D": "string" }
+    }
+  ]
+}`;
+
+  const userPrompt = JSON.stringify({
+    topic,
+    stepTitle,
+    assessableUnits,
+    takeaways,
+  });
+
+  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+
+  try {
+    const res = await callGroqWithFallback(messages, { apiKey, jsonMode: true });
+    const raw = cleanJsonFence(res.content);
+    const parsed: any = JSON.parse(raw);
+    const questions: QuizQuestion[] = Array.isArray(parsed.questions)
+      ? parsed.questions
+      : Array.isArray(parsed.quizBlueprint?.questions)
+      ? parsed.quizBlueprint.questions
+      : [];
+
+    if (questions.length > 0) {
+      return questions;
+    }
+  } catch (err) {
+    console.warn("[pipeline] Phase B generateQuizBlueprint failed or timed out. Returning fallback questions.", err);
+  }
+
+  // Fallback questions generated directly from ACUs
+  return assessableUnits.map((acu, idx) => ({
+    id: `q${idx + 1}`,
+    acuId: acu.id,
+    scenario: `Evaluating competency in ${acu.label} for ${stepTitle}.`,
+    question: `Which pattern correctly demonstrates ${acu.description}?`,
+    options: [
+      { id: "A", text: `Enforce validation and verify ${acu.label} mechanics.` },
+      { id: "B", text: "Bypass edge case checking in production logic." },
+      { id: "C", text: "Ignore system constraints during initialization." },
+      { id: "D", text: "Hardcode configuration parameters without environment abstraction." },
+    ],
+    correctOptionId: "A",
+    distractorExplanations: {
+      A: `Correct application of ${acu.label}.`,
+      B: "Ignoring edge cases causes unhandled runtime exceptions.",
+      C: "Bypassing constraints creates race conditions.",
+      D: "Hardcoding parameters breaks environment portability.",
+    },
+  }));
+}
+
+// TWO-PHASE PIPELINE: PHASE A (Curate & Decompose) + PHASE B (Examine)
 export async function curateAndExamine(
   topic: string,
   stepContext: string,
-  candidates: RawCandidate[] = [],
-  apiKey?: string
+  candidates: RawCandidate[],
+  apiKey: string
 ): Promise<CurateAndExamineResult> {
-  const systemPrompt = `You are the master mentor and curriculum architect of SkillPrax.
-You reject boilerplate templates and fixed quotas. You possess full pedagogical authority across all disciplines.
+  const systemPrompt = `You are an expert Principal Systems Architect and Cognitive Educator.
+You have full pedagogical authority over how many learning resources to curate and how many Atomic Competency Units (ACUs) to identify for this step.
 
 YOUR MANDATES:
-1. "conceptualOverview": Write a deep, 2-3 paragraph breakdown explaining core mechanics, mental models, and principles.
-2. "keyTakeaways": Provide 3-5 concrete terms, architectural laws, or syntax rules.
-3. "acus": Deconstruct this step into 3 to 8 Atomic Competency Units (ACUs) — distinct, independently testable mechanisms or trade-offs. Each ACU needs { "id": "acu-1", "label": "Short Title", "description": "What is evaluated" }.
-4. "resources": Select 1 to 4 direct instructional destination materials.
-   - If provided candidates are valid and directly instructional, curate the best ones.
-   - If candidates are empty, low-quality, or invalid search links, you MUST supply 1 to 4 canonical, direct content URLs from your own knowledge (e.g. MDN Web Docs, official language/framework docs, Wikipedia articles, arXiv papers).
-   - NEVER return an empty resources array under any circumstance.
-   - NEVER output search-query URLs (no youtube.com/results, no google.com/search). Every URL must be a direct destination page.
-   - Assign each resource a contextual "badge" (2-4 words, e.g., "Visual Mental Model", "Official Specification", "Interactive Sandbox") and "studyGuidance" telling the student what to extract.
-5. "quizBlueprint": Generate scenario-based evaluation questions strictly matching the ACUs.
-   - "questionCount" must equal the number of ACUs (between 3 and 8).
-   - Each question must have { "id": "q1", "acuId": "acu-1", "scenario": "...", "question": "...", "options": [{ "id": "A", "text": "..." }, { "id": "B", "text": "..." }, { "id": "C", "text": "..." }, { "id": "D", "text": "..." }], "correctIndex": 0, "distractorExplanations": { "A": "...", "B": "...", "C": "...", "D": "..." } }.
-   - Provide a clear diagnostic explanation for why EACH option (A, B, C, D) is correct or incorrect.
+1. "conceptualOverview": Write a deep, 2-3 paragraph pedagogical breakdown explaining core mechanics, mental models, architectural trade-offs, and principles for this step.
+2. "resources": Curate destination learning materials.
+   - Do not default to a round number. Curate the MINIMUM set of distinct, non-redundant assets needed for complete step mastery (1 to 6+ based on topic complexity).
+   - If provided Tavily candidates are valid direct destination pages, curate from them.
+   - If candidates are empty, low-quality, or search-query URLs, supply canonical resources from internal knowledge (MDN, official docs, primary papers, Wikipedia).
+   - NEVER return an empty resources array.
+   - NEVER output search-query URLs.
+   - Assign each resource a descriptive "badge" (2-4 words) and "studyGuidance".
+
+3. "acus": Deconstruct this step into an EXHAUSTIVE list of Atomic Competency Units (ACUs).
+   - Every distinct, independently testable concept, mechanism, edge case, or trade-off must be its own ACU.
+   - Format each ACU as { "id": "acu-1", "label": "Short Title", "description": "What is evaluated" }.
 
 OUTPUT STRICT JSON MATCHING THIS SCHEMA:
 {
   "conceptualOverview": "string",
-  "keyTakeaways": ["string"],
-  "acus": [{ "id": "acu-1", "label": "string", "description": "string" }],
   "resources": [{ "title": "string", "url": "string", "badge": "string", "studyGuidance": "string" }],
-  "quizBlueprint": {
-    "questionCount": number,
-    "questions": [
-      {
-        "id": "q1",
-        "acuId": "acu-1",
-        "scenario": "string",
-        "question": "string",
-        "options": [{ "id": "A", "text": "string" }, { "id": "B", "text": "string" }, { "id": "C", "text": "string" }, { "id": "D", "text": "string" }],
-        "correctIndex": number,
-        "distractorExplanations": { "A": "string", "B": "string", "C": "string", "D": "string" }
-      }
-    ]
-  }
+  "acus": [{ "id": "acu-1", "label": "string", "description": "string" }]
 }`;
 
   const userPrompt = JSON.stringify({
@@ -420,8 +483,8 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
     harvestedCandidates: candidates,
     candidateCount: candidates.length,
     instruction: candidates.length === 0
-      ? "Tavily candidate pool is EMPTY. Use your own internal canonical knowledge to output direct, real, authoritative resource URLs (MDN, Wikipedia, official docs). Do NOT return an empty resources array."
-      : "Curate direct destination URLs from harvestedCandidates verbatim if valid. You may supplement with canonical documentation from internal knowledge if needed.",
+      ? "Tavily candidate pool is EMPTY. Use internal canonical knowledge to output direct destination URLs (MDN, Wikipedia, official docs). Do NOT return an empty resources array."
+      : "Curate direct destination URLs from harvestedCandidates if valid. Supplement with canonical documentation if needed.",
   });
 
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
@@ -429,116 +492,70 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
     { role: "user", content: userPrompt },
   ];
 
-  let rawOutput = "";
-  let attemptCount = 0;
+  let conceptualOverview = `Master core principles and architectural patterns for ${topic}: ${stepContext}.`;
+  let resources: CuratedResource[] = [];
+  let acus: ACU[] = [];
 
-  while (attemptCount < 2) {
-    attemptCount++;
+  // PHASE A Execution
+  try {
     const res = await callGroqWithFallback(messages, { apiKey, jsonMode: true });
-    rawOutput = cleanJsonFence(res.content);
+    const rawOutput = cleanJsonFence(res.content);
+    const parsed: any = JSON.parse(rawOutput);
 
-    try {
-      const parsed: CurateAndExamineResult = JSON.parse(rawOutput);
-
-      // Validation Pass: Filter denylisted URLs
-      if (Array.isArray(parsed.resources)) {
-        parsed.resources = parsed.resources.filter((r) => r.url && !isDenylistedSearchUrl(r.url));
-      } else {
-        parsed.resources = [];
-      }
-
-      // If resources became empty after validation pass, re-prompt once with correction
-      if (parsed.resources.length === 0 && attemptCount < 2) {
-        console.warn("[pipeline] Groq output search-results URLs that were denylisted. Re-prompting Groq with explicit correction message...");
-        messages.push({ role: "assistant", content: rawOutput });
-        messages.push({
-          role: "user",
-          content: "Your previous output included search-results URLs, which are strictly forbidden. Regenerate using ONLY direct content destination URLs (e.g. Wikipedia deep-links, MDN pages, official language docs). Do NOT return an empty resources array.",
-        });
-        continue;
-      }
-
-      // If still empty after 2 attempts, apply last-resort fallback
-      if (parsed.resources.length === 0) {
-        console.warn("[pipeline] Applying last-resort canonical fallback resources.");
-        const cleanTopic = encodeURIComponent(topic || "learning");
-        parsed.resources = [
-          {
-            title: `Encyclopedia Reference: ${topic}`,
-            url: `https://en.wikipedia.org/wiki/Special:Search?search=${cleanTopic}`,
-            badge: "Canonical Reference",
-            studyGuidance: `Review foundational concepts and definitions for ${topic}.`,
-          },
-          {
-            title: `Documentation Portal: ${topic}`,
-            url: `https://developer.mozilla.org`,
-            badge: "Official Documentation",
-            studyGuidance: `Consult technical documentation and standards.`,
-          },
-        ];
-      }
-
-      // Validate & Clamp ACU and Quiz Sizing (min 3, max 8)
-      const rawAcus = Array.isArray(parsed.acus) ? parsed.acus : [];
-      const clampCount = Math.max(3, Math.min(8, rawAcus.length || 5));
-
-      if (!parsed.quizBlueprint || !Array.isArray(parsed.quizBlueprint.questions)) {
-        parsed.quizBlueprint = { questionCount: clampCount, questions: [] };
-      }
-      parsed.quizBlueprint.questionCount = parsed.quizBlueprint.questions.length || clampCount;
-
-      return parsed;
-    } catch (parseErr) {
-      if (attemptCount >= 2) {
-        throw new GroqConfigError(`Failed to parse Groq JSON response: ${(parseErr as Error).message}`);
-      }
+    if (parsed.conceptualOverview) {
+      conceptualOverview = parsed.conceptualOverview;
     }
+    if (Array.isArray(parsed.resources)) {
+      resources = parsed.resources.filter((r: any) => r && r.url && !isDenylistedSearchUrl(r.url));
+    }
+    if (Array.isArray(parsed.acus)) {
+      acus = parsed.acus;
+    }
+  } catch (err) {
+    console.warn("[pipeline] Phase A execution failed. Using fallback curriculum.", err);
   }
 
-  throw new PipelineExhaustionError("Curator pipeline failed to generate valid structured curriculum.");
-}
+  // Fallbacks if Phase A returned empty arrays
+  if (resources.length === 0) {
+    resources = [
+      {
+        title: `Encyclopedia Reference: ${topic}`,
+        url: `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(topic)}`,
+        badge: "Canonical Reference",
+        studyGuidance: `Review foundational concepts for ${topic}.`,
+        sourceOrigin: "fallback",
+      },
+    ];
+  }
 
-// Backward compatibility exports
-export async function generateStepContent(params: any) {
-  const result = await curateAndExamine(
-    params.skillName || params.topic,
-    params.stepTitle,
-    [],
-    params.groqApiKey
-  );
-  return {
-    conceptualOverview: result.conceptualOverview,
-    keyTakeaways: result.keyTakeaways,
-    resources: result.resources,
-    estimatedMinutes: 45,
-    questionCount: result.quizBlueprint.questionCount,
-    assessableUnits: result.acus.map((a) => a.label),
+  if (acus.length === 0) {
+    acus = [
+      { id: "acu-1", label: "Core Principles", description: `Foundational concepts of ${topic}` },
+      { id: "acu-2", label: "Practical Implementation", description: `Implementation of ${stepContext}` },
+      { id: "acu-3", label: "Architecture & Trade-offs", description: `System architecture and trade-offs` },
+    ];
+  }
+
+  // PHASE B Execution (Quiz Generation)
+  let questions: QuizQuestion[] = [];
+  try {
+    const takeaways = acus.map((a) => a.label);
+    questions = await generateQuizBlueprint(topic, stepContext, acus, takeaways, apiKey);
+  } catch (phaseBErr) {
+    console.warn("[pipeline] Phase B (Quiz Blueprint) failed or timed out. Graceful fallback: track creation proceeds.", phaseBErr);
+    questions = [];
+  }
+
+  const quizBlueprint: QuizBlueprint = {
+    questionCount: questions.length,
+    questions,
   };
-}
 
-export async function generateQuiz(params: any) {
-  const result = await curateAndExamine(
-    params.skillName || params.topic,
-    params.stepTitle,
-    [],
-    params.groqApiKey
-  );
   return {
-    acuBreakdown: result.acus.map((a) => a.label),
-    questionCount: result.quizBlueprint.questionCount,
-    questions: result.quizBlueprint.questions,
-  };
-}
-
-export async function runPedagogicalCuratorPipeline(params: any) {
-  const candidates = await harvestResources(params.topic, params.stepTitle);
-  const result = await curateAndExamine(params.topic, params.stepTitle, candidates, params.groqKey);
-  return {
-    whatYouWillLearn: result.conceptualOverview,
-    coreKeyTakeaways: result.keyTakeaways,
-    practicalApplication: params.goal,
-    questionCount: result.quizBlueprint.questionCount,
-    assessableUnits: result.acus.map((a) => a.label),
-    resources: result.resources,
+    conceptualOverview,
+    resources,
+    acus,
+    questions,
+    quizBlueprint,
   };
 }
