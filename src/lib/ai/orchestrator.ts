@@ -19,8 +19,8 @@ export const SUPPORTED_PROVIDERS: Record<string, ProviderConfig> = {
     defaultModel: 'claude-3-5-sonnet-latest',
   },
   gemini: {
-    endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent',
-    defaultModel: 'gemini-1.5-pro',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent',
+    defaultModel: 'gemini-1.5-flash',
   },
 };
 
@@ -95,16 +95,18 @@ export async function callLLM(
     apiKey = keyInfo.apiKey;
   }
 
-  if (!apiKey) {
+  if (!apiKey || !apiKey.trim()) {
     throw new Error(`API key for provider '${targetProvider}' is missing. Please configure it in Admin Command Center.`);
   }
+
+  const cleanKey = apiKey.trim();
 
   if (targetProvider === 'anthropic') {
     const response = await fetch(providerInfo.endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
+        'x-api-key': cleanKey,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
@@ -125,36 +127,13 @@ export async function callLLM(
   }
 
   if (targetProvider === 'gemini') {
-    try {
-      const openAiCompatEndpoint = 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
-      const response = await fetch(openAiCompatEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: providerInfo.defaultModel,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          temperature: 0.3,
-        }),
-      });
-
-      if (response.ok) {
-        const data: any = await response.json();
-        return data.choices?.[0]?.message?.content || '';
-      }
-    } catch (_) {
-      // Fallback below
-    }
-
-    const nativeUrl = `${providerInfo.endpoint}?key=${apiKey}`;
-    const response = await fetch(nativeUrl, {
+    const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+    const response = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': cleanKey,
+      },
       body: JSON.stringify({
         contents: [
           {
@@ -168,19 +147,26 @@ export async function callLLM(
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`Gemini API error (${response.status}): ${errText}`);
+      let errorMsg = errText;
+      try {
+        const errJson = JSON.parse(errText);
+        if (errJson.error?.message) {
+          errorMsg = errJson.error.message;
+        }
+      } catch (_) {}
+      throw new Error(`Gemini API error (${response.status}): ${errorMsg}`);
     }
 
     const data: any = await response.json();
     return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   }
 
-  // Groq and OpenAI
+  // Groq and OpenAI (OpenAI Chat Completions protocol)
   const response = await fetch(providerInfo.endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      'Authorization': `Bearer ${cleanKey}`,
     },
     body: JSON.stringify({
       model: providerInfo.defaultModel,
@@ -196,7 +182,7 @@ export async function callLLM(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${cleanKey}`,
       },
       body: JSON.stringify({
         model: providerInfo.defaultModel,
@@ -471,12 +457,64 @@ Output JSON:
 
 export async function testProviderConnection(provider: string, key?: string) {
   const startTime = Date.now();
+  const prov = (provider || 'groq').toLowerCase();
+
   try {
+    let apiKey = key?.trim();
+    if (!apiKey) {
+      const keyInfo = await getProviderKey(prov);
+      apiKey = keyInfo.apiKey?.trim();
+    }
+
+    if (!apiKey) {
+      throw new Error(`API key for provider '${prov}' is missing. Please configure it in Admin Settings.`);
+    }
+
+    if (prov === 'gemini') {
+      const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [{ text: 'ping' }],
+            },
+          ],
+          generationConfig: {
+            maxOutputTokens: 10,
+          },
+        }),
+      });
+
+      const latencyMs = Date.now() - startTime;
+
+      if (!response.ok) {
+        const errText = await response.text();
+        let errorMsg = errText;
+        try {
+          const errJson = JSON.parse(errText);
+          if (errJson.error?.message) {
+            errorMsg = errJson.error.message;
+          }
+        } catch (_) {}
+        return { ok: false, latencyMs, error: `Gemini API error (${response.status}): ${errorMsg}` };
+      }
+
+      const data: any = await response.json();
+      const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'ok';
+      return { ok: true, latencyMs, response: replyText };
+    }
+
     const response = await callLLM(
-      provider,
+      prov,
       'You are a connection ping checker. Output JSON: {"status": "ok"}',
       'Ping status test',
-      key
+      apiKey
     );
     const latencyMs = Date.now() - startTime;
     return { ok: true, latencyMs, response };
