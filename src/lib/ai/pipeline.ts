@@ -48,6 +48,17 @@ export class GroqGenerationError extends Error {
   }
 }
 
+// Strictly verified Groq chat models in prioritized order:
+// 1. Heavy pedagogical breakdown & reasoning: 120b / 70b
+// 2. High-capacity fallback: 20b / 8b / 9b
+export const ALLOWED_GROQ_MODELS = [
+  "openai/gpt-oss-120b",
+  "llama-3.3-70b-versatile",
+  "openai/gpt-oss-20b",
+  "llama-3.1-8b-instant",
+  "gemma2-9b-it"
+] as const;
+
 export async function getActiveGroqModel(apiKey: string): Promise<string> {
   if (!apiKey || !apiKey.trim()) return "llama-3.1-8b-instant";
   const cleanKey = apiKey.trim();
@@ -57,17 +68,6 @@ export async function getActiveGroqModel(apiKey: string): Promise<string> {
     return cached.modelId;
   }
 
-  // Hardcoded verified text/chat models in preference order
-  const PREFERRED_CHAT_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
-    "llama-3.1-8b-instant",
-    "llama3-70b-8192",
-    "llama3-8b-8192",
-    "gemma2-9b-it",
-    "mixtral-8x7b-32768"
-  ];
-
   try {
     const res = await fetch("https://api.groq.com/openai/v1/models", {
       headers: { Authorization: `Bearer ${cleanKey}` }
@@ -75,42 +75,22 @@ export async function getActiveGroqModel(apiKey: string): Promise<string> {
 
     if (res.ok) {
       const data: any = await res.json();
-      const rawList: string[] = (data.data || []).map((m: any) => m.id);
+      const accountModels: string[] = (data.data || []).map((m: any) => m.id);
 
-      // 1. Strict blacklist: strip out audio, tts, guardrails, and third-party models
-      const validChatModels = rawList.filter((id) => {
-        const lower = id.toLowerCase();
-        return (
-          !lower.includes("orpheus") &&
-          !lower.includes("canopylabs") &&
-          !lower.includes("whisper") &&
-          !lower.includes("guard") &&
-          !lower.includes("vision") &&
-          (lower.includes("llama") || lower.includes("mixtral") || lower.includes("gemma"))
-        );
-      });
-
-      // 2. Find the highest priority model available on the user's account
-      for (const pref of PREFERRED_CHAT_MODELS) {
-        if (validChatModels.includes(pref)) {
-          console.log(`[Groq] Successfully selected chat model: ${pref}`);
-          modelCache.set(cacheKey, { modelId: pref, resolvedAt: Date.now() });
-          return pref;
+      // Select the highest-priority model enabled on the user's Groq account
+      for (const modelId of ALLOWED_GROQ_MODELS) {
+        if (accountModels.includes(modelId)) {
+          console.log(`[Groq] Matched active whitelisted model: ${modelId}`);
+          modelCache.set(cacheKey, { modelId, resolvedAt: Date.now() });
+          return modelId;
         }
-      }
-
-      // 3. If no exact preference matched, use the first filtered chat model
-      if (validChatModels.length > 0) {
-        console.log(`[Groq] Using available verified chat model: ${validChatModels[0]}`);
-        modelCache.set(cacheKey, { modelId: validChatModels[0], resolvedAt: Date.now() });
-        return validChatModels[0];
       }
     }
   } catch (err: any) {
-    console.warn("[Groq] Dynamic discovery failed, falling back:", err.message);
+    console.warn("[Groq] Model check failed, using fallback:", err.message);
   }
 
-  // 4. Default baseline available on all Groq tiers without terms gates
+  // Safe universal fallback with 14,400 requests/day
   return "llama-3.1-8b-instant";
 }
 
