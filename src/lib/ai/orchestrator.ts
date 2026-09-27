@@ -1,6 +1,46 @@
 import { GoogleGenAI } from '@google/genai';
 import prisma from '../prisma';
 
+export const AI_PROVIDERS = {
+  gemini: {
+    name: 'Google Gemini',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/models',
+    models: {
+      fast: 'gemini-2.5-flash',
+      pro: 'gemini-3.1-pro-preview',
+    },
+    defaultModel: 'gemini-2.5-flash',
+  },
+  openai: {
+    name: 'OpenAI',
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    models: {
+      fast: 'gpt-4o-mini',
+      pro: 'gpt-4o',
+      reasoning: 'o3-mini',
+    },
+    defaultModel: 'gpt-4o',
+  },
+  anthropic: {
+    name: 'Anthropic Claude',
+    endpoint: 'https://api.anthropic.com/v1/messages',
+    models: {
+      fast: 'claude-3-5-haiku-latest',
+      pro: 'claude-3-7-sonnet-latest',
+    },
+    defaultModel: 'claude-3-7-sonnet-latest',
+  },
+  groq: {
+    name: 'Groq Cloud',
+    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    models: {
+      fast: 'llama-3.1-8b-instant',
+      pro: 'llama-3.3-70b-versatile',
+    },
+    defaultModel: 'llama-3.3-70b-versatile',
+  },
+};
+
 export interface ProviderConfig {
   endpoint: string;
   defaultModel: string;
@@ -8,20 +48,20 @@ export interface ProviderConfig {
 
 export const SUPPORTED_PROVIDERS: Record<string, ProviderConfig> = {
   groq: {
-    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-    defaultModel: 'llama-3.3-70b-versatile',
+    endpoint: AI_PROVIDERS.groq.endpoint,
+    defaultModel: AI_PROVIDERS.groq.defaultModel,
   },
   openai: {
-    endpoint: 'https://api.openai.com/v1/chat/completions',
-    defaultModel: 'gpt-4o',
+    endpoint: AI_PROVIDERS.openai.endpoint,
+    defaultModel: AI_PROVIDERS.openai.defaultModel,
   },
   anthropic: {
-    endpoint: 'https://api.anthropic.com/v1/messages',
-    defaultModel: 'claude-3-5-sonnet-latest',
+    endpoint: AI_PROVIDERS.anthropic.endpoint,
+    defaultModel: AI_PROVIDERS.anthropic.defaultModel,
   },
   gemini: {
-    endpoint: 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
-    defaultModel: 'gemini-2.5-flash',
+    endpoint: `${AI_PROVIDERS.gemini.endpoint}/${AI_PROVIDERS.gemini.defaultModel}:generateContent`,
+    defaultModel: AI_PROVIDERS.gemini.defaultModel,
   },
 };
 
@@ -78,12 +118,15 @@ export function parseJsonResponse<T>(rawText: string): T {
   return JSON.parse(cleaned) as T;
 }
 
-async function callGemini(cleanKey: string, prompt: string): Promise<string> {
-  const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'];
+async function callGemini(cleanKey: string, prompt: string, isDeepReasoning = false): Promise<string> {
+  const modelsToTry = isDeepReasoning
+    ? [AI_PROVIDERS.gemini.models.pro, AI_PROVIDERS.gemini.models.fast]
+    : [AI_PROVIDERS.gemini.models.fast, AI_PROVIDERS.gemini.models.pro];
+
   let lastError = '';
 
   for (const modelName of modelsToTry) {
-    // 1. Try official SDK
+    // 1. Try official GoogleGenAI SDK
     try {
       const ai = new GoogleGenAI({ apiKey: cleanKey });
       const response = await ai.models.generateContent({
@@ -98,7 +141,7 @@ async function callGemini(cleanKey: string, prompt: string): Promise<string> {
 
     // 2. Fallback to direct REST endpoint
     try {
-      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+      const endpoint = `${AI_PROVIDERS.gemini.endpoint}/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -140,10 +183,10 @@ export async function callLLM(
   provider: string,
   systemPrompt: string,
   userPrompt: string,
-  overrideKey?: string
+  overrideKey?: string,
+  isDeepReasoning = false
 ): Promise<string> {
   const targetProvider = (provider || 'groq').toLowerCase();
-  const providerInfo = SUPPORTED_PROVIDERS[targetProvider] || SUPPORTED_PROVIDERS.groq;
 
   let apiKey = overrideKey;
   if (!apiKey) {
@@ -158,7 +201,11 @@ export async function callLLM(
   const cleanKey = apiKey.trim();
 
   if (targetProvider === 'anthropic') {
-    const response = await fetch(providerInfo.endpoint, {
+    const model = isDeepReasoning
+      ? AI_PROVIDERS.anthropic.models.pro
+      : AI_PROVIDERS.anthropic.defaultModel;
+
+    const response = await fetch(AI_PROVIDERS.anthropic.endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -166,7 +213,7 @@ export async function callLLM(
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: providerInfo.defaultModel,
+        model,
         max_tokens: 4000,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
@@ -183,18 +230,29 @@ export async function callLLM(
   }
 
   if (targetProvider === 'gemini') {
-    return callGemini(cleanKey, `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}`);
+    return callGemini(cleanKey, `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}`, isDeepReasoning);
   }
 
-  // Groq and OpenAI (OpenAI Chat Completions protocol)
-  const response = await fetch(providerInfo.endpoint, {
+  // Groq and OpenAI
+  const targetEndpoint =
+    targetProvider === 'openai' ? AI_PROVIDERS.openai.endpoint : AI_PROVIDERS.groq.endpoint;
+  const targetModel =
+    targetProvider === 'openai'
+      ? isDeepReasoning
+        ? AI_PROVIDERS.openai.models.reasoning
+        : AI_PROVIDERS.openai.defaultModel
+      : isDeepReasoning
+      ? AI_PROVIDERS.groq.models.pro
+      : AI_PROVIDERS.groq.models.fast;
+
+  const response = await fetch(targetEndpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${cleanKey}`,
     },
     body: JSON.stringify({
-      model: providerInfo.defaultModel,
+      model: targetModel,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
@@ -203,14 +261,14 @@ export async function callLLM(
       response_format: { type: 'json_object' },
     }),
   }).catch(() => {
-    return fetch(providerInfo.endpoint, {
+    return fetch(targetEndpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${cleanKey}`,
       },
       body: JSON.stringify({
-        model: providerInfo.defaultModel,
+        model: targetModel,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
@@ -222,7 +280,12 @@ export async function callLLM(
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`${targetProvider.toUpperCase()} API error (${response.status}): ${errText}`);
+    let errorMsg = errText;
+    try {
+      const errObj = JSON.parse(errText);
+      if (errObj.error?.message) errorMsg = errObj.error.message;
+    } catch (_) {}
+    throw new Error(`${targetProvider.toUpperCase()} API error (${response.status}): ${errorMsg}`);
   }
 
   const data: any = await response.json();
@@ -402,7 +465,8 @@ Output JSON:
   ]
 }`;
 
-  const rawJson = await callLLM(provider, systemPrompt, userPrompt);
+  // Use flagship reasoning model for diagnostics
+  const rawJson = await callLLM(provider, systemPrompt, userPrompt, undefined, true);
   return parseJsonResponse<{
     diagnosticReport: string;
     weakConcepts: string[];
@@ -497,7 +561,7 @@ export async function testProviderConnection(provider: string, key?: string) {
 
     if (prov === 'gemini') {
       const cleanKey = apiKey.trim();
-      const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'];
+      const modelsToTry = [AI_PROVIDERS.gemini.models.fast, AI_PROVIDERS.gemini.models.pro];
       let lastError = '';
 
       for (const modelName of modelsToTry) {
@@ -515,9 +579,9 @@ export async function testProviderConnection(provider: string, key?: string) {
           lastError = err?.message || String(err);
         }
 
-        // 2. Fallback to direct REST
+        // 2. Fallback to direct REST endpoint
         try {
-          const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+          const endpoint = `${AI_PROVIDERS.gemini.endpoint}/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
           const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
