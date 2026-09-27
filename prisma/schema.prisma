@@ -39,6 +39,8 @@ model Workspace {
   estimatedTotalSteps Int         @default(5)
   currentStep         Int         @default(1)
   currentStepIndex    Int         @default(1)
+  isGenerating        Boolean     @default(false)
+  generationStartedAt DateTime?
   recommendedBooks    Json?
   steps               SkillStep[]
   createdAt           DateTime    @default(now())
@@ -74,6 +76,7 @@ model QuizAttempt {
   id                  String    @id @default(cuid())
   stepId              String
   step                SkillStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  userId              String    @default("default_user")
   score               Int       @default(0)
   scorePercent        Int       @default(0)
   correctCount        Int       @default(0)
