@@ -1,5 +1,5 @@
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -30,7 +30,7 @@ model Workspace {
   status              String       @default("ACTIVE") // "ACTIVE" | "MASTERED" | "ARCHIVED"
   estimatedTotalSteps Int          @default(5)
   currentStepIndex    Int          @default(1)
-  recommendedBooks    String?      // Stored as JSON string in SQLite
+  recommendedBooks    Json?        // [{ "title": string, "author": string, "whyRead": string, "searchUrl": string }]
   steps               SkillStep[]
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
@@ -44,7 +44,7 @@ model SkillStep {
   title            String
   difficulty       String        // "Beginner" | "Intermediate" | "Advanced" | "Mastery"
   objective        String        // Detailed scope of knowledge
-  resources        String        // Stored as JSON string in SQLite
+  resources        Json          // [{ "title": string, "url": string, "type": "youtube"|"docs"|"reddit"|"article", "summary": string }]
   status           String        @default("IN_PROGRESS") // "IN_PROGRESS" | "READY_FOR_QUIZ" | "PASSED"
   passingScore     Int           @default(80) // AI dynamically calculates this threshold (70-90)
   questionCount    Int           @default(5)  // AI dynamically calculates question count (3-8)
@@ -60,9 +60,9 @@ model QuizAttempt {
   score               Int       // Percentage 0-100
   passed              Boolean
   targetWeakAreasOnly Boolean   @default(false)
-  userAnswers         String    // Stored as JSON string in SQLite
+  userAnswers         Json      // [{ "questionId": string, "selectedOptionIndex": number }]
   diagnosticReport    String?   // AI analysis of flawed logic
-  weakConcepts        String?   // Stored as JSON string in SQLite
-  remedialResources   String?   // Stored as JSON string in SQLite
+  weakConcepts        Json?     // string[] of specific failed terms/concepts
+  remedialResources   Json?     // [{ "title": string, "url": string, "type": string, "focusArea": string }]
   createdAt           DateTime  @default(now())
 }
