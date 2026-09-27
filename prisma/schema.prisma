@@ -14,7 +14,8 @@ model AdminConfig {
   anthropicKey    String?
   geminiKey       String?
   groqKey         String?
-  defaultProvider String   @default("groq") // "groq" | "openai" | "anthropic" | "gemini"
+  openrouterKey   String?
+  defaultProvider String   @default("groq") // "groq" | "openai" | "anthropic" | "gemini" | "openrouter"
   updatedAt       DateTime @updatedAt
 }
 

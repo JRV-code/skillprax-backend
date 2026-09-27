@@ -1,15 +1,38 @@
 import { GoogleGenAI } from '@google/genai';
 import prisma from '../prisma';
 
+export const FREE_AI_FLEET = {
+  groq: {
+    name: 'Groq Cloud (Free Tier)',
+    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    fastModel: 'openai/gpt-oss-20b',       // Ultra-fast (~1000 t/s) for pings and quick evaluations
+    reasoningModel: 'openai/gpt-oss-120b', // Deep step generation & textbook curation (~500 t/s)
+    fallbackModel: 'qwen/qwen3.8-27b',
+  },
+  gemini: {
+    name: 'Google AI Studio (Free Tier)',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta/models',
+    primaryModel: 'gemini-3.7-flash',      // Current official flagship workhorse
+    fallbackModel: 'gemini-3.5-flash',
+  },
+  openrouter: {
+    name: 'OpenRouter (Free Models)',
+    endpoint: 'https://openrouter.ai/api/v1/chat/completions',
+    primaryModel: 'openai/gpt-oss-120b:free',
+    fallbackModel: 'meta-llama/llama-3.3-70b-instruct:free',
+  },
+};
+
 export const AI_PROVIDERS = {
   gemini: {
-    name: 'Google Gemini',
-    endpoint: 'https://generativelanguage.googleapis.com/v1beta/models',
+    name: FREE_AI_FLEET.gemini.name,
+    endpoint: FREE_AI_FLEET.gemini.endpoint,
     models: {
-      fast: 'gemini-2.5-flash',
-      pro: 'gemini-3.1-pro-preview',
+      fast: FREE_AI_FLEET.gemini.primaryModel,
+      pro: FREE_AI_FLEET.gemini.primaryModel,
+      fallback: FREE_AI_FLEET.gemini.fallbackModel,
     },
-    defaultModel: 'gemini-2.5-flash',
+    defaultModel: FREE_AI_FLEET.gemini.primaryModel,
   },
   openai: {
     name: 'OpenAI',
@@ -31,13 +54,24 @@ export const AI_PROVIDERS = {
     defaultModel: 'claude-3-7-sonnet-latest',
   },
   groq: {
-    name: 'Groq Cloud',
-    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    name: FREE_AI_FLEET.groq.name,
+    endpoint: FREE_AI_FLEET.groq.endpoint,
     models: {
-      fast: 'llama-3.1-8b-instant',
-      pro: 'llama-3.3-70b-versatile',
+      fast: FREE_AI_FLEET.groq.fastModel,
+      pro: FREE_AI_FLEET.groq.reasoningModel,
+      fallback: FREE_AI_FLEET.groq.fallbackModel,
     },
-    defaultModel: 'llama-3.3-70b-versatile',
+    defaultModel: FREE_AI_FLEET.groq.reasoningModel,
+  },
+  openrouter: {
+    name: FREE_AI_FLEET.openrouter.name,
+    endpoint: FREE_AI_FLEET.openrouter.endpoint,
+    models: {
+      fast: FREE_AI_FLEET.openrouter.primaryModel,
+      pro: FREE_AI_FLEET.openrouter.primaryModel,
+      fallback: FREE_AI_FLEET.openrouter.fallbackModel,
+    },
+    defaultModel: FREE_AI_FLEET.openrouter.primaryModel,
   },
 };
 
@@ -48,8 +82,8 @@ export interface ProviderConfig {
 
 export const SUPPORTED_PROVIDERS: Record<string, ProviderConfig> = {
   groq: {
-    endpoint: AI_PROVIDERS.groq.endpoint,
-    defaultModel: AI_PROVIDERS.groq.defaultModel,
+    endpoint: FREE_AI_FLEET.groq.endpoint,
+    defaultModel: FREE_AI_FLEET.groq.reasoningModel,
   },
   openai: {
     endpoint: AI_PROVIDERS.openai.endpoint,
@@ -60,8 +94,12 @@ export const SUPPORTED_PROVIDERS: Record<string, ProviderConfig> = {
     defaultModel: AI_PROVIDERS.anthropic.defaultModel,
   },
   gemini: {
-    endpoint: `${AI_PROVIDERS.gemini.endpoint}/${AI_PROVIDERS.gemini.defaultModel}:generateContent`,
-    defaultModel: AI_PROVIDERS.gemini.defaultModel,
+    endpoint: `${FREE_AI_FLEET.gemini.endpoint}/${FREE_AI_FLEET.gemini.primaryModel}:generateContent`,
+    defaultModel: FREE_AI_FLEET.gemini.primaryModel,
+  },
+  openrouter: {
+    endpoint: FREE_AI_FLEET.openrouter.endpoint,
+    defaultModel: FREE_AI_FLEET.openrouter.primaryModel,
   },
 };
 
@@ -101,6 +139,8 @@ export async function getProviderKey(provider: string): Promise<{ apiKey: string
     apiKey = config?.anthropicKey || process.env.ANTHROPIC_API_KEY || '';
   } else if (prov === 'gemini') {
     apiKey = config?.geminiKey || process.env.GEMINI_API_KEY || '';
+  } else if (prov === 'openrouter') {
+    apiKey = (config as any)?.openrouterKey || process.env.OPENROUTER_API_KEY || '';
   }
 
   const defaultProvider = config?.defaultProvider || 'groq';
@@ -118,11 +158,8 @@ export function parseJsonResponse<T>(rawText: string): T {
   return JSON.parse(cleaned) as T;
 }
 
-async function callGemini(cleanKey: string, prompt: string, isDeepReasoning = false): Promise<string> {
-  const modelsToTry = isDeepReasoning
-    ? [AI_PROVIDERS.gemini.models.pro, AI_PROVIDERS.gemini.models.fast]
-    : [AI_PROVIDERS.gemini.models.fast, AI_PROVIDERS.gemini.models.pro];
-
+async function callGemini(cleanKey: string, prompt: string): Promise<string> {
+  const modelsToTry = [FREE_AI_FLEET.gemini.primaryModel, FREE_AI_FLEET.gemini.fallbackModel];
   let lastError = '';
 
   for (const modelName of modelsToTry) {
@@ -139,9 +176,9 @@ async function callGemini(cleanKey: string, prompt: string, isDeepReasoning = fa
       lastError = err?.message || String(err);
     }
 
-    // 2. Fallback to direct REST endpoint
+    // 2. Direct REST endpoint
     try {
-      const endpoint = `${AI_PROVIDERS.gemini.endpoint}/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+      const endpoint = `${FREE_AI_FLEET.gemini.endpoint}/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -194,11 +231,11 @@ export async function callLLM(
     apiKey = keyInfo.apiKey;
   }
 
-  if (!apiKey || !apiKey.trim()) {
+  if (targetProvider !== 'openrouter' && (!apiKey || !apiKey.trim())) {
     throw new Error(`API key for provider '${targetProvider}' is missing. Please configure it in Admin Command Center.`);
   }
 
-  const cleanKey = apiKey.trim();
+  const cleanKey = (apiKey || '').trim();
 
   if (targetProvider === 'anthropic') {
     const model = isDeepReasoning
@@ -230,20 +267,58 @@ export async function callLLM(
   }
 
   if (targetProvider === 'gemini') {
-    return callGemini(cleanKey, `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}`, isDeepReasoning);
+    return callGemini(cleanKey, `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}`);
+  }
+
+  if (targetProvider === 'openrouter') {
+    const model = FREE_AI_FLEET.openrouter.primaryModel;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://skillprax.dev',
+      'X-Title': 'SkillPrax Engine',
+    };
+    if (cleanKey) {
+      headers['Authorization'] = `Bearer ${cleanKey}`;
+    }
+
+    const response = await fetch(FREE_AI_FLEET.openrouter.endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.3,
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      let errorMsg = errText;
+      try {
+        const errObj = JSON.parse(errText);
+        if (errObj.error?.message) errorMsg = errObj.error.message;
+      } catch (_) {}
+      throw new Error(`OpenRouter API error (${response.status}): ${errorMsg}`);
+    }
+
+    const data: any = await response.json();
+    return data.choices?.[0]?.message?.content || '';
   }
 
   // Groq and OpenAI
   const targetEndpoint =
-    targetProvider === 'openai' ? AI_PROVIDERS.openai.endpoint : AI_PROVIDERS.groq.endpoint;
+    targetProvider === 'openai' ? AI_PROVIDERS.openai.endpoint : FREE_AI_FLEET.groq.endpoint;
   const targetModel =
     targetProvider === 'openai'
       ? isDeepReasoning
         ? AI_PROVIDERS.openai.models.reasoning
         : AI_PROVIDERS.openai.defaultModel
       : isDeepReasoning
-      ? AI_PROVIDERS.groq.models.pro
-      : AI_PROVIDERS.groq.models.fast;
+      ? FREE_AI_FLEET.groq.reasoningModel
+      : FREE_AI_FLEET.groq.fastModel;
 
   const response = await fetch(targetEndpoint, {
     method: 'POST',
@@ -555,13 +630,13 @@ export async function testProviderConnection(provider: string, key?: string) {
       apiKey = keyInfo.apiKey?.trim();
     }
 
-    if (!apiKey) {
+    if (prov !== 'openrouter' && !apiKey) {
       throw new Error(`API key for provider '${prov}' is missing. Please configure it in Admin Settings.`);
     }
 
     if (prov === 'gemini') {
-      const cleanKey = apiKey.trim();
-      const modelsToTry = [AI_PROVIDERS.gemini.models.fast, AI_PROVIDERS.gemini.models.pro];
+      const cleanKey = (apiKey || '').trim();
+      const modelsToTry = [FREE_AI_FLEET.gemini.primaryModel, FREE_AI_FLEET.gemini.fallbackModel];
       let lastError = '';
 
       for (const modelName of modelsToTry) {
@@ -579,15 +654,15 @@ export async function testProviderConnection(provider: string, key?: string) {
           lastError = err?.message || String(err);
         }
 
-        // 2. Fallback to direct REST endpoint
+        // 2. Direct REST endpoint
         try {
-          const endpoint = `${AI_PROVIDERS.gemini.endpoint}/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+          const endpoint = `${FREE_AI_FLEET.gemini.endpoint}/${modelName}:generateContent?key=${encodeURIComponent(cleanKey)}`;
           const response = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
-              generationConfig: { maxOutputTokens: 10 },
+              generationConfig: { maxOutputTokens: 5 },
             }),
           });
 
@@ -625,7 +700,8 @@ export async function testProviderConnection(provider: string, key?: string) {
       prov,
       'You are a connection ping checker. Output JSON: {"status": "ok"}',
       'Ping status test',
-      apiKey
+      apiKey,
+      false // Use fast model for pings
     );
     const latencyMs = Date.now() - startTime;
     return { ok: true, latencyMs, response };

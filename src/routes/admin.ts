@@ -45,12 +45,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
         openai: maskKey(config.openaiKey || process.env.OPENAI_API_KEY),
         anthropic: maskKey(config.anthropicKey || process.env.ANTHROPIC_API_KEY),
         gemini: maskKey(config.geminiKey || process.env.GEMINI_API_KEY),
+        openrouter: maskKey(config.openrouterKey || process.env.OPENROUTER_API_KEY),
       },
       configured: {
         groq: !!(config.groqKey || process.env.GROQ_API_KEY),
         openai: !!(config.openaiKey || process.env.OPENAI_API_KEY),
         anthropic: !!(config.anthropicKey || process.env.ANTHROPIC_API_KEY),
         gemini: !!(config.geminiKey || process.env.GEMINI_API_KEY),
+        openrouter: !!(config.openrouterKey || process.env.OPENROUTER_API_KEY),
       },
     });
   });
@@ -65,6 +67,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       openaiKey?: string;
       anthropicKey?: string;
       geminiKey?: string;
+      openrouterKey?: string;
       defaultProvider?: string;
       adminSecret?: string;
     };
@@ -74,6 +77,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (body.openaiKey !== undefined) updateData.openaiKey = body.openaiKey;
     if (body.anthropicKey !== undefined) updateData.anthropicKey = body.anthropicKey;
     if (body.geminiKey !== undefined) updateData.geminiKey = body.geminiKey;
+    if (body.openrouterKey !== undefined) updateData.openrouterKey = body.openrouterKey;
     if (body.defaultProvider !== undefined) updateData.defaultProvider = body.defaultProvider;
     if (body.adminSecret !== undefined) updateData.adminSecret = body.adminSecret;
 
