@@ -388,7 +388,7 @@ export async function callLLM(
  * Aggregates workspace baseline knowledge, target goal, passed steps, and attempts
  */
 export async function buildContextPayload(workspaceId: string): Promise<string> {
-  const workspace = await prisma.workspace.findUnique({
+  const workspace: any = await prisma.workspace.findUnique({
     where: { id: workspaceId },
     include: {
       steps: {
@@ -400,23 +400,23 @@ export async function buildContextPayload(workspaceId: string): Promise<string> 
 
   if (!workspace) return '';
 
-  const passedSteps = workspace.steps.filter((s) => s.status === 'PASSED');
-  const allAttempts = workspace.steps.flatMap((s) => s.attempts);
+  const passedSteps = workspace.steps.filter((s: any) => s.status === 'PASSED');
+  const allAttempts = workspace.steps.flatMap((s: any) => s.attempts);
 
   const contextData = {
     title: workspace.title,
     category: workspace.category,
     baselineKnowledge: workspace.baselineKnowledge,
     targetGoal: workspace.targetGoal,
-    completedSteps: passedSteps.map((s) => ({
+    completedSteps: passedSteps.map((s: any) => ({
       stepIndex: s.stepIndex,
       title: s.title,
       whatYouWillLearn: s.whatYouWillLearn,
       passingScore: s.passingScore,
     })),
     pastDiagnosticReports: allAttempts
-      .filter((a) => !a.passed && a.diagnosticReport)
-      .map((a) => ({
+      .filter((a: any) => !a.passed && a.diagnosticReport)
+      .map((a: any) => ({
         diagnosticReport: a.diagnosticReport,
         weakConcepts: safeJsonParse<string[]>(a.weakConcepts, []),
       })),

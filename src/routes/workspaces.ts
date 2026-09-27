@@ -1,9 +1,15 @@
 // skillprax-backend/src/routes/workspaces.ts
 
 import { FastifyInstance, FastifyPluginAsync } from "fastify";
-import { z } from "zod";
 import prisma from "../lib/prisma";
-import { curateAndExamine, harvestResources, PipelineExhaustionError, GroqConfigError } from "../lib/ai/pipeline";
+import {
+  synthesizeStepMaterials,
+  synthesizeQuizFromMaterial,
+  harvestResources,
+  callGroqWithFallback,
+  PipelineExhaustionError,
+  GroqConfigError,
+} from "../lib/ai/pipeline";
 
 const ADMIN_CONFIG_ID = "global";
 
@@ -22,23 +28,6 @@ async function getApiKeys(): Promise<{ groqApiKey: string; tavilyApiKey: string 
 
   return { groqApiKey, tavilyApiKey };
 }
-
-const initiateWorkspaceSchema = z.object({
-  title: z.string().optional(),
-  topic: z.string().optional(),
-  domainCategory: z.string().optional(),
-  pillar: z.string().optional(),
-  category: z.string().optional(),
-  baselineKnowledge: z.string().max(1000).optional().default("Beginner"),
-  targetGoal: z.string().max(1000).optional().default("Full Mastery"),
-  level: z.string().optional().default("Beginner"),
-  preferredProvider: z.string().optional().default("groq"),
-});
-
-const deleteWorkspaceSchema = z.object({
-  reason: z.enum(["curve_too_steep", "curriculum_mismatch", "pivoting_goals", "other"]),
-  reasonDetail: z.string().max(1000).optional(),
-});
 
 const safeJsonParse = (data: any, fallback: any = []) => {
   if (Array.isArray(data) || (typeof data === "object" && data !== null)) return data;
@@ -60,7 +49,9 @@ function stripQuizAnswers(questions: any[]): any[] {
     scenario: q.scenario || "",
     question: q.question || "",
     options: Array.isArray(q.options)
-      ? q.options.map((opt: any) => (typeof opt === "string" ? opt : { id: opt.id || opt.key || "A", text: opt.text }))
+      ? q.options.map((opt: any) =>
+          typeof opt === "string" ? opt : { id: opt.id || opt.key || "A", text: opt.text }
+        )
       : [],
   }));
 }
@@ -71,23 +62,17 @@ const formatStepClientSafe = (step: any) => {
 
   return {
     ...step,
-    whatYouWillLearn: step.whatYouWillLearn || step.conceptualOverview || "",
-    conceptualOverview: step.conceptualOverview || step.whatYouWillLearn || "",
-    coreKeyTakeaways: safeJsonParse(step.coreKeyTakeaways || step.keyTakeaways, []),
-    keyTakeaways: safeJsonParse(step.keyTakeaways || step.coreKeyTakeaways, []),
     assessableUnits: safeJsonParse(step.assessableUnits, []),
     resources: safeJsonParse(step.resources, []),
     quizBlueprint: studentSafeQuestions,
-    questionCount: studentSafeQuestions.length || step.questionCount || 5,
+    questionCount: studentSafeQuestions.length,
   };
 };
 
 const formatWorkspaceClientSafe = (workspace: any) => ({
   ...workspace,
-  skillName: workspace.skillName || workspace.title || "",
-  title: workspace.title || workspace.skillName || "",
-  pillar: workspace.pillar || workspace.domainCategory || "General Knowledge",
-  domainCategory: workspace.domainCategory || workspace.pillar || "General Knowledge",
+  title: workspace.title || "",
+  domainCategory: workspace.domainCategory || "General Knowledge",
   steps: Array.isArray(workspace.steps) ? workspace.steps.map(formatStepClientSafe) : [],
 });
 
@@ -96,22 +81,22 @@ function sanitizeInput(text: string): string {
 }
 
 const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
+  // ============================================================
   // 1. POST /api/workspaces/initiate — Create workspace & generate Step 1
-  const handleInitiate = async (request: any, reply: any) => {
+  // ============================================================
+  fastify.post("/api/workspaces/initiate", async (request, reply) => {
     try {
-      const parsed = initiateWorkspaceSchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({ error: "Invalid request input", details: parsed.error.flatten() });
-      }
+      const body: any = request.body || {};
 
-      const body = parsed.data;
-      const cleanTitle = (body.title || body.topic || "").trim().slice(0, 140);
+      // Guardrail 4: defensive normalization — accept title OR topic
+      const cleanTitle = sanitizeInput((body.title ?? body.topic ?? "").trim()).slice(0, 140);
       if (!cleanTitle) {
-        return reply.status(400).send({ error: "Title or topic parameter is required." });
+        return reply.status(400).send({ error: "Title parameter is required and must be non-empty." });
       }
 
-      const cleanPillar = sanitizeInput(body.pillar || body.domainCategory || body.category || "General Knowledge");
-      const cleanGoal = sanitizeInput(body.targetGoal || "Full Mastery");
+      const cleanDomain = sanitizeInput((body.domainCategory ?? body.pillar ?? body.category ?? "General Knowledge").trim());
+      const cleanGoal = sanitizeInput((body.targetGoal ?? "Full Mastery").trim());
+      const cleanLevel = sanitizeInput((body.level ?? "beginner").trim()).toLowerCase() || "beginner";
 
       let apiKeys;
       try {
@@ -123,21 +108,17 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
         throw err;
       }
 
-      // Create workspace + step 1 in a single transaction
+      // Create workspace + Step 1 in a single transaction
       const [workspace, step] = await prisma.$transaction(async (tx) => {
         const ws = await tx.workspace.create({
           data: {
             title: cleanTitle,
-            skillName: cleanTitle,
-            pillar: cleanPillar,
-            domainCategory: cleanPillar,
-            category: cleanPillar,
-            baselineKnowledge: body.baselineKnowledge || "Beginner",
+            domainCategory: cleanDomain,
             targetGoal: cleanGoal,
-            aiProvider: body.preferredProvider || "groq",
+            level: cleanLevel,
             isGenerating: true,
             generationStartedAt: new Date(),
-          } as any,
+          },
         });
 
         const st = await tx.skillStep.create({
@@ -147,7 +128,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
             title: "Foundations & Core Principles",
             description: `Master core foundational mechanics and achieve: ${cleanGoal}`,
             status: "IN_PROGRESS",
-          } as any,
+          },
         });
 
         return [ws, st];
@@ -155,42 +136,68 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
 
       // Two-phase pipeline synthesis for Step 1
       try {
-        const candidates = await harvestResources(cleanTitle, "Foundations & Core Principles", apiKeys.tavilyApiKey);
-        const curriculum = await curateAndExamine(cleanTitle, "Foundations & Core Principles", candidates, apiKeys.groqApiKey);
+        // Phase A: harvest + curate
+        const candidates = await harvestResources(
+          cleanTitle,
+          "Foundations & Core Principles",
+          apiKeys.tavilyApiKey,
+          cleanDomain,
+          cleanGoal
+        );
+        const materials = await synthesizeStepMaterials(
+          cleanTitle,
+          cleanDomain,
+          cleanGoal,
+          cleanLevel,
+          candidates,
+          apiKeys.groqApiKey
+        );
+
+        // Persist Phase A results
+        await prisma.skillStep.update({
+          where: { id: step.id },
+          data: {
+            assessableUnits: materials.acus as any,
+            resources: materials.resources as any,
+          },
+        });
+
+        // Phase B: quiz generation (best-effort, non-blocking failure)
+        let quizQuestions: any[] = [];
+        try {
+          quizQuestions = await synthesizeQuizFromMaterial(materials.acus, materials.resources, apiKeys.groqApiKey);
+        } catch (quizErr) {
+          console.warn("[workspaces] Phase B quiz gen failed during initiate (non-blocking):", (quizErr as Error).message);
+        }
 
         const updatedStep = await prisma.skillStep.update({
           where: { id: step.id },
           data: {
-            whatYouWillLearn: curriculum.conceptualOverview || `Master foundational mechanics for ${cleanTitle}`,
-            conceptualOverview: curriculum.conceptualOverview || `Master foundational mechanics for ${cleanTitle}`,
-            coreKeyTakeaways: curriculum.acus.map((a) => a.label) as any,
-            keyTakeaways: curriculum.acus.map((a) => a.label) as any,
-            questionCount: curriculum.quizBlueprint.questions.length || curriculum.questions.length || 5,
-            assessableUnits: curriculum.acus as any,
-            quizBlueprint: curriculum.quizBlueprint.questions as any,
-            resources: curriculum.resources as any,
-            practicalApplication: cleanGoal,
-          } as any,
+            quizBlueprint: quizQuestions as any,
+          },
         });
 
-        const formattedWs = formatWorkspaceClientSafe({ ...workspace, steps: [updatedStep], isGenerating: false });
-        const formattedStep = formatStepClientSafe(updatedStep);
+        const fullWorkspace = await prisma.workspace.findUnique({
+          where: { id: workspace.id },
+          include: { steps: { orderBy: { stepIndex: "asc" } } },
+        });
 
+        const formatted = formatWorkspaceClientSafe(fullWorkspace);
         return reply.status(201).send({
           id: workspace.id,
-          ...formattedWs,
-          workspace: formattedWs,
-          step: formattedStep,
+          ...formatted,
+          workspace: formatted,
+          step: formatStepClientSafe(updatedStep),
         });
       } finally {
         await prisma.workspace.update({
           where: { id: workspace.id },
-          data: { isGenerating: false, generationStartedAt: null } as any,
+          data: { isGenerating: false, generationStartedAt: null },
         });
       }
     } catch (err: any) {
       if (err instanceof PipelineExhaustionError) {
-        return reply.status(503).send({ error: "AI pipeline models were busy or unavailable. Please try again." });
+        return reply.status(503).send({ error: "AI pipeline models were busy or unavailable. Please try again shortly." });
       }
       if (err?.code === "P2025") {
         return reply.status(404).send({ error: "Record not found." });
@@ -198,14 +205,12 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to initiate workspace" });
     }
-  };
+  });
 
-  fastify.post("/workspaces", handleInitiate);
-  fastify.post("/api/workspaces", handleInitiate);
-  fastify.post("/api/workspaces/initiate", handleInitiate);
-
+  // ============================================================
   // 2. GET /api/workspaces — List all workspaces
-  const handleGetAll = async (request: any, reply: any) => {
+  // ============================================================
+  fastify.get("/api/workspaces", async (_request, reply) => {
     try {
       const workspaces = await prisma.workspace.findMany({
         orderBy: { updatedAt: "desc" },
@@ -216,13 +221,12 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       fastify.log.error(err);
       return reply.send([]);
     }
-  };
+  });
 
-  fastify.get("/workspaces", handleGetAll);
-  fastify.get("/api/workspaces", handleGetAll);
-
-  // 3. GET /api/workspaces/:id — Fetch workspace with AUTO-HEALING & POLLING
-  const handleGetById = async (request: any, reply: any) => {
+  // ============================================================
+  // 3. GET /api/workspaces/:id — Fetch workspace with auto-healing & polling
+  // ============================================================
+  fastify.get("/api/workspaces/:id", async (request, reply) => {
     try {
       const { id } = request.params as { id: string };
 
@@ -240,12 +244,12 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
         return reply.status(404).send({ error: `Workspace with ID "${cleanId}" not found.` });
       }
 
-      // Check if generation is in-flight (< 30s ago). If so, poll up to ~10 times (15s total)
+      // Check if generation is in-flight (<30s ago). If so, poll up to ~5 times (7.5s total)
       if (workspace.isGenerating && workspace.generationStartedAt) {
         const elapsedMs = Date.now() - new Date(workspace.generationStartedAt).getTime();
         if (elapsedMs < 30000) {
           let pollAttempts = 0;
-          while (pollAttempts < 10) {
+          while (pollAttempts < 5) {
             pollAttempts++;
             await new Promise((resolve) => setTimeout(resolve, 1500));
             const reRead: any = await prisma.workspace.findUnique({
@@ -275,26 +279,32 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
         try {
           await prisma.workspace.update({
             where: { id: cleanId },
-            data: { isGenerating: true, generationStartedAt: new Date() } as any,
+            data: { isGenerating: true, generationStartedAt: new Date() },
           });
 
           const apiKeys = await getApiKeys();
-          const cleanTitle = workspace.title || workspace.skillName;
-          const candidates = await harvestResources(cleanTitle, currentStep.title, apiKeys.tavilyApiKey);
-          const curriculum = await curateAndExamine(cleanTitle, currentStep.title, candidates, apiKeys.groqApiKey);
+          const candidates = await harvestResources(
+            workspace.title,
+            currentStep.title,
+            apiKeys.tavilyApiKey,
+            workspace.domainCategory,
+            workspace.targetGoal
+          );
+          const materials = await synthesizeStepMaterials(
+            workspace.title,
+            workspace.domainCategory,
+            workspace.targetGoal,
+            workspace.level || "beginner",
+            candidates,
+            apiKeys.groqApiKey
+          );
 
           const healedStep = await prisma.skillStep.update({
             where: { id: currentStep.id },
             data: {
-              whatYouWillLearn: curriculum.conceptualOverview || `Master ${currentStep.title}`,
-              conceptualOverview: curriculum.conceptualOverview || `Master ${currentStep.title}`,
-              coreKeyTakeaways: curriculum.acus.map((a) => a.label) as any,
-              keyTakeaways: curriculum.acus.map((a) => a.label) as any,
-              questionCount: curriculum.quizBlueprint.questions.length || curriculum.questions.length || 5,
-              assessableUnits: curriculum.acus as any,
-              quizBlueprint: curriculum.quizBlueprint.questions as any,
-              resources: curriculum.resources as any,
-            } as any,
+              assessableUnits: materials.acus as any,
+              resources: materials.resources as any,
+            },
           });
 
           workspace.steps[workspace.steps.length - 1] = healedStep;
@@ -303,7 +313,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
         } finally {
           await prisma.workspace.update({
             where: { id: cleanId },
-            data: { isGenerating: false, generationStartedAt: null } as any,
+            data: { isGenerating: false, generationStartedAt: null },
           });
         }
       }
@@ -320,13 +330,12 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to fetch workspace" });
     }
-  };
+  });
 
-  fastify.get("/workspaces/:id", handleGetById);
-  fastify.get("/api/workspaces/:id", handleGetById);
-
-  // 4. POST /api/workspaces/:id/next-step — Generate next step strictly if current step passed
-  const handleNextStep = async (request: any, reply: any) => {
+  // ============================================================
+  // 4. POST /api/workspaces/:id/next-step — Generate next step if current passed
+  // ============================================================
+  fastify.post("/api/workspaces/:id/next-step", async (request, reply) => {
     try {
       const { id: workspaceId } = request.params as { id: string };
       const cleanWorkspaceId = (workspaceId || "").trim();
@@ -334,10 +343,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       const workspace: any = await prisma.workspace.findUnique({
         where: { id: cleanWorkspaceId },
         include: {
-          steps: {
-            orderBy: { stepIndex: "asc" },
-            include: { attempts: { orderBy: { createdAt: "desc" }, take: 1 } },
-          },
+          steps: { orderBy: { stepIndex: "asc" } },
         },
       });
 
@@ -348,21 +354,16 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       const steps = workspace.steps || [];
       const currentStep = steps[steps.length - 1];
 
-      // SERVER-SIDE VERIFICATION: Current step must be passed
-      if (currentStep) {
-        const latestAttempt = currentStep.attempts?.[0];
-        const isPassed = currentStep.status === "PASSED" || latestAttempt?.passed === true;
-
-        if (!isPassed) {
-          return reply.status(400).send({
-            error: "Current step has not been passed yet. You must pass the evaluation quiz (80%+ score) before advancing.",
-          });
-        }
+      // SERVER-SIDE VERIFICATION: Current step must be passed (from DB)
+      if (currentStep && currentStep.status !== "PASSED") {
+        return reply.status(400).send({
+          error: "Current step has not been passed yet. You must pass the evaluation quiz (80%+ score) before advancing.",
+        });
       }
 
       const nextStepIndex = (currentStep?.stepIndex ?? 0) + 1;
 
-      // IDEMPOTENCY GUARD: If next step already exists beyond current one, return it
+      // IDEMPOTENCY: If next step already exists, return it
       const existingNextStep = steps.find((s: any) => s.stepIndex === nextStepIndex);
       if (existingNextStep) {
         return reply.send({
@@ -371,7 +372,6 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
         });
       }
 
-      const cleanTitle = workspace.title || workspace.skillName;
       const nextStepTitle = `Step ${nextStepIndex}: Advanced Application & Mastery`;
 
       let apiKeys;
@@ -384,47 +384,60 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
         throw err;
       }
 
-      // Create new step row
-      const isMastered = nextStepIndex >= (workspace.estimatedTotalSteps || 5);
-      const [newStep] = await prisma.$transaction([
-        prisma.skillStep.create({
+      // Create new step row + set generating flag
+      const newStep = await prisma.$transaction(async (tx) => {
+        const ns = await tx.skillStep.create({
           data: {
             workspaceId: cleanWorkspaceId,
             stepIndex: nextStepIndex,
             title: nextStepTitle,
-            description: `Deepen practical implementation and architectural mastery for ${cleanTitle}.`,
+            description: `Deepen practical implementation and mastery for ${workspace.title}.`,
             status: "IN_PROGRESS",
-          } as any,
-        }),
-        prisma.workspace.update({
+          },
+        });
+        await tx.workspace.update({
           where: { id: cleanWorkspaceId },
           data: {
-            currentStepIndex: nextStepIndex,
-            status: isMastered ? "MASTERED" : workspace.status,
             isGenerating: true,
             generationStartedAt: new Date(),
-          } as any,
-        }),
-      ]);
+          },
+        });
+        return ns;
+      });
 
-      // Synthesize two-phase pipeline content for next step
+      // Synthesize content for next step
       try {
-        const candidates = await harvestResources(cleanTitle, nextStepTitle, apiKeys.tavilyApiKey);
-        const curriculum = await curateAndExamine(cleanTitle, nextStepTitle, candidates, apiKeys.groqApiKey);
+        const candidates = await harvestResources(
+          workspace.title,
+          nextStepTitle,
+          apiKeys.tavilyApiKey,
+          workspace.domainCategory,
+          workspace.targetGoal
+        );
+        const materials = await synthesizeStepMaterials(
+          workspace.title,
+          workspace.domainCategory,
+          workspace.targetGoal,
+          workspace.level || "beginner",
+          candidates,
+          apiKeys.groqApiKey
+        );
+
+        // Phase B quiz
+        let quizQuestions: any[] = [];
+        try {
+          quizQuestions = await synthesizeQuizFromMaterial(materials.acus, materials.resources, apiKeys.groqApiKey);
+        } catch (quizErr) {
+          console.warn("[workspaces] Phase B quiz gen failed during next-step (non-blocking):", (quizErr as Error).message);
+        }
 
         const updatedStep = await prisma.skillStep.update({
           where: { id: newStep.id },
           data: {
-            whatYouWillLearn: curriculum.conceptualOverview || `Master ${nextStepTitle}`,
-            conceptualOverview: curriculum.conceptualOverview || `Master ${nextStepTitle}`,
-            coreKeyTakeaways: curriculum.acus.map((a) => a.label) as any,
-            keyTakeaways: curriculum.acus.map((a) => a.label) as any,
-            practicalApplication: workspace.targetGoal || "Full Mastery",
-            questionCount: curriculum.quizBlueprint.questions.length || curriculum.questions.length || 5,
-            assessableUnits: curriculum.acus as any,
-            quizBlueprint: curriculum.quizBlueprint.questions as any,
-            resources: curriculum.resources as any,
-          } as any,
+            assessableUnits: materials.acus as any,
+            resources: materials.resources as any,
+            quizBlueprint: quizQuestions as any,
+          },
         });
 
         const updatedWorkspace = await prisma.workspace.findUnique({
@@ -439,34 +452,132 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       } finally {
         await prisma.workspace.update({
           where: { id: cleanWorkspaceId },
-          data: { isGenerating: false, generationStartedAt: null } as any,
+          data: { isGenerating: false, generationStartedAt: null },
         });
       }
     } catch (err: any) {
+      if (err instanceof PipelineExhaustionError) {
+        return reply.status(503).send({ error: "AI pipeline models were busy or unavailable. Please try again shortly." });
+      }
       if (err?.code === "P2025") {
         return reply.status(404).send({ error: "Record not found." });
       }
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to generate next step" });
     }
-  };
+  });
 
-  fastify.post("/workspaces/:id/next-step", handleNextStep);
-  fastify.post("/api/workspaces/:id/next-step", handleNextStep);
-  fastify.post("/api/workspaces/:workspaceId/generate-next-step", handleNextStep);
+  // ============================================================
+  // 5. POST /api/workspaces/:id/abandon-reflection — Groq-generated stakes reflection
+  // ============================================================
+  fastify.post("/api/workspaces/:id/abandon-reflection", async (request, reply) => {
+    try {
+      const { id: workspaceId } = request.params as { id: string };
+      const cleanId = (workspaceId || "").trim();
 
-  // 5. DELETE /api/workspaces/:id — Delete workspace & record AbandonmentLog telemetry
-  const handleDelete = async (request: any, reply: any) => {
+      const workspace: any = await prisma.workspace.findUnique({
+        where: { id: cleanId },
+        include: { steps: { orderBy: { stepIndex: "asc" } } },
+      });
+
+      if (!workspace) {
+        return reply.status(404).send({ error: `Workspace "${cleanId}" not found.` });
+      }
+
+      const passedSteps = (workspace.steps || []).filter((s: any) => s.status === "PASSED");
+      const passedStepData = passedSteps.map((s: any) => ({
+        title: s.title,
+        acus: safeJsonParse(s.assessableUnits, []),
+      }));
+
+      // Fallback: plain computed summary (no Groq needed)
+      const fallbackMilestones = passedSteps.map((s: any) => s.title);
+
+      // If no steps completed, no reflection needed — return minimal payload
+      if (passedSteps.length === 0) {
+        return reply.send({
+          reflectionText: null,
+          milestonesSummary: [],
+        });
+      }
+
+      try {
+        const apiKeys = await getApiKeys();
+
+        const systemPrompt = `You are a learning reflection assistant. Given a user's track progress, generate a short (3-5 sentence) honest, specific reflection naming the actual concepts and capabilities this learner has built. Also produce a milestonesSummary array of short strings (one per completed step, naming what was mastered).
+
+Rules:
+- Reference the REAL ACU content and step titles provided. No generic motivational filler.
+- Be concrete about what real-world capability these concepts unlock.
+- Keep tone honest and respectful — not manipulative, not guilt-tripping.
+
+Output strict JSON: { "reflectionText": "string", "milestonesSummary": ["string", ...] }`;
+
+        const userPrompt = JSON.stringify({
+          trackTitle: workspace.title,
+          domain: workspace.domainCategory,
+          completedSteps: passedStepData,
+        });
+
+        const res = await callGroqWithFallback(
+          [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          { apiKey: apiKeys.groqApiKey, jsonMode: true }
+        );
+
+        let parsed: any;
+        try {
+          let cleaned = res.content.trim();
+          if (cleaned.startsWith("```json")) {
+            cleaned = cleaned.replace(/^```json\s*/i, "").replace(/\s*```$/, "");
+          } else if (cleaned.startsWith("```")) {
+            cleaned = cleaned.replace(/^```\s*/, "").replace(/\s*```$/, "");
+          }
+          parsed = JSON.parse(cleaned.trim());
+        } catch (_) {
+          parsed = {};
+        }
+
+        return reply.send({
+          reflectionText: parsed.reflectionText || null,
+          milestonesSummary: Array.isArray(parsed.milestonesSummary) ? parsed.milestonesSummary : fallbackMilestones,
+        });
+      } catch (groqErr) {
+        console.warn("[workspaces] Abandon reflection Groq call failed, using fallback:", (groqErr as Error).message);
+        return reply.send({
+          reflectionText: null,
+          milestonesSummary: fallbackMilestones,
+        });
+      }
+    } catch (err: any) {
+      if (err?.code === "P2025") {
+        return reply.status(404).send({ error: "Workspace not found." });
+      }
+      fastify.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to generate abandon reflection" });
+    }
+  });
+
+  // ============================================================
+  // 6. DELETE /api/workspaces/:id — Delete workspace & record AbandonmentLog
+  // ============================================================
+  fastify.delete("/api/workspaces/:id", async (request, reply) => {
     try {
       const { id: workspaceId } = request.params as { id: string };
       const cleanWorkspaceId = (workspaceId || "").trim();
 
-      const parsed = deleteWorkspaceSchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({ error: "Invalid abandonment payload", details: parsed.error.flatten() });
-      }
+      const body: any = request.body || {};
+      const reason = body.reason;
+      const reasonDetail = body.reasonDetail;
 
-      const { reason, reasonDetail } = parsed.data;
+      const validReasons = ["curve_too_steep", "curriculum_mismatch", "pivoting_goals", "other"];
+      if (!reason || !validReasons.includes(reason)) {
+        return reply.status(400).send({
+          error: `Invalid reason. Must be one of: ${validReasons.join(", ")}`,
+        });
+      }
 
       const workspace: any = await prisma.workspace.findUnique({
         where: { id: cleanWorkspaceId },
@@ -481,18 +592,18 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       const createdAtTime = workspace.createdAt ? new Date(workspace.createdAt).getTime() : Date.now();
       const timeInvestedSeconds = Math.max(0, Math.floor((Date.now() - createdAtTime) / 1000));
 
-      // Single transaction: (1) create AbandonmentLog, (2) delete steps/attempts, (3) delete workspace
+      // Single transaction: create AbandonmentLog (plain scalar workspaceId) -> delete workspace (cascades steps/attempts)
       await prisma.$transaction([
         prisma.abandonmentLog.create({
           data: {
             workspaceId: cleanWorkspaceId,
-            trackTitle: workspace.title || workspace.skillName || "Skill Track",
-            domain: workspace.pillar || workspace.domainCategory || "General Knowledge",
+            trackTitle: workspace.title || "Skill Track",
+            domain: workspace.domainCategory || "General Knowledge",
             completedStepsCount,
             timeInvestedSeconds,
             reason,
-            reasonDetail: reasonDetail ? sanitizeInput(reasonDetail) : null,
-          } as any,
+            reasonDetail: reasonDetail ? sanitizeInput(String(reasonDetail)) : null,
+          },
         }),
         prisma.workspace.delete({
           where: { id: cleanWorkspaceId },
@@ -510,10 +621,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to delete workspace" });
     }
-  };
-
-  fastify.delete("/workspaces/:id", handleDelete);
-  fastify.delete("/api/workspaces/:id", handleDelete);
+  });
 };
 
 export default workspacesRoutes;

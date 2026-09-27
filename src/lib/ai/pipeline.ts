@@ -288,7 +288,9 @@ export function isDenylistedSearchUrl(rawUrl: string): boolean {
 export async function harvestResources(
   topic: string,
   stepContext: string,
-  tavilyApiKey?: string | null
+  tavilyApiKey?: string | null,
+  domainCategory?: string,
+  targetGoal?: string
 ): Promise<RawCandidate[]> {
   const apiKey = tavilyApiKey || process.env.TAVILY_API_KEY;
   if (!apiKey) {
@@ -297,7 +299,10 @@ export async function harvestResources(
   }
 
   try {
-    const query = `${topic} ${stepContext} official guide documentation tutorial reference`.trim();
+    // Bias search terms toward the stated domain and goal
+    const domainBias = domainCategory && domainCategory !== "General Knowledge" ? ` ${domainCategory}` : "";
+    const goalBias = targetGoal && targetGoal !== "Full Mastery" ? ` ${targetGoal}` : "";
+    const query = `${topic}${domainBias}${goalBias} ${stepContext} official guide documentation tutorial reference`.trim();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 6000);
 
@@ -359,22 +364,132 @@ function cleanJsonFence(raw: string): string {
   return cleaned.trim();
 }
 
-// PHASE B: EXPORTED QUIZ BLUEPRINT GENERATOR FOR ON-DEMAND AUTO-HEALING
-export async function generateQuizBlueprint(
-  topic: string,
-  stepTitle: string,
-  assessableUnits: ACU[],
-  takeaways: string[],
-  apiKey: string
+// ============================================================
+// PHASE A: SYNTHESIZE STEP MATERIALS — Level-calibrated resource curation + ACU decomposition
+// ============================================================
+export async function synthesizeStepMaterials(
+  title: string,
+  domainCategory: string,
+  targetGoal: string,
+  level: string,
+  candidates: RawCandidate[],
+  groqKey?: string
+): Promise<{ resources: CuratedResource[]; acus: ACU[] }> {
+  const apiKey = groqKey || process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    throw new GroqConfigError("GROQ_API_KEY is required for synthesizeStepMaterials.");
+  }
+
+  const levelGuidance = level === "advanced" || level === "expert"
+    ? "This learner is ADVANCED. Produce denser ACUs covering edge cases, failure modes, architectural trade-offs, and non-obvious interactions. Resources should target advanced documentation, primary papers, and expert-level references."
+    : level === "intermediate"
+    ? "This learner is INTERMEDIATE. Balance foundational reinforcement with practical application ACUs. Resources should mix tutorials with deeper reference material."
+    : "This learner is a BEGINNER. Produce foundational ACUs covering core concepts, mental models, and first-principles understanding. Resources should be accessible introductions, official getting-started guides, and beginner-friendly references.";
+
+  const systemPrompt = `You are an expert Principal Systems Architect and Cognitive Educator.
+You have full pedagogical authority over how many learning resources to curate and how many Atomic Competency Units (ACUs) to identify.
+
+YOUR MANDATES:
+1. "resources": Curate destination learning materials.
+   - Decide independently how many of the provided Tavily candidates, if any, are worth surfacing. You may select zero of them and supply only your own canonical resources, all of them, or any subset. There is no target number — the only test is genuine pedagogical necessity for a learner at the stated level pursuing the stated goal.
+   - If candidates are empty, low-quality, or search-query URLs, supply canonical resources from internal knowledge (MDN, official docs, primary papers, Wikipedia).
+   - NEVER return an empty resources array.
+   - NEVER output search-query URLs.
+   - Assign each resource a descriptive "badge" (2-4 words) and "studyGuidance".
+
+2. "acus": Deconstruct this topic into an EXHAUSTIVE list of Atomic Competency Units (ACUs) calibrated to the learner's level.
+   - ${levelGuidance}
+   - Every distinct, independently testable concept, mechanism, edge case, or trade-off must be its own ACU.
+   - Format each ACU as { "id": "acu-N", "label": "Short Title", "description": "What is evaluated" }.
+
+OUTPUT STRICT JSON MATCHING THIS SCHEMA:
+{
+  "resources": [{ "title": "string", "url": "string", "badge": "string", "studyGuidance": "string" }],
+  "acus": [{ "id": "acu-1", "label": "string", "description": "string" }]
+}`;
+
+  const userPrompt = JSON.stringify({
+    title,
+    domainCategory,
+    targetGoal,
+    level,
+    harvestedCandidates: candidates,
+    candidateCount: candidates.length,
+    instruction: candidates.length === 0
+      ? "Tavily candidate pool is EMPTY. Use internal canonical knowledge to output direct destination URLs (MDN, Wikipedia, official docs). Do NOT return an empty resources array."
+      : "Curate direct destination URLs from harvestedCandidates if valid. Supplement with canonical documentation if needed.",
+  });
+
+  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+
+  let resources: CuratedResource[] = [];
+  let acus: ACU[] = [];
+
+  try {
+    const res = await callGroqWithFallback(messages, { apiKey, jsonMode: true });
+    const rawOutput = cleanJsonFence(res.content);
+    const parsed: any = JSON.parse(rawOutput);
+
+    if (Array.isArray(parsed.resources)) {
+      resources = parsed.resources.filter((r: any) => r && r.url && !isDenylistedSearchUrl(r.url));
+    }
+    if (Array.isArray(parsed.acus)) {
+      acus = parsed.acus;
+    }
+  } catch (err) {
+    console.warn("[pipeline] Phase A (synthesizeStepMaterials) failed. Using fallback.", err);
+  }
+
+  // Fallbacks if Groq returned empty
+  if (resources.length === 0) {
+    resources = [
+      {
+        title: `Encyclopedia Reference: ${title}`,
+        url: `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(title)}`,
+        badge: "Canonical Reference",
+        studyGuidance: `Review foundational concepts for ${title}.`,
+        sourceOrigin: "fallback",
+      },
+    ];
+  }
+
+  if (acus.length === 0) {
+    acus = [
+      { id: "acu-1", label: "Core Principles", description: `Foundational concepts of ${title}` },
+      { id: "acu-2", label: "Practical Implementation", description: `Practical application of ${title}` },
+      { id: "acu-3", label: "Architecture & Trade-offs", description: `System design and trade-offs for ${title}` },
+    ];
+  }
+
+  return { resources, acus };
+}
+
+// ============================================================
+// PHASE B: SYNTHESIZE QUIZ FROM MATERIAL — Material-scoped, 1 question per ACU
+// ============================================================
+export async function synthesizeQuizFromMaterial(
+  acus: ACU[],
+  resources: CuratedResource[],
+  groqKey?: string
 ): Promise<QuizQuestion[]> {
-  if (!assessableUnits || assessableUnits.length === 0) {
+  const apiKey = groqKey || process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    throw new GroqConfigError("GROQ_API_KEY is required for synthesizeQuizFromMaterial.");
+  }
+
+  if (!acus || acus.length === 0) {
     return [];
   }
 
-  const systemPrompt = `You are a diagnostic evaluation examiner. Your task is to generate scenario-based evaluation questions strictly mapped 1-to-1 with the provided Atomic Competency Units (ACUs).
+  const systemPrompt = `You are a diagnostic evaluation examiner. Your task is to generate scenario-based evaluation questions.
+
+CRITICAL CONSTRAINT: Write every question using ONLY the concepts, mechanisms, and material scope defined in the ACUs below. Do not introduce test content outside what these ACUs cover. Do not import generic textbook trivia unrelated to this specific curated material.
 
 YOUR MANDATES:
-1. Generate EXACTLY one scenario-based multiple choice question per ACU in the provided list.
+1. Write EXACTLY one scenario-based multiple choice question per ACU in the provided list. questions.length MUST equal acus.length.
 2. Tag each question with the "acuId" of the ACU it evaluates.
 3. Provide 4 options (A, B, C, D) for each question.
 4. Set "correctOptionId" to "A", "B", "C", or "D".
@@ -396,10 +511,9 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
 }`;
 
   const userPrompt = JSON.stringify({
-    topic,
-    stepTitle,
-    assessableUnits,
-    takeaways,
+    acus,
+    resourceContext: resources.map((r) => ({ title: r.title, badge: r.badge })),
+    expectedQuestionCount: acus.length,
   });
 
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
@@ -411,32 +525,60 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
     const res = await callGroqWithFallback(messages, { apiKey, jsonMode: true });
     const raw = cleanJsonFence(res.content);
     const parsed: any = JSON.parse(raw);
-    const questions: QuizQuestion[] = Array.isArray(parsed.questions)
+    let questions: QuizQuestion[] = Array.isArray(parsed.questions)
       ? parsed.questions
       : Array.isArray(parsed.quizBlueprint?.questions)
       ? parsed.quizBlueprint.questions
       : [];
 
-    if (questions.length > 0) {
+    // Mismatch guard: re-prompt once if count doesn't match
+    if (questions.length > 0 && questions.length !== acus.length) {
+      console.warn(`[pipeline] Quiz count mismatch: got ${questions.length}, expected ${acus.length}. Re-prompting once.`);
+      try {
+        const rePromptMessages = [
+          ...messages,
+          { role: "assistant" as const, content: res.content },
+          {
+            role: "user" as const,
+            content: `You generated ${questions.length} questions but there are ${acus.length} ACUs. You MUST generate exactly ${acus.length} questions, one per ACU. Regenerate the full JSON with the correct count.`,
+          },
+        ];
+        const res2 = await callGroqWithFallback(rePromptMessages, { apiKey, jsonMode: true });
+        const raw2 = cleanJsonFence(res2.content);
+        const parsed2: any = JSON.parse(raw2);
+        const q2 = Array.isArray(parsed2.questions) ? parsed2.questions : [];
+        if (q2.length >= 2 && q2.length <= 20) {
+          questions = q2;
+        }
+      } catch (reErr) {
+        console.warn("[pipeline] Re-prompt for quiz count correction failed.", reErr);
+      }
+    }
+
+    // Defensive bounds: reject if still wildly off
+    if (questions.length >= 2 && questions.length <= 20) {
       return questions;
     }
+    if (questions.length > 0) {
+      return questions; // accept whatever we got if between 1 and 20
+    }
   } catch (err) {
-    console.warn("[pipeline] Phase B generateQuizBlueprint failed or timed out. Returning fallback questions.", err);
+    console.warn("[pipeline] Phase B synthesizeQuizFromMaterial failed. Returning fallback questions.", err);
   }
 
   // Fallback questions generated directly from ACUs
-  return assessableUnits.map((acu, idx) => ({
+  return acus.map((acu, idx) => ({
     id: `q${idx + 1}`,
     acuId: acu.id,
-    scenario: `Evaluating competency in ${acu.label} for ${stepTitle}.`,
+    scenario: `Evaluating competency in ${acu.label}.`,
     question: `Which pattern correctly demonstrates ${acu.description}?`,
     options: [
-      { id: "A", text: `Enforce validation and verify ${acu.label} mechanics.` },
-      { id: "B", text: "Bypass edge case checking in production logic." },
-      { id: "C", text: "Ignore system constraints during initialization." },
-      { id: "D", text: "Hardcode configuration parameters without environment abstraction." },
+      { id: "A" as const, text: `Enforce validation and verify ${acu.label} mechanics.` },
+      { id: "B" as const, text: "Bypass edge case checking in production logic." },
+      { id: "C" as const, text: "Ignore system constraints during initialization." },
+      { id: "D" as const, text: "Hardcode configuration parameters without environment abstraction." },
     ],
-    correctOptionId: "A",
+    correctOptionId: "A" as const,
     distractorExplanations: {
       A: `Correct application of ${acu.label}.`,
       B: "Ignoring edge cases causes unhandled runtime exceptions.",
@@ -444,118 +586,4 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
       D: "Hardcoding parameters breaks environment portability.",
     },
   }));
-}
-
-// TWO-PHASE PIPELINE: PHASE A (Curate & Decompose) + PHASE B (Examine)
-export async function curateAndExamine(
-  topic: string,
-  stepContext: string,
-  candidates: RawCandidate[],
-  apiKey: string
-): Promise<CurateAndExamineResult> {
-  const systemPrompt = `You are an expert Principal Systems Architect and Cognitive Educator.
-You have full pedagogical authority over how many learning resources to curate and how many Atomic Competency Units (ACUs) to identify for this step.
-
-YOUR MANDATES:
-1. "conceptualOverview": Write a deep, 2-3 paragraph pedagogical breakdown explaining core mechanics, mental models, architectural trade-offs, and principles for this step.
-2. "resources": Curate destination learning materials.
-   - Do not default to a round number. Curate the MINIMUM set of distinct, non-redundant assets needed for complete step mastery (1 to 6+ based on topic complexity).
-   - If provided Tavily candidates are valid direct destination pages, curate from them.
-   - If candidates are empty, low-quality, or search-query URLs, supply canonical resources from internal knowledge (MDN, official docs, primary papers, Wikipedia).
-   - NEVER return an empty resources array.
-   - NEVER output search-query URLs.
-   - Assign each resource a descriptive "badge" (2-4 words) and "studyGuidance".
-
-3. "acus": Deconstruct this step into an EXHAUSTIVE list of Atomic Competency Units (ACUs).
-   - Every distinct, independently testable concept, mechanism, edge case, or trade-off must be its own ACU.
-   - Format each ACU as { "id": "acu-1", "label": "Short Title", "description": "What is evaluated" }.
-
-OUTPUT STRICT JSON MATCHING THIS SCHEMA:
-{
-  "conceptualOverview": "string",
-  "resources": [{ "title": "string", "url": "string", "badge": "string", "studyGuidance": "string" }],
-  "acus": [{ "id": "acu-1", "label": "string", "description": "string" }]
-}`;
-
-  const userPrompt = JSON.stringify({
-    topic,
-    stepContext,
-    harvestedCandidates: candidates,
-    candidateCount: candidates.length,
-    instruction: candidates.length === 0
-      ? "Tavily candidate pool is EMPTY. Use internal canonical knowledge to output direct destination URLs (MDN, Wikipedia, official docs). Do NOT return an empty resources array."
-      : "Curate direct destination URLs from harvestedCandidates if valid. Supplement with canonical documentation if needed.",
-  });
-
-  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userPrompt },
-  ];
-
-  let conceptualOverview = `Master core principles and architectural patterns for ${topic}: ${stepContext}.`;
-  let resources: CuratedResource[] = [];
-  let acus: ACU[] = [];
-
-  // PHASE A Execution
-  try {
-    const res = await callGroqWithFallback(messages, { apiKey, jsonMode: true });
-    const rawOutput = cleanJsonFence(res.content);
-    const parsed: any = JSON.parse(rawOutput);
-
-    if (parsed.conceptualOverview) {
-      conceptualOverview = parsed.conceptualOverview;
-    }
-    if (Array.isArray(parsed.resources)) {
-      resources = parsed.resources.filter((r: any) => r && r.url && !isDenylistedSearchUrl(r.url));
-    }
-    if (Array.isArray(parsed.acus)) {
-      acus = parsed.acus;
-    }
-  } catch (err) {
-    console.warn("[pipeline] Phase A execution failed. Using fallback curriculum.", err);
-  }
-
-  // Fallbacks if Phase A returned empty arrays
-  if (resources.length === 0) {
-    resources = [
-      {
-        title: `Encyclopedia Reference: ${topic}`,
-        url: `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(topic)}`,
-        badge: "Canonical Reference",
-        studyGuidance: `Review foundational concepts for ${topic}.`,
-        sourceOrigin: "fallback",
-      },
-    ];
-  }
-
-  if (acus.length === 0) {
-    acus = [
-      { id: "acu-1", label: "Core Principles", description: `Foundational concepts of ${topic}` },
-      { id: "acu-2", label: "Practical Implementation", description: `Implementation of ${stepContext}` },
-      { id: "acu-3", label: "Architecture & Trade-offs", description: `System architecture and trade-offs` },
-    ];
-  }
-
-  // PHASE B Execution (Quiz Generation)
-  let questions: QuizQuestion[] = [];
-  try {
-    const takeaways = acus.map((a) => a.label);
-    questions = await generateQuizBlueprint(topic, stepContext, acus, takeaways, apiKey);
-  } catch (phaseBErr) {
-    console.warn("[pipeline] Phase B (Quiz Blueprint) failed or timed out. Graceful fallback: track creation proceeds.", phaseBErr);
-    questions = [];
-  }
-
-  const quizBlueprint: QuizBlueprint = {
-    questionCount: questions.length,
-    questions,
-  };
-
-  return {
-    conceptualOverview,
-    resources,
-    acus,
-    questions,
-    quizBlueprint,
-  };
 }

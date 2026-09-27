@@ -1,13 +1,11 @@
 // skillprax-backend/src/routes/quizzes.ts
 
 import { FastifyInstance, FastifyPluginAsync } from "fastify";
-import { z } from "zod";
 import prisma from "../lib/prisma";
-import { generateQuizBlueprint, GroqConfigError } from "../lib/ai/pipeline";
+import { synthesizeQuizFromMaterial, GroqConfigError } from "../lib/ai/pipeline";
 
 export const PASSING_THRESHOLD = 0.8; // 80% passing threshold
 const ADMIN_CONFIG_ID = "global";
-
 const CUID_REGEX = /^[a-z0-9_-]{20,32}$/i;
 
 async function getGroqApiKey(): Promise<string> {
@@ -35,6 +33,28 @@ const safeJsonParse = (data: any, fallback: any = []) => {
   return fallback;
 };
 
+// Normalize answers: accepts EITHER array of { questionId, selectedOptionId } OR dict { [questionId]: selectedOptionId }
+interface NormalizedAnswer {
+  questionId: string;
+  selectedOptionId: string;
+}
+
+function normalizeAnswers(input: any): NormalizedAnswer[] {
+  if (Array.isArray(input)) {
+    return input.map((a: any) => ({
+      questionId: String(a.questionId || a.id || ""),
+      selectedOptionId: String(a.selectedOptionId || a.selectedOption || a.optionId || "").toUpperCase(),
+    }));
+  }
+  if (typeof input === "object" && input !== null) {
+    return Object.entries(input).map(([qId, optId]) => ({
+      questionId: String(qId),
+      selectedOptionId: String(optId).toUpperCase(),
+    }));
+  }
+  return [];
+}
+
 function formatStudentSafeQuestions(questions: any[]): any[] {
   if (!Array.isArray(questions)) return [];
   return questions.map((q: any) => ({
@@ -55,7 +75,9 @@ function formatStudentSafeQuestions(questions: any[]): any[] {
 }
 
 const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
-  // 1. POST /api/steps/:stepId/prompt-quiz — Generate or retrieve active quiz attempt
+  // ============================================================
+  // 1. POST /api/steps/:stepId/prompt-quiz
+  // ============================================================
   fastify.post("/api/steps/:stepId/prompt-quiz", async (request, reply) => {
     try {
       const { stepId } = request.params as { stepId: string };
@@ -69,7 +91,6 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
 
       const step: any = await prisma.skillStep.findUnique({
         where: { id: cleanStepId },
-        include: { workspace: true },
       });
 
       if (!step) {
@@ -78,34 +99,30 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
 
       let storedBlueprint = safeJsonParse(step.quizBlueprint, []);
 
-      // SELF-HEALING BLUEPRINT: If quizBlueprint is empty, generate on demand via Phase B
+      // GUARDRAIL 5: If quizBlueprint is empty, SYNCHRONOUSLY generate Phase B now
       if (storedBlueprint.length === 0) {
-        fastify.log.info(`[Quiz] Blueprint empty for step "${cleanStepId}". Triggering Phase B auto-healing...`);
-        try {
-          const groqKey = await getGroqApiKey();
-          const acus = safeJsonParse(step.assessableUnits, []);
-          const takeaways = safeJsonParse(step.coreKeyTakeaways || step.keyTakeaways, []);
+        fastify.log.info(`[Quiz] Blueprint empty for step "${cleanStepId}". Triggering synchronous Phase B generation...`);
 
-          const generatedQuestions = await generateQuizBlueprint(
-            step.workspace?.title || step.title,
-            step.title,
-            acus,
-            takeaways,
-            groqKey
-          );
+        const acus = safeJsonParse(step.assessableUnits, []);
+        const resources = safeJsonParse(step.resources, []);
 
-          if (generatedQuestions.length > 0) {
-            await prisma.skillStep.update({
-              where: { id: cleanStepId },
-              data: {
-                quizBlueprint: generatedQuestions as any,
-                questionCount: generatedQuestions.length,
-              } as any,
-            });
-            storedBlueprint = generatedQuestions;
+        if (acus.length > 0) {
+          try {
+            const groqKey = await getGroqApiKey();
+            const generatedQuestions = await synthesizeQuizFromMaterial(acus, resources, groqKey);
+
+            if (generatedQuestions.length > 0) {
+              await prisma.skillStep.update({
+                where: { id: cleanStepId },
+                data: {
+                  quizBlueprint: generatedQuestions as any,
+                },
+              });
+              storedBlueprint = generatedQuestions;
+            }
+          } catch (healErr) {
+            fastify.log.warn(`[Quiz] Phase B synchronous generation failed: ${(healErr as Error).message}`);
           }
-        } catch (healErr) {
-          fastify.log.warn(`[Quiz] Phase B auto-healing quiz blueprint failed: ${(healErr as Error).message}`);
         }
       }
 
@@ -114,7 +131,7 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         where: {
           stepId: cleanStepId,
           status: "in_progress",
-        } as any,
+        },
         orderBy: { createdAt: "desc" },
       });
 
@@ -132,7 +149,7 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         }
       }
 
-      // Fallback questions if blueprint is still empty
+      // Fallback questions if blueprint is still empty after Phase B attempt
       if (storedBlueprint.length === 0) {
         const acus = safeJsonParse(step.assessableUnits, [
           { id: "acu-1", label: "Core Principles", description: "Foundational step principles" },
@@ -158,15 +175,13 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         }));
       }
 
-      const attemptData: any = {
-        stepId: step.id,
-        status: "in_progress",
-        questionCount: storedBlueprint.length,
-        questions: storedBlueprint as any,
-      };
-
       const newAttempt = await prisma.quizAttempt.create({
-        data: attemptData,
+        data: {
+          stepId: step.id,
+          status: "in_progress",
+          questionCount: storedBlueprint.length,
+          questions: storedBlueprint as any,
+        },
       });
 
       const studentSafeQuestions = formatStudentSafeQuestions(storedBlueprint);
@@ -187,14 +202,16 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
     }
   });
 
-  // 2. POST /api/steps/:stepId/submit-quiz — Score quiz server-side & record attempt
+  // ============================================================
+  // 2. POST /api/steps/:stepId/submit-quiz
+  // ============================================================
   fastify.post("/api/steps/:stepId/submit-quiz", async (request, reply) => {
     try {
       const { stepId } = request.params as { stepId: string };
       const cleanStepId = (stepId || "").trim();
 
-      if (!cleanStepId) {
-        return reply.status(400).send({ error: "Invalid stepId parameter" });
+      if (!cleanStepId || (!CUID_REGEX.test(cleanStepId) && cleanStepId.length < 5)) {
+        return reply.status(400).send({ error: `Invalid stepId "${stepId}".` });
       }
 
       const body: any = request.body || {};
@@ -204,19 +221,8 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         return reply.status(400).send({ error: `Invalid or malformed attemptId "${attemptId}".` });
       }
 
-      // NORMALIZE ANSWERS: Accept array of { questionId, selectedOptionId } OR dictionary { [questionId]: selectedOptionId }
-      let answersArray: Array<{ questionId: string; selectedOptionId: string }> = [];
-      if (Array.isArray(body.answers)) {
-        answersArray = body.answers.map((a: any) => ({
-          questionId: String(a.questionId || a.id),
-          selectedOptionId: String(a.selectedOptionId || a.selectedOption || a.optionId || "").toUpperCase(),
-        }));
-      } else if (typeof body.answers === "object" && body.answers !== null) {
-        answersArray = Object.entries(body.answers).map(([qId, optId]) => ({
-          questionId: String(qId),
-          selectedOptionId: String(optId).toUpperCase(),
-        }));
-      }
+      // GUARDRAIL 4: normalize answers from either shape
+      const answersArray = normalizeAnswers(body.answers);
 
       const attempt: any = await prisma.quizAttempt.findUnique({
         where: { id: attemptId },
@@ -226,8 +232,9 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         return reply.status(404).send({ error: `Quiz attempt "${attemptId}" not found.` });
       }
 
+      // Verify attempt belongs to this step — mismatch is 404 (not 403, no auth concept)
       if (attempt.stepId !== cleanStepId) {
-        return reply.status(400).send({ error: "Quiz attempt does not belong to this step." });
+        return reply.status(404).send({ error: "Quiz attempt does not match this step." });
       }
 
       // IDEMPOTENCY: If already submitted, return previous result
@@ -310,13 +317,13 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
             results: diagnosticResults as any,
             userAnswers: answersArray as any,
             completedAt: new Date(),
-          } as any,
+          },
         }),
         ...(passed
           ? [
               prisma.skillStep.update({
                 where: { id: cleanStepId },
-                data: { status: "PASSED" } as any,
+                data: { status: "PASSED" },
               }),
             ]
           : []),

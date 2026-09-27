@@ -24,24 +24,12 @@ model AdminConfig {
 
 model Workspace {
   id                  String      @id @default(cuid())
-  userId              String      @default("default_user")
-  title               String      @default("")
-  skillName           String      @default("")
+  title               String
   domainCategory      String      @default("General Knowledge")
-  pillar              String      @default("General Knowledge")
-  category            String?     @default("General Knowledge")
-  baselineKnowledge   String?     @default("")
-  targetGoal          String      @default("Mastery")
-  level               String      @default("Beginner")
-  aiProvider          String      @default("groq")
-  aiModel             String?
-  status              String      @default("ACTIVE")
-  estimatedTotalSteps Int         @default(5)
-  currentStep         Int         @default(1)
-  currentStepIndex    Int         @default(1)
+  targetGoal          String      @default("Full Mastery")
+  level               String      @default("beginner")
   isGenerating        Boolean     @default(false)
   generationStartedAt DateTime?
-  recommendedBooks    Json?
   steps               SkillStep[]
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
@@ -54,52 +42,36 @@ model SkillStep {
   stepIndex            Int
   title                String
   description          String        @default("")
-  difficulty           String        @default("Beginner")
-  whatYouWillLearn     String        @default("") @db.Text
-  conceptualOverview   String?       @db.Text
-  coreKeyTakeaways     Json          @default("[]")
-  keyTakeaways         Json?         @default("[]")
-  practicalApplication String        @default("") @db.Text
-  objective            String?
-  estimatedMinutes     Int           @default(45)
-  questionCount        Int           @default(5)
+  status               String        @default("IN_PROGRESS")
   assessableUnits      Json          @default("[]")
   quizBlueprint        Json          @default("[]")
   resources            Json          @default("[]")
-  status               String        @default("IN_PROGRESS")
-  passingScore         Int           @default(80)
   attempts             QuizAttempt[]
   createdAt            DateTime      @default(now())
   updatedAt            DateTime      @updatedAt
 }
 
 model QuizAttempt {
-  id                  String    @id @default(cuid())
-  stepId              String
-  step                SkillStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
-  userId              String    @default("default_user")
-  score               Int       @default(0)
-  scorePercent        Int       @default(0)
-  correctCount        Int       @default(0)
-  questionCount       Int       @default(0)
-  passed              Boolean   @default(false)
-  status              String    @default("in_progress")
-  acuBreakdown        Json?     @default("[]")
-  questions           Json?     @default("[]")
-  answers             Json?     @default("[]")
-  results             Json?     @default("[]")
-  targetWeakAreasOnly Boolean   @default(false)
-  userAnswers         Json?     @default("[]")
-  diagnosticReport    String?
-  weakConcepts        Json?
-  remedialResources   Json?
-  completedAt         DateTime?
-  createdAt           DateTime  @default(now())
+  id              String    @id @default(cuid())
+  stepId          String
+  step            SkillStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  score           Int       @default(0)
+  scorePercent    Int       @default(0)
+  correctCount    Int       @default(0)
+  questionCount   Int       @default(0)
+  passed          Boolean   @default(false)
+  status          String    @default("in_progress")
+  questions       Json?     @default("[]")
+  answers         Json?     @default("[]")
+  results         Json?     @default("[]")
+  userAnswers     Json?     @default("[]")
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
 }
 
 model AbandonmentLog {
   id                  String   @id @default(cuid())
-  workspaceId         String
+  workspaceId         String   // plain scalar, NOT a relation — survives workspace deletion
   trackTitle          String
   domain              String   @default("General Knowledge")
   completedStepsCount Int      @default(0)
