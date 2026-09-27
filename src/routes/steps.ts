@@ -15,6 +15,7 @@ export async function stepRoutes(fastify: FastifyInstance) {
   // POST /api/steps/:stepId/prompt-quiz
   fastify.post('/api/steps/:stepId/prompt-quiz', async (request: FastifyRequest, reply: FastifyReply) => {
     const { stepId } = request.params as { stepId: string };
+    const body = (request.body || {}) as { questionCount?: number | string };
 
     const step = await prisma.skillStep.findUnique({
       where: { id: stepId },
@@ -25,10 +26,16 @@ export async function stepRoutes(fastify: FastifyInstance) {
       return reply.status(404).send({ error: 'SkillStep not found' });
     }
 
-    // 1. Update status to READY_FOR_QUIZ
+    const rawCount = body?.questionCount || step.questionCount || 5;
+    const questionCount = Math.min(Math.max(parseInt(String(rawCount), 10) || 5, 1), 15);
+
+    // 1. Update status to READY_FOR_QUIZ & persist questionCount
     await prisma.skillStep.update({
       where: { id: stepId },
-      data: { status: 'READY_FOR_QUIZ' },
+      data: {
+        status: 'READY_FOR_QUIZ',
+        questionCount,
+      },
     });
 
     // 2. Build context payload & generate questions via LLM
@@ -37,7 +44,7 @@ export async function stepRoutes(fastify: FastifyInstance) {
       step.title,
       step.whatYouWillLearn || step.title,
       step.difficulty,
-      step.questionCount || 5,
+      questionCount,
       step.workspace.aiProvider || 'groq',
       contextPayload
     );
@@ -48,10 +55,26 @@ export async function stepRoutes(fastify: FastifyInstance) {
     storeQuizSession(stepId, questions);
 
     // 4. Return questions WITHOUT correctIndex for security
-    const sanitizedQuestions = questions.map(({ correctIndex, ...q }: any) => q);
+    const sanitizedQuestions = questions.map(({ correctIndex, ...q }: any) => {
+      let options = q.options;
+      if (Array.isArray(options) && options.length > 0 && typeof options[0] === 'object' && options[0].text) {
+        options = options.map((opt: any) => opt.text);
+      }
+      let cIndex = q.correctIndex;
+      if (typeof cIndex === 'string') {
+        const mapKey: Record<string, number> = { A: 0, B: 1, C: 2, D: 3, a: 0, b: 1, c: 2, d: 3 };
+        cIndex = mapKey[cIndex] ?? 0;
+      }
+      return {
+        ...q,
+        options,
+        correctIndex: cIndex,
+      };
+    }).map(({ correctIndex, ...q }: any) => q);
 
     return reply.send({
       stepId,
+      questionCount,
       questions: sanitizedQuestions,
     });
   });

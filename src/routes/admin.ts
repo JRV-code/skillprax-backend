@@ -33,13 +33,13 @@ export async function adminRoutes(fastify: FastifyInstance) {
         data: {
           id: 'global_config',
           adminSecret: 'skillprax_admin_2026',
-          defaultProvider: 'gemini',
+          defaultProvider: 'groq',
         },
       });
     }
 
     return reply.send({
-      defaultProvider: config.defaultProvider || 'gemini',
+      defaultProvider: config.defaultProvider || 'groq',
       keys: {
         groq: maskKey(config.groqKey || process.env.GROQ_API_KEY),
         openai: maskKey(config.openaiKey || process.env.OPENAI_API_KEY),

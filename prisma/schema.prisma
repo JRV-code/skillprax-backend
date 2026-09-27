@@ -16,7 +16,7 @@ model AdminConfig {
   groqKey         String?
   openrouterKey   String?
   tavilyKey       String?
-  defaultProvider String   @default("gemini") // "gemini" | "groq" | "openai" | "anthropic" | "openrouter"
+  defaultProvider String   @default("groq") // "groq" | "tavily" | "gemini" | "openai" | "anthropic" | "openrouter"
   updatedAt       DateTime @updatedAt
 }
 
@@ -27,7 +27,7 @@ model Workspace {
   category            String // e.g. "Computer Science"
   baselineKnowledge   String // User self-assessment
   targetGoal          String // What the user wants to be able to build/achieve
-  aiProvider          String      @default("gemini") // "gemini" | "groq" | "openai" | "anthropic" | "gemini"
+  aiProvider          String      @default("groq") // "groq" | "gemini" | "openai" | "anthropic"
   aiModel             String? // Specific model identifier override
   status              String      @default("ACTIVE") // "ACTIVE" | "MASTERED" | "ARCHIVED"
   estimatedTotalSteps Int         @default(5)

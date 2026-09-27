@@ -131,7 +131,7 @@ export async function getProviderKey(provider: string): Promise<{ apiKey: string
   });
 
   let apiKey = '';
-  const defaultProvider = config?.defaultProvider || 'gemini';
+  const defaultProvider = config?.defaultProvider || 'groq';
   const prov = (provider || defaultProvider).toLowerCase();
 
   if (prov === 'groq') {
@@ -591,21 +591,22 @@ export async function generateQuizQuestions(
   provider: string,
   contextPayload?: string
 ) {
-  const systemPrompt = `You are SkillPrax Quiz Engine. You construct multiple choice evaluation quizzes. Output ONLY valid JSON.`;
+  const count = Math.min(Math.max(Number(questionCount) || 5, 1), 15);
+  const systemPrompt = `You are a rigorous technical examiner. You MUST return your output as a valid JSON object matching the requested schema. The response must be pure JSON without preamble.`;
 
-  const userPrompt = `Generate a ${questionCount}-question evaluation quiz for:
-Step Title: "${stepTitle}"
-Difficulty: "${difficulty}"
+  const userPrompt = `Generate a scenario-based diagnostic technical evaluation quiz for the topic: "${stepTitle}".
 Overview & Concepts: "${stepObjective}"
+Difficulty: "${difficulty}"
 ${contextPayload ? `Learner Context Payload:\n${contextPayload}` : ''}
 
-Rules:
-- Questions must strictly test the concepts in the objective.
-- Provide 4 distinct options per question.
+Requirements:
+- Provide exactly ${count} challenging, scenario-based multiple choice questions in JSON format.
+- Test real-world edge cases, race conditions, or architecture trade-offs (no generic trivia).
+- Each question must provide 4 distinct options (Option A, Option B, Option C, Option D).
 - "correctIndex" must be an integer (0, 1, 2, or 3).
 - "conceptTested" must name the target concept.
 
-Output JSON format:
+Format your entire response as a single valid JSON object:
 {
   "questions": [
     {
@@ -824,12 +825,25 @@ export async function testProviderConnection(provider: string, key?: string) {
       if (!cleanKey) {
         throw new Error("Tavily API key is missing. Please configure it in Admin Command Center.");
       }
-      const results = await searchWeb('React Server Components modern documentation', cleanKey);
+      const res = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${cleanKey}`,
+        },
+        body: JSON.stringify({
+          api_key: cleanKey,
+          query: 'ping',
+          max_results: 1,
+        }),
+      });
+
       const latencyMs = Date.now() - startTime;
-      if (results && results.length > 0) {
-        return { ok: true, latencyMs, response: `Tavily Web Search operational. Grounded ${results.length} live verified sources.` };
+      if (res.ok) {
+        return { ok: true, latencyMs, response: 'Tavily Web Search operational. Live search connection verified.' };
       }
-      return { ok: true, latencyMs, response: 'Tavily Search connected.' };
+      const errText = await res.text();
+      return { ok: false, latencyMs, error: `Tavily API error (${res.status}): ${errText}` };
     }
 
     if (prov === 'gemini') {
