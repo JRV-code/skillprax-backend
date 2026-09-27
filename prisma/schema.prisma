@@ -12,19 +12,23 @@ model AdminConfig {
   adminSecret     String   @default("skillprax_admin_2026")
   defaultProvider String   @default("groq")
   groqKey         String?
+  groqApiKey      String?
   anthropicKey    String?
   geminiKey       String?
   openaiKey       String?
   openrouterKey   String?
   tavilyKey       String?
+  tavilyApiKey    String?
   updatedAt       DateTime @updatedAt
 }
 
 model Workspace {
   id                  String      @id @default(cuid())
   userId              String      @default("default_user")
-  title               String
+  title               String      @default("")
+  skillName           String      @default("")
   domainCategory      String      @default("General Knowledge")
+  pillar              String      @default("General Knowledge")
   category            String?     @default("General Knowledge")
   baselineKnowledge   String?     @default("")
   targetGoal          String      @default("Mastery")
@@ -47,9 +51,12 @@ model SkillStep {
   workspace            Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   stepIndex            Int
   title                String
+  description          String        @default("")
   difficulty           String        @default("Beginner")
   whatYouWillLearn     String        @default("") @db.Text
+  conceptualOverview   String?       @db.Text
   coreKeyTakeaways     Json          @default("[]")
+  keyTakeaways         Json?         @default("[]")
   practicalApplication String        @default("") @db.Text
   objective            String?
   estimatedMinutes     Int           @default(45)
@@ -67,13 +74,21 @@ model QuizAttempt {
   id                  String    @id @default(cuid())
   stepId              String
   step                SkillStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
-  score               Int
-  passed              Boolean
+  score               Int       @default(0)
+  scorePercent        Int       @default(0)
+  correctCount        Int       @default(0)
+  questionCount       Int       @default(0)
+  passed              Boolean   @default(false)
+  status              String    @default("in_progress")
+  acuBreakdown        Json?     @default("[]")
+  questions           Json?     @default("[]")
   answers             Json?     @default("[]")
+  results             Json?     @default("[]")
   targetWeakAreasOnly Boolean   @default(false)
   userAnswers         Json?     @default("[]")
   diagnosticReport    String?
   weakConcepts        Json?
   remedialResources   Json?
+  completedAt         DateTime?
   createdAt           DateTime  @default(now())
 }
