@@ -45,6 +45,7 @@ model SkillStep {
   stepIndex   Int
   title       String
   difficulty  String // "Beginner" | "Intermediate" | "Advanced" | "Mastery"
+  objective   String? // Backward compatibility for legacy database rows
 
   // Pedagogical Depth
   whatYouWillLearn     String @default("")
