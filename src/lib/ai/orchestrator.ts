@@ -1,3 +1,4 @@
+import { GoogleGenAI } from '@google/genai';
 import prisma from '../prisma';
 
 export interface ProviderConfig {
@@ -127,38 +128,20 @@ export async function callLLM(
   }
 
   if (targetProvider === 'gemini') {
-    const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': cleanKey,
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}` }],
-          },
-        ],
-        generationConfig: { temperature: 0.3 },
-      }),
-    });
+    try {
+      const ai = new GoogleGenAI({ apiKey: cleanKey });
+      const response = await ai.models.generateContent({
+        model: 'gemini-1.5-flash',
+        contents: `${systemPrompt}\n\nUSER REQUEST:\n${userPrompt}`,
+        config: {
+          temperature: 0.3,
+        },
+      });
 
-    if (!response.ok) {
-      const errText = await response.text();
-      let errorMsg = errText;
-      try {
-        const errJson = JSON.parse(errText);
-        if (errJson.error?.message) {
-          errorMsg = errJson.error.message;
-        }
-      } catch (_) {}
-      throw new Error(`Gemini API error (${response.status}): ${errorMsg}`);
+      return response.text || '';
+    } catch (err: any) {
+      throw new Error(err?.message || String(err));
     }
-
-    const data: any = await response.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   }
 
   // Groq and OpenAI (OpenAI Chat Completions protocol)
@@ -471,42 +454,15 @@ export async function testProviderConnection(provider: string, key?: string) {
     }
 
     if (prov === 'gemini') {
-      const endpoint = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: 'ping' }],
-            },
-          ],
-          generationConfig: {
-            maxOutputTokens: 10,
-          },
-        }),
+      const cleanKey = apiKey.trim();
+      const ai = new GoogleGenAI({ apiKey: cleanKey });
+      const response = await ai.models.generateContent({
+        model: 'gemini-1.5-flash',
+        contents: 'ping',
       });
 
       const latencyMs = Date.now() - startTime;
-
-      if (!response.ok) {
-        const errText = await response.text();
-        let errorMsg = errText;
-        try {
-          const errJson = JSON.parse(errText);
-          if (errJson.error?.message) {
-            errorMsg = errJson.error.message;
-          }
-        } catch (_) {}
-        return { ok: false, latencyMs, error: `Gemini API error (${response.status}): ${errorMsg}` };
-      }
-
-      const data: any = await response.json();
-      const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text || 'ok';
+      const replyText = response.text || 'ok';
       return { ok: true, latencyMs, response: replyText };
     }
 
@@ -520,6 +476,6 @@ export async function testProviderConnection(provider: string, key?: string) {
     return { ok: true, latencyMs, response };
   } catch (err: any) {
     const latencyMs = Date.now() - startTime;
-    return { ok: false, latencyMs, error: err.message || 'Connection failed' };
+    return { ok: false, latencyMs, error: err?.message || String(err) || 'Connection failed' };
   }
 }
