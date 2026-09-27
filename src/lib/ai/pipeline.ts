@@ -48,7 +48,8 @@ export class GroqGenerationError extends Error {
   }
 }
 
-export async function resolveAvailableModel(apiKey: string): Promise<string> {
+export async function getActiveGroqModel(apiKey: string): Promise<string> {
+  if (!apiKey || !apiKey.trim()) return "llama-3.1-8b-instant";
   const cleanKey = apiKey.trim();
   const cacheKey = cleanKey.slice(0, 12);
   const cached = modelCache.get(cacheKey);
@@ -56,44 +57,64 @@ export async function resolveAvailableModel(apiKey: string): Promise<string> {
     return cached.modelId;
   }
 
-  let response: Response;
+  // Hardcoded verified text/chat models in preference order
+  const PREFERRED_CHAT_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "llama-3.1-8b-instant",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+    "gemma2-9b-it",
+    "mixtral-8x7b-32768"
+  ];
+
   try {
-    response = await fetch(`${GROQ_BASE_URL}/models`, {
-      headers: { Authorization: `Bearer ${cleanKey}` },
+    const res = await fetch("https://api.groq.com/openai/v1/models", {
+      headers: { Authorization: `Bearer ${cleanKey}` }
     });
-  } catch (err) {
-    throw new GroqConfigError(`Could not reach Groq to list available models: ${(err as Error).message}`);
+
+    if (res.ok) {
+      const data: any = await res.json();
+      const rawList: string[] = (data.data || []).map((m: any) => m.id);
+
+      // 1. Strict blacklist: strip out audio, tts, guardrails, and third-party models
+      const validChatModels = rawList.filter((id) => {
+        const lower = id.toLowerCase();
+        return (
+          !lower.includes("orpheus") &&
+          !lower.includes("canopylabs") &&
+          !lower.includes("whisper") &&
+          !lower.includes("guard") &&
+          !lower.includes("vision") &&
+          (lower.includes("llama") || lower.includes("mixtral") || lower.includes("gemma"))
+        );
+      });
+
+      // 2. Find the highest priority model available on the user's account
+      for (const pref of PREFERRED_CHAT_MODELS) {
+        if (validChatModels.includes(pref)) {
+          console.log(`[Groq] Successfully selected chat model: ${pref}`);
+          modelCache.set(cacheKey, { modelId: pref, resolvedAt: Date.now() });
+          return pref;
+        }
+      }
+
+      // 3. If no exact preference matched, use the first filtered chat model
+      if (validChatModels.length > 0) {
+        console.log(`[Groq] Using available verified chat model: ${validChatModels[0]}`);
+        modelCache.set(cacheKey, { modelId: validChatModels[0], resolvedAt: Date.now() });
+        return validChatModels[0];
+      }
+    }
+  } catch (err: any) {
+    console.warn("[Groq] Dynamic discovery failed, falling back:", err.message);
   }
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new GroqConfigError(
-      `Groq /models call failed (${response.status}): ${text || "no body"}. Check that the Groq API key is valid.`
-    );
-  }
-
-  const json = (await response.json()) as GroqModelsResponse;
-  const availableIds = new Set((json.data ?? []).map((m) => m.id));
-
-  if (availableIds.size === 0) {
-    throw new GroqConfigError(
-      "Groq returned zero available models for this API key. The key may be invalid, revoked, or restricted."
-    );
-  }
-
-  let chosen = MODEL_PREFERENCE_LIST.find((id) => availableIds.has(id));
-
-  if (!chosen) {
-    const textLike = [...availableIds].find((id) => !/whisper|embed|guard|vision|tts/i.test(id));
-    chosen = textLike ?? [...availableIds][0];
-    console.warn(`[groq] None of the preferred models were available. Falling back to detected model: ${chosen}`);
-  }
-
-  modelCache.set(cacheKey, { modelId: chosen, resolvedAt: Date.now() });
-  return chosen;
+  // 4. Default baseline available on all Groq tiers without terms gates
+  return "llama-3.1-8b-instant";
 }
 
-export const getActiveGroqModel = resolveAvailableModel;
+export const resolveAvailableModel = getActiveGroqModel;
 
 interface GroqChatOptions {
   apiKey: string;
