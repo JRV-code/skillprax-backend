@@ -33,19 +33,20 @@ export async function adminRoutes(fastify: FastifyInstance) {
         data: {
           id: 'global_config',
           adminSecret: 'skillprax_admin_2026',
-          defaultProvider: 'groq',
+          defaultProvider: 'gemini',
         },
       });
     }
 
     return reply.send({
-      defaultProvider: config.defaultProvider || 'groq',
+      defaultProvider: config.defaultProvider || 'gemini',
       keys: {
         groq: maskKey(config.groqKey || process.env.GROQ_API_KEY),
         openai: maskKey(config.openaiKey || process.env.OPENAI_API_KEY),
         anthropic: maskKey(config.anthropicKey || process.env.ANTHROPIC_API_KEY),
         gemini: maskKey(config.geminiKey || process.env.GEMINI_API_KEY),
         openrouter: maskKey(config.openrouterKey || process.env.OPENROUTER_API_KEY),
+        tavily: maskKey((config as any).tavilyKey || process.env.TAVILY_API_KEY),
       },
       configured: {
         groq: !!(config.groqKey || process.env.GROQ_API_KEY),
@@ -53,6 +54,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
         anthropic: !!(config.anthropicKey || process.env.ANTHROPIC_API_KEY),
         gemini: !!(config.geminiKey || process.env.GEMINI_API_KEY),
         openrouter: !!(config.openrouterKey || process.env.OPENROUTER_API_KEY),
+        tavily: !!((config as any).tavilyKey || process.env.TAVILY_API_KEY),
       },
     });
   });
@@ -68,6 +70,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       anthropicKey?: string;
       geminiKey?: string;
       openrouterKey?: string;
+      tavilyKey?: string;
       defaultProvider?: string;
       adminSecret?: string;
     };
@@ -78,6 +81,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (body.anthropicKey !== undefined) updateData.anthropicKey = body.anthropicKey;
     if (body.geminiKey !== undefined) updateData.geminiKey = body.geminiKey;
     if (body.openrouterKey !== undefined) updateData.openrouterKey = body.openrouterKey;
+    if (body.tavilyKey !== undefined) updateData.tavilyKey = body.tavilyKey;
     if (body.defaultProvider !== undefined) updateData.defaultProvider = body.defaultProvider;
     if (body.adminSecret !== undefined) updateData.adminSecret = body.adminSecret;
 

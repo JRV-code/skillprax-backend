@@ -67,6 +67,7 @@ export async function workspaceRoutes(fastify: FastifyInstance) {
 
     const formattedSteps = workspace.steps.map((step) => ({
       ...step,
+      coreKeyTakeaways: safeJsonParse(step.coreKeyTakeaways, []),
       resources: safeJsonParse(step.resources, []),
       attempts: step.attempts.map((attempt) => ({
         ...attempt,
@@ -119,9 +120,12 @@ export async function workspaceRoutes(fastify: FastifyInstance) {
       const step1 = initData.step1 || {
         title: 'Foundations & Core Principles',
         difficulty: 'Beginner',
-        objective: 'Master foundational terms and introductory concepts.',
+        whatYouWillLearn: 'Master foundational terms, introductory concepts, and key mental models required for this skill.',
+        coreKeyTakeaways: ['Foundational syntax and terminology', 'Core architectural patterns', 'Prerequisite concepts'],
+        practicalApplication: body.targetGoal,
+        estimatedMinutes: 45,
         passingScore: 80,
-        questionCount: 4,
+        questionCount: 5,
         resources: [],
       };
 
@@ -147,9 +151,12 @@ export async function workspaceRoutes(fastify: FastifyInstance) {
             stepIndex: 1,
             title: step1.title,
             difficulty: step1.difficulty || 'Beginner',
-            objective: step1.objective,
+            whatYouWillLearn: step1.whatYouWillLearn || 'Master foundational terms and key mental models required for this skill.',
+            coreKeyTakeaways: safeJsonStringify(step1.coreKeyTakeaways || ['Foundational syntax and terminology']),
+            practicalApplication: step1.practicalApplication || body.targetGoal,
+            estimatedMinutes: Number(step1.estimatedMinutes) || 45,
             passingScore: Number(step1.passingScore) || 80,
-            questionCount: Number(step1.questionCount) || 4,
+            questionCount: Number(step1.questionCount) || 5,
             resources: safeJsonStringify(step1.resources || []),
             status: 'IN_PROGRESS',
           },
@@ -164,6 +171,7 @@ export async function workspaceRoutes(fastify: FastifyInstance) {
         steps: [
           {
             ...result.createdStep,
+            coreKeyTakeaways: step1.coreKeyTakeaways || [],
             resources: step1.resources || [],
             attempts: [],
           },

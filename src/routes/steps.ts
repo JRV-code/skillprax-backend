@@ -35,9 +35,9 @@ export async function stepRoutes(fastify: FastifyInstance) {
     const contextPayload = await buildContextPayload(step.workspaceId);
     const quizData = await generateQuizQuestions(
       step.title,
-      step.objective,
+      step.whatYouWillLearn || step.title,
       step.difficulty,
-      step.questionCount || 4,
+      step.questionCount || 5,
       step.workspace.aiProvider || 'groq',
       contextPayload
     );
@@ -80,9 +80,9 @@ export async function stepRoutes(fastify: FastifyInstance) {
       const contextPayload = await buildContextPayload(step.workspaceId);
       const quizData = await generateQuizQuestions(
         step.title,
-        step.objective,
+        step.whatYouWillLearn || step.title,
         step.difficulty,
-        step.questionCount || 4,
+        step.questionCount || 5,
         step.workspace.aiProvider || 'groq',
         contextPayload
       );
@@ -144,7 +144,7 @@ export async function stepRoutes(fastify: FastifyInstance) {
     const contextPayload = await buildContextPayload(step.workspaceId);
     const diagnostic = await generateDiagnosticReport(
       step.title,
-      step.objective,
+      step.whatYouWillLearn || step.title,
       failedQuestions,
       step.workspace.aiProvider || 'groq',
       contextPayload
@@ -198,7 +198,7 @@ export async function stepRoutes(fastify: FastifyInstance) {
     const contextPayload = await buildContextPayload(step.workspaceId);
     const remedialData = await generateRemedialQuiz(
       step.title,
-      step.objective,
+      step.whatYouWillLearn || step.title,
       weakConcepts,
       step.workspace.aiProvider || 'groq',
       contextPayload
@@ -240,7 +240,10 @@ export async function stepRoutes(fastify: FastifyInstance) {
       stepIndex: workspace.currentStepIndex + 1,
       title: `Step ${workspace.currentStepIndex + 1}: Advanced Mastery`,
       difficulty: 'Advanced',
-      objective: 'Deepen implementation skills and architectural patterns.',
+      whatYouWillLearn: 'Deepen implementation skills and architectural patterns.',
+      coreKeyTakeaways: ['Architectural patterns', 'Production error handling'],
+      practicalApplication: workspace.targetGoal,
+      estimatedMinutes: 45,
       passingScore: 80,
       questionCount: 5,
       resources: [],
@@ -255,7 +258,10 @@ export async function stepRoutes(fastify: FastifyInstance) {
         stepIndex: nextStepIndex,
         title: stepObj.title,
         difficulty: stepObj.difficulty || 'Intermediate',
-        objective: stepObj.objective,
+        whatYouWillLearn: stepObj.whatYouWillLearn || 'Deepen implementation skills and architectural patterns.',
+        coreKeyTakeaways: safeJsonStringify(stepObj.coreKeyTakeaways || ['Architectural patterns']),
+        practicalApplication: stepObj.practicalApplication || workspace.targetGoal,
+        estimatedMinutes: Number(stepObj.estimatedMinutes) || 45,
         passingScore: Number(stepObj.passingScore) || 80,
         questionCount: Number(stepObj.questionCount) || 5,
         resources: safeJsonStringify(stepObj.resources || []),
@@ -274,6 +280,7 @@ export async function stepRoutes(fastify: FastifyInstance) {
     return reply.send({
       step: {
         ...newStep,
+        coreKeyTakeaways: stepObj.coreKeyTakeaways || [],
         resources: stepObj.resources || [],
         attempts: [],
       },

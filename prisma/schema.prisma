@@ -15,7 +15,8 @@ model AdminConfig {
   geminiKey       String?
   groqKey         String?
   openrouterKey   String?
-  defaultProvider String   @default("groq") // "groq" | "openai" | "anthropic" | "gemini" | "openrouter"
+  tavilyKey       String?
+  defaultProvider String   @default("gemini") // "gemini" | "groq" | "openai" | "anthropic" | "openrouter"
   updatedAt       DateTime @updatedAt
 }
 
@@ -26,7 +27,7 @@ model Workspace {
   category            String       // e.g. "Computer Science"
   baselineKnowledge   String       // User self-assessment
   targetGoal          String       // What the user wants to be able to build/achieve
-  aiProvider          String       @default("groq") // "groq" | "openai" | "anthropic" | "gemini"
+  aiProvider          String       @default("gemini") // "gemini" | "groq" | "openai" | "anthropic" | "gemini"
   aiModel             String?      // Specific model identifier override
   status              String       @default("ACTIVE") // "ACTIVE" | "MASTERED" | "ARCHIVED"
   estimatedTotalSteps Int          @default(5)
@@ -38,20 +39,29 @@ model Workspace {
 }
 
 model SkillStep {
-  id               String        @id @default(cuid())
-  workspaceId      String
-  workspace        Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  stepIndex        Int
-  title            String
-  difficulty       String        // "Beginner" | "Intermediate" | "Advanced" | "Mastery"
-  objective        String        // Detailed scope of knowledge
-  resources        Json          // [{ "title": string, "url": string, "type": "youtube"|"docs"|"reddit"|"article", "summary": string }]
-  status           String        @default("IN_PROGRESS") // "IN_PROGRESS" | "READY_FOR_QUIZ" | "PASSED"
-  passingScore     Int           @default(80) // AI dynamically calculates this threshold (70-90)
-  questionCount    Int           @default(5)  // AI dynamically calculates question count (3-8)
-  attempts         QuizAttempt[]
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  id                   String        @id @default(cuid())
+  workspaceId          String
+  workspace            Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  stepIndex            Int
+  title                String
+  difficulty           String        // "Beginner" | "Intermediate" | "Advanced" | "Mastery"
+  
+  // Pedagogical Depth
+  whatYouWillLearn     String        // Comprehensive conceptual overview (2-3 paragraphs)
+  coreKeyTakeaways     Json          // string[]: Exact mechanisms, mental models, or syntax
+  practicalApplication String        // How this connects to the user's real-world target goal
+  estimatedMinutes     Int           @default(45)
+  
+  // Dynamic, Prioritized Resources (Only 1 to 3 items based on real necessity)
+  // Structure: [{ "priority": 1, "badge": "START HERE", "title": string, "url": string, "type": "video"|"docs"|"interactive", "whyThisFirst": string }]
+  resources            Json          
+  
+  status               String        @default("IN_PROGRESS") // "IN_PROGRESS" | "READY_FOR_QUIZ" | "PASSED"
+  passingScore         Int           @default(80) 
+  questionCount        Int           @default(5)  
+  attempts             QuizAttempt[]
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
 }
 
 model QuizAttempt {
