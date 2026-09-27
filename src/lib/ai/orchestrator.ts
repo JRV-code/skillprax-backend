@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import prisma from '../prisma';
-import { searchWeb } from '../search/tavily';
+import { searchTavilyCandidates, searchWeb } from '../search/tavily';
 import { generateWithGemini } from './gemini';
 
 export const FREE_AI_FLEET = {
@@ -164,7 +164,7 @@ export function parseJsonResponse<T>(rawText: string): T {
 
 export function sanitizeResourceUrl(url?: string, title?: string, type?: string): string {
   const t = (title || 'tutorial').trim();
-  const resType = (type || 'docs').toLowerCase();
+  const resType = (type || 'guide').toLowerCase();
 
   if (url && typeof url === 'string' && url.startsWith('http')) {
     if (
@@ -177,12 +177,18 @@ export function sanitizeResourceUrl(url?: string, title?: string, type?: string)
   }
 
   if (resType.includes('video') || resType.includes('youtube')) {
-    return `https://www.youtube.com/results?search_query=${encodeURIComponent(`${t} tutorial`)}`;
+    return `https://www.youtube.com/results?search_query=${encodeURIComponent(`${t} full tutorial`)}`;
   }
-  if (resType.includes('book') || resType.includes('openlibrary')) {
-    return `https://openlibrary.org/search?q=${encodeURIComponent(t)}`;
+  if (resType.includes('wiki') || resType.includes('wikipedia')) {
+    return `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(t)}`;
   }
-  return `https://devdocs.io/#q=${encodeURIComponent(t)}`;
+  if (resType.includes('pdf') || resType.includes('paper')) {
+    return `https://www.google.com/search?q=${encodeURIComponent(`${t} filetype:pdf OR open textbook`)}`;
+  }
+  if (resType.includes('interactive') || resType.includes('playground') || resType.includes('repo')) {
+    return `https://github.com/search?q=${encodeURIComponent(t)}`;
+  }
+  return `https://www.google.com/search?q=${encodeURIComponent(`${t} comprehensive guide`)}`;
 }
 
 export function sanitizeBookUrl(title: string, author?: string): string {
@@ -192,32 +198,29 @@ export function sanitizeBookUrl(title: string, author?: string): string {
 
 export function normalizeResources(resources: any[]): any[] {
   if (!Array.isArray(resources)) return [];
-  const sliced = resources.slice(0, 3);
-  return sliced.map((res, index) => {
-    const priority = index + 1;
-    const badge =
-      priority === 1 ? 'START HERE' : priority === 2 ? 'APPLY & PRACTICE' : 'DEEP DIVE';
+  return resources.map((res, index) => {
+    const priority = typeof res.priority === 'number' ? res.priority : index + 1;
+    const badge = res.badge || (priority === 1 ? 'START HERE' : priority === 2 ? 'FOUNDATIONAL WIKI' : 'DEEP STUDY');
     const title = res.title || `Resource ${priority}`;
-    const url = sanitizeResourceUrl(res.url, title, res.type);
-    const type = res.type || (priority === 1 ? 'video' : 'docs');
-    const whyThisFirst =
+    const type = res.type || 'guide';
+    const url = sanitizeResourceUrl(res.url, title, type);
+    const studyGuidance =
+      res.studyGuidance ||
       res.whyThisFirst ||
-      (priority === 1
-        ? 'Watch/Read this foundational breakdown first to build the core visual mental model.'
-        : priority === 2
-        ? 'Use this authoritative manual to write code and test key mechanisms.'
-        : 'Explore advanced edge cases and production considerations.');
+      `Study this material to build your core understanding of ${title}.`;
 
     return {
       priority,
-      badge: res.badge || badge,
+      badge,
       title,
       url,
       type,
-      whyThisFirst,
+      studyGuidance,
+      whyThisFirst: studyGuidance,
     };
   });
 }
+
 
 async function callGemini(cleanKey: string, prompt: string): Promise<string> {
   const result = await generateWithGemini(prompt, cleanKey);
@@ -429,90 +432,22 @@ export async function generateInitiationData(
   const keyInfo = await getProviderKey(provider);
   const activeProvider = (provider || keyInfo.defaultProvider || 'gemini').toLowerCase();
 
-  // If Gemini, use native Google search grounding directly without requiring Tavily
-  if (activeProvider === 'gemini') {
-    const prompt = `You are SkillPrax, an expert AI pedagogical architect with native real-time Google search capabilities. Establish a deep, dynamic, personalized learning path with verified live URLs without rigid templates. Output ONLY valid JSON matching the requested schema.
-
-Create a custom mastery learning plan for a user.
-Workspace Focus:
-- Skill/Technology Title: "${title}"
-- Domain/Context: "${category}"
-- Baseline Knowledge: "${baselineKnowledge}"
-- Target Goal: "${targetGoal}"
-
-Pedagogical Requirements for Step 1:
-1. "whatYouWillLearn": Comprehensive conceptual overview (2-3 detailed paragraphs explaining mental models, core architecture, and prerequisites).
-2. "coreKeyTakeaways": Array of 3 to 5 concrete strings (exact mechanisms, terms, syntax rules, or mental models).
-3. "practicalApplication": Explanation of how Step 1 directly enables achieving "${targetGoal}".
-4. "estimatedMinutes": Realistic integer duration in minutes (e.g. 45).
-5. "resources": Array of EXACTLY 1 to 3 prioritized, sequence-ranked learning resources:
-   - Priority 1 (badge: "START HERE"): Best foundational video or interactive walkthrough.
-   - Priority 2 (badge: "APPLY & PRACTICE"): Authoritative reference manual or official documentation page.
-   - Priority 3 (badge: "DEEP DIVE"): Optional item for complex edge cases.
-   - Include "whyThisFirst" explaining why student must study Priority 1 before Priority 2.
-6. "recommendedBooks": 1 to 2 standard textbooks with author, publication context, and searchUrl.
-
-Output JSON structure:
-{
-  "estimatedTotalSteps": 5,
-  "recommendedBooks": [
-    {
-      "title": "...",
-      "author": "...",
-      "whyRead": "...",
-      "searchUrl": "https://openlibrary.org/search?q=..."
-    }
-  ],
-  "step1": {
-    "title": "...",
-    "difficulty": "Beginner",
-    "whatYouWillLearn": "...",
-    "coreKeyTakeaways": ["...", "...", "..."],
-    "practicalApplication": "...",
-    "estimatedMinutes": 45,
-    "passingScore": 80,
-    "questionCount": 5,
-    "resources": [
-      {
-        "priority": 1,
-        "badge": "START HERE",
-        "title": "...",
-        "url": "...",
-        "type": "video",
-        "whyThisFirst": "..."
-      }
-    ]
-  }
-}`;
-
-    const data = await generateWithGemini(prompt, keyInfo.apiKey);
-    if (data?.step1?.resources) {
-      data.step1.resources = normalizeResources(data.step1.resources);
-    }
-    if (Array.isArray(data?.recommendedBooks)) {
-      data.recommendedBooks = data.recommendedBooks.map((b: any) => ({
-        ...b,
-        searchUrl: sanitizeBookUrl(b.title, b.author),
-      }));
-    }
-    return data;
-  }
-
-  // Non-Gemini providers (Groq, OpenRouter, OpenAI, Anthropic)
   let searchPromptContext = '';
   try {
     const tavilyKeyInfo = await getProviderKey('tavily');
-    if (tavilyKeyInfo.apiKey) {
-      const tavilyResults = await searchWeb(`${title} modern documentation and guide`, tavilyKeyInfo.apiKey);
-      if (tavilyResults && tavilyResults.length > 0) {
-        searchPromptContext = `\n\nVERIFIED LIVE SOURCES:\n${JSON.stringify(tavilyResults, null, 2)}\nYou MUST construct resources using ONLY these validated URLs or direct YouTube search queries (https://www.youtube.com/results?search_query=...). Never guess deep URLs.`;
-      }
+    const candidates = await searchTavilyCandidates(`${title} ${category}`, tavilyKeyInfo.apiKey || '');
+    if (candidates && candidates.length > 0) {
+      searchPromptContext = `\n\nLIVE WEB RESEARCH CANDIDATES HARVESTED BY TAVILY:\n${JSON.stringify(candidates, null, 2)}\nYou MUST evaluate these candidates, pick the high-yield items, and build valid resource links using their verified URLs or search anchors. Never guess fake URLs.`;
     }
   } catch (_) {
     // Graceful fallback if Tavily is missing or fails
   }
 
-  const systemPrompt = `You are SkillPrax, an expert AI pedagogical architect. You establish deep, dynamic, personalized learning paths without rigid templates. Output ONLY valid JSON matching the requested schema.`;
+  const systemPrompt = `You are a world-class mentor and educator dedicated to helping a student genuinely master complex subjects.
+Your goal is not to fill arbitrary templates, but to teach effectively.
+Analyze the user's learning goal and Tavily's live web discoveries.
+Make thoughtful, custom decisions on what materials are necessary, how to study them, and how to verify understanding.
+Output your final curriculum strictly in valid JSON without preamble.`;
 
   const userPrompt = `Create a custom mastery learning plan for a user.
 Workspace Focus:
@@ -522,53 +457,66 @@ Workspace Focus:
 - Target Goal: "${targetGoal}"
 ${searchPromptContext}
 
-Pedagogical Requirements for Step 1:
-1. "whatYouWillLearn": Comprehensive conceptual overview (2-3 detailed paragraphs explaining mental models, core architecture, and prerequisites).
-2. "coreKeyTakeaways": Array of 3 to 5 concrete strings (exact mechanisms, terms, syntax rules, or mental models).
-3. "practicalApplication": Explanation of how Step 1 directly enables achieving "${targetGoal}".
-4. "estimatedMinutes": Realistic integer duration in minutes (e.g. 45).
-5. "resources": Array of EXACTLY 1 to 3 prioritized, sequence-ranked learning resources:
-   - Priority 1 (badge: "START HERE"): Best foundational video or interactive walkthrough.
-   - Priority 2 (badge: "APPLY & PRACTICE"): Authoritative reference manual or official documentation page.
-   - Priority 3 (badge: "DEEP DIVE"): Optional item for complex edge cases.
-   - Include "whyThisFirst" explaining why student must study Priority 1 before Priority 2.
-6. "recommendedBooks": 1 to 2 standard textbooks with author, publication context, and searchUrl.
+INSTRUCTOR INSTRUCTIONS:
+1. "whatYouWillLearn":
+   - Explain the concept thoroughly (2-3 paragraphs). Break down the mental model, prerequisites, and common pitfalls learners encounter.
 
-Output JSON structure:
+2. "coreKeyTakeaways":
+   - Provide concrete takeaways (syntax, mechanisms, formulas, or architectural trade-offs).
+
+3. "practicalApplication":
+   - Explain how Step 1 directly enables achieving "${targetGoal}".
+
+4. AUTONOMOUS RESOURCE SELECTION ("resources"):
+   - Do NOT adhere to a fixed resource count. Decide organically (choose 1 to 5 items based on necessity).
+   - Choose whatever media format actually helps the learner (video, pdf, interactive playground, documentation, wiki, research paper, repository).
+   - Use verified links from Tavily or guaranteed search anchors (YouTube, Wikipedia, OpenLibrary, DevDocs).
+   - For each resource, give it an intuitive, contextual badge (e.g., "Interactive Sandbox", "Core Lecture", "Quick Cheat Sheet", "Deep Reference Paper", "Field Guide").
+   - Clearly explain in "studyGuidance" how the student should use this resource and why it fits into their sequence.
+
+5. AUTONOMOUS QUIZ SIZING ("questionCount"):
+   - Decide the exact number of questions needed to rigorously test this step (e.g. 3 to 10 questions based on step difficulty).
+
+OUTPUT JSON SCHEMA:
 {
   "estimatedTotalSteps": 5,
   "recommendedBooks": [
     {
-      "title": "...",
-      "author": "...",
-      "whyRead": "...",
+      "title": "string",
+      "author": "string",
+      "whyRead": "string",
       "searchUrl": "https://openlibrary.org/search?q=..."
     }
   ],
   "step1": {
-    "title": "...",
+    "title": "string",
     "difficulty": "Beginner",
-    "whatYouWillLearn": "...",
-    "coreKeyTakeaways": ["...", "...", "..."],
-    "practicalApplication": "...",
+    "whatYouWillLearn": "string",
+    "coreKeyTakeaways": ["string"],
+    "practicalApplication": "string",
     "estimatedMinutes": 45,
     "passingScore": 80,
     "questionCount": 5,
     "resources": [
       {
         "priority": 1,
-        "badge": "START HERE",
-        "title": "...",
-        "url": "...",
-        "type": "video",
-        "whyThisFirst": "..."
+        "badge": "string (contextual label)",
+        "type": "video" | "pdf" | "wiki" | "guide" | "website" | "interactive",
+        "title": "string",
+        "url": "string",
+        "studyGuidance": "string"
       }
     ]
   }
 }`;
 
-  const rawJson = await callLLM(provider, systemPrompt, userPrompt);
-  const data = parseJsonResponse<any>(rawJson);
+  let data: any;
+  if (activeProvider === 'gemini') {
+    data = await generateWithGemini(userPrompt, keyInfo.apiKey);
+  } else {
+    const rawJson = await callLLM(provider, systemPrompt, userPrompt);
+    data = parseJsonResponse<any>(rawJson);
+  }
 
   if (data?.step1?.resources) {
     data.step1.resources = normalizeResources(data.step1.resources);
@@ -592,21 +540,23 @@ export async function generateQuizQuestions(
   contextPayload?: string
 ) {
   const count = Math.min(Math.max(Number(questionCount) || 5, 1), 15);
-  const systemPrompt = `You are a rigorous technical examiner. You MUST return your output as a valid JSON object matching the requested schema. The response must be pure JSON without preamble.`;
+  const systemPrompt = `You are a rigorous technical examiner. You MUST return your output strictly as a valid JSON object matching the requested schema. The response must be pure JSON with no preamble.`;
 
-  const userPrompt = `Generate a scenario-based diagnostic technical evaluation quiz for the topic: "${stepTitle}".
+  const userPrompt = `Generate a scenario-based diagnostic technical evaluation quiz in valid json format for the topic: "${stepTitle}".
 Overview & Concepts: "${stepObjective}"
 Difficulty: "${difficulty}"
+Target Question Count: ${count}
 ${contextPayload ? `Learner Context Payload:\n${contextPayload}` : ''}
 
 Requirements:
-- Provide exactly ${count} challenging, scenario-based multiple choice questions in JSON format.
-- Test real-world edge cases, race conditions, or architecture trade-offs (no generic trivia).
+- Provide exactly ${count} challenging, scenario-based multiple choice questions in valid json format.
+- Test real-world scenarios, underlying mechanisms, troubleshooting distractor choices, and trade-off analysis.
 - Each question must provide 4 distinct options (Option A, Option B, Option C, Option D).
 - "correctIndex" must be an integer (0, 1, 2, or 3).
 - "conceptTested" must name the target concept.
+- "explanation" must explain why the correct answer is right and why distractors are wrong.
 
-Format your entire response as a single valid JSON object:
+Format your response as a valid json object:
 {
   "questions": [
     {
@@ -614,7 +564,8 @@ Format your entire response as a single valid JSON object:
       "question": "...",
       "options": ["Option A", "Option B", "Option C", "Option D"],
       "correctIndex": 0,
-      "conceptTested": "..."
+      "conceptTested": "...",
+      "explanation": "..."
     }
   ]
 }`;
@@ -706,97 +657,80 @@ export async function generateNextStep(
   const keyInfo = await getProviderKey(provider);
   const activeProvider = (provider || keyInfo.defaultProvider || 'gemini').toLowerCase();
 
-  if (activeProvider === 'gemini') {
-    const prompt = `You are SkillPrax Curriculum Architect with native real-time Google search capabilities. You generate step N+1 with deep pedagogical structure and real verified URLs. Output ONLY valid JSON matching schema.
-
-The learner mastered Step ${workspace.currentStepIndex} in "${workspace.title}".
-Baseline: "${workspace.baselineKnowledge}"
-Target Goal: "${workspace.targetGoal}"
-Generate Step ${nextStepIndex} of total ${workspace.estimatedTotalSteps}.
-Context Payload:
-${contextPayload}
-
-Output JSON structure:
-{
-  "step": {
-    "stepIndex": ${nextStepIndex},
-    "title": "...",
-    "difficulty": "${nextStepIndex <= 2 ? 'Intermediate' : nextStepIndex <= 4 ? 'Advanced' : 'Mastery'}",
-    "whatYouWillLearn": "Comprehensive 2-3 paragraph overview...",
-    "coreKeyTakeaways": ["Takeaway 1", "Takeaway 2", "Takeaway 3"],
-    "practicalApplication": "How this connects to target goal...",
-    "estimatedMinutes": 45,
-    "passingScore": 80,
-    "questionCount": 5,
-    "resources": [
-      {
-        "priority": 1,
-        "badge": "START HERE",
-        "title": "...",
-        "url": "...",
-        "type": "video",
-        "whyThisFirst": "..."
-      }
-    ]
-  }
-}`;
-
-    const data = await generateWithGemini(prompt, keyInfo.apiKey);
-    if (data?.step?.resources) {
-      data.step.resources = normalizeResources(data.step.resources);
-    }
-    return data;
-  }
-
-  // Non-Gemini providers
   let searchPromptContext = '';
   try {
     const tavilyKeyInfo = await getProviderKey('tavily');
-    if (tavilyKeyInfo.apiKey) {
-      const tavilyResults = await searchWeb(`${workspace.title} modern documentation and guide`, tavilyKeyInfo.apiKey);
-      if (tavilyResults && tavilyResults.length > 0) {
-        searchPromptContext = `\n\nVERIFIED LIVE SOURCES:\n${JSON.stringify(tavilyResults, null, 2)}\nYou MUST construct resources using ONLY these validated URLs or direct YouTube search queries (https://www.youtube.com/results?search_query=...). Never guess deep URLs.`;
-      }
+    const candidates = await searchTavilyCandidates(`${workspace.title} step ${nextStepIndex}`, tavilyKeyInfo.apiKey || '');
+    if (candidates && candidates.length > 0) {
+      searchPromptContext = `\n\nLIVE WEB RESEARCH CANDIDATES HARVESTED BY TAVILY:\n${JSON.stringify(candidates, null, 2)}\nYou MUST evaluate these candidates, pick the high-yield items, and build valid resource links using their verified URLs or search anchors. Never guess fake URLs.`;
     }
   } catch (_) {}
 
-  const systemPrompt = `You are SkillPrax Curriculum Architect. You generate step N+1 with deep pedagogical structure. Output ONLY valid JSON.`;
+  const systemPrompt = `You are a world-class mentor and educator dedicated to helping a student genuinely master complex subjects.
+Your goal is not to fill arbitrary templates, but to teach effectively.
+Analyze the user's learning goal, context history, and Tavily's live web discoveries.
+Make thoughtful, custom decisions on what materials are necessary for Step ${nextStepIndex}, how to study them, and how to verify understanding.
+Output your final curriculum strictly in valid JSON without preamble.`;
 
   const userPrompt = `The learner mastered Step ${workspace.currentStepIndex} in "${workspace.title}".
-Baseline: "${workspace.baselineKnowledge}"
+Baseline Knowledge: "${workspace.baselineKnowledge}"
 Target Goal: "${workspace.targetGoal}"
 Generate Step ${nextStepIndex} of total ${workspace.estimatedTotalSteps}.
 Context Payload:
 ${contextPayload}
 ${searchPromptContext}
 
-Output JSON structure:
+INSTRUCTOR INSTRUCTIONS FOR STEP ${nextStepIndex}:
+1. "whatYouWillLearn":
+   - Explain the concept thoroughly (2-3 paragraphs). Break down the mental model, prerequisites, and common pitfalls learners encounter.
+
+2. "coreKeyTakeaways":
+   - Provide concrete takeaways (syntax, mechanisms, formulas, or architectural trade-offs).
+
+3. "practicalApplication":
+   - Explain how Step ${nextStepIndex} directly connects to the student's real-world target goal.
+
+4. AUTONOMOUS RESOURCE SELECTION ("resources"):
+   - Decide organically on resource count (1 to 5 items based on necessity).
+   - Choose whatever media format actually helps the learner (video, pdf, interactive playground, documentation, wiki, research paper, repository).
+   - For each resource, give it an intuitive, contextual badge (e.g., "Interactive Sandbox", "Core Lecture", "Quick Cheat Sheet", "Deep Reference Paper", "Field Guide").
+   - Clearly explain in "studyGuidance" how the student should use this resource and why it fits into their sequence.
+
+5. AUTONOMOUS QUIZ SIZING ("questionCount"):
+   - Decide the exact number of questions needed to test this step (e.g. 3 to 10 questions based on difficulty).
+
+OUTPUT JSON SCHEMA:
 {
   "step": {
     "stepIndex": ${nextStepIndex},
-    "title": "...",
+    "title": "string",
     "difficulty": "${nextStepIndex <= 2 ? 'Intermediate' : nextStepIndex <= 4 ? 'Advanced' : 'Mastery'}",
-    "whatYouWillLearn": "Comprehensive 2-3 paragraph overview...",
-    "coreKeyTakeaways": ["Takeaway 1", "Takeaway 2", "Takeaway 3"],
-    "practicalApplication": "How this connects to target goal...",
+    "whatYouWillLearn": "string",
+    "coreKeyTakeaways": ["string"],
+    "practicalApplication": "string",
     "estimatedMinutes": 45,
     "passingScore": 80,
     "questionCount": 5,
     "resources": [
       {
         "priority": 1,
-        "badge": "START HERE",
-        "title": "...",
-        "url": "...",
-        "type": "video",
-        "whyThisFirst": "..."
+        "badge": "string (contextual label)",
+        "type": "video" | "pdf" | "wiki" | "guide" | "website" | "interactive",
+        "title": "string",
+        "url": "string",
+        "studyGuidance": "string"
       }
     ]
   }
 }`;
 
-  const rawJson = await callLLM(provider, systemPrompt, userPrompt);
-  const data = parseJsonResponse<{ step: any }>(rawJson);
+  let data: any;
+  if (activeProvider === 'gemini') {
+    data = await generateWithGemini(userPrompt, keyInfo.apiKey);
+  } else {
+    const rawJson = await callLLM(provider, systemPrompt, userPrompt);
+    data = parseJsonResponse<{ step: any }>(rawJson);
+  }
 
   if (data?.step?.resources) {
     data.step.resources = normalizeResources(data.step.resources);
