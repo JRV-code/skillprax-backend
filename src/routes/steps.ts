@@ -26,15 +26,13 @@ export async function stepRoutes(fastify: FastifyInstance) {
       return reply.status(404).send({ error: 'SkillStep not found' });
     }
 
-    const rawCount = body?.questionCount || step.questionCount || 5;
-    const questionCount = Math.min(Math.max(parseInt(String(rawCount), 10) || 5, 1), 15);
+    const questionCount = step.questionCount || 5;
 
-    // 1. Update status to READY_FOR_QUIZ & persist questionCount
+    // 1. Update status to READY_FOR_QUIZ
     await prisma.skillStep.update({
       where: { id: stepId },
       data: {
         status: 'READY_FOR_QUIZ',
-        questionCount,
       },
     });
 

@@ -443,41 +443,43 @@ export async function generateInitiationData(
     // Graceful fallback if Tavily is missing or fails
   }
 
-  const systemPrompt = `You are a world-class mentor and educator dedicated to helping a student genuinely master complex subjects.
-Your goal is not to fill arbitrary templates, but to teach effectively.
-Analyze the user's learning goal and Tavily's live web discoveries.
-Make thoughtful, custom decisions on what materials are necessary, how to study them, and how to verify understanding.
-Output your final curriculum strictly in valid JSON without preamble.`;
+  const systemPrompt = `You are an elite academic curriculum architect and master evaluator.
+You do not use fixed templates, mechanical slot-filling, or arbitrary defaults.
+For any subject in human knowledge, you evaluate the exact conceptual density and design a custom pedagogical strategy.
+You will determine the precise number of questions required to test every concept completely, and curate only the resources that genuinely move the learner toward mastery.
+Always return pure valid JSON matching the exact schema requested.`;
 
-  const userPrompt = `Create a custom mastery learning plan for a user.
-Workspace Focus:
-- Skill/Technology Title: "${title}"
-- Domain/Context: "${category}"
-- Baseline Knowledge: "${baselineKnowledge}"
-- Target Goal: "${targetGoal}"
+  const userPrompt = `
+Domain: "${category}"
+Skill / Focus: "${title}"
+Student's Baseline Knowledge: "${baselineKnowledge}"
+Target Goal: "${targetGoal || 'Unconditional Mastery'}"
+Step 1: Foundational Principles & Mental Models
 ${searchPromptContext}
 
-INSTRUCTOR INSTRUCTIONS:
-1. "whatYouWillLearn":
-   - Explain the concept thoroughly (2-3 paragraphs). Break down the mental model, prerequisites, and common pitfalls learners encounter.
+TASK 1: PEDAGOGICAL DECONSTRUCTION
+1. "whatYouWillLearn": Write a deep, multi-paragraph conceptual guide explaining the foundational mechanics, mental models, governing principles, and common misconceptions for this step.
+2. "coreKeyTakeaways": List the concrete laws, syntax, principles, or structures the learner must know.
+3. "practicalApplication": State how this theoretical knowledge connects directly to achieving their goal: "${targetGoal}".
 
-2. "coreKeyTakeaways":
-   - Provide concrete takeaways (syntax, mechanisms, formulas, or architectural trade-offs).
+TASK 2: ATOMIC COMPETENCY UNIT (ACU) EVALUATION & QUIZ SIZING
+- Decompose this step into its distinct "Atomic Competency Units" (individual mechanisms, formulas, potential failure points, edge cases, and architectural trade-offs).
+- List these under "assessableCompetencies".
+- Set "questionCount" strictly equal to the number of critical competencies that MUST be verified (ranging anywhere from 3 to 12 based on true complexity). Do NOT default to 5. If a topic has 4 critical principles, questionCount is 4. If it has 8 complex failure modes, questionCount is 8.
 
-3. "practicalApplication":
-   - Explain how Step 1 directly enables achieving "${targetGoal}".
+TASK 3: UNCONSTRAINED, PATTERN-FREE RESOURCE CURATION
+- Do NOT follow a fixed pattern (no forced "1 video, 1 doc, 1 pdf" template).
+- Ask yourself: What specific medium teaches this step best?
+  * An abstract theory may need an interactive simulator or visualization.
+  * A math/physics concept may need an open academic paper or research PDF.
+  * A systems/engineering topic may need an official specification or repository.
+  * An applied craft may need a sequential masterclass walkthrough.
+- Provide anywhere from 1 to 5 resources based purely on pedagogical merit. Do not pad with filler; do not omit essentials.
+- Utilize verified links from Tavily or guaranteed search anchors (OpenLibrary, YouTube, DevDocs, Wikipedia, Google Scholar).
+- Assign an intuitive, bespoke "badge" explaining its functional role (e.g., "Interactive WebGL Simulation", "Authoritative Specification", "Field Diagnostic Manual", "Foundational Lecture", "Primary Source Paper").
+- In "pedagogicalRole", write an exact briefing on what the student must extract from this material.
 
-4. AUTONOMOUS RESOURCE SELECTION ("resources"):
-   - Do NOT adhere to a fixed resource count. Decide organically (choose 1 to 5 items based on necessity).
-   - Choose whatever media format actually helps the learner (video, pdf, interactive playground, documentation, wiki, research paper, repository).
-   - Use verified links from Tavily or guaranteed search anchors (YouTube, Wikipedia, OpenLibrary, DevDocs).
-   - For each resource, give it an intuitive, contextual badge (e.g., "Interactive Sandbox", "Core Lecture", "Quick Cheat Sheet", "Deep Reference Paper", "Field Guide").
-   - Clearly explain in "studyGuidance" how the student should use this resource and why it fits into their sequence.
-
-5. AUTONOMOUS QUIZ SIZING ("questionCount"):
-   - Decide the exact number of questions needed to rigorously test this step (e.g. 3 to 10 questions based on step difficulty).
-
-OUTPUT JSON SCHEMA:
+OUTPUT PURE JSON SCHEMA:
 {
   "estimatedTotalSteps": 5,
   "recommendedBooks": [
@@ -494,17 +496,15 @@ OUTPUT JSON SCHEMA:
     "whatYouWillLearn": "string",
     "coreKeyTakeaways": ["string"],
     "practicalApplication": "string",
-    "estimatedMinutes": 45,
-    "passingScore": 80,
-    "questionCount": 5,
+    "assessableCompetencies": ["string"],
+    "questionCount": number,
     "resources": [
       {
-        "priority": 1,
-        "badge": "string (contextual label)",
-        "type": "video" | "pdf" | "wiki" | "guide" | "website" | "interactive",
         "title": "string",
         "url": "string",
-        "studyGuidance": "string"
+        "badge": "string",
+        "type": "video" | "pdf" | "wiki" | "guide" | "website" | "interactive" | "code_repo",
+        "pedagogicalRole": "string"
       }
     ]
   }
@@ -666,40 +666,44 @@ export async function generateNextStep(
     }
   } catch (_) {}
 
-  const systemPrompt = `You are a world-class mentor and educator dedicated to helping a student genuinely master complex subjects.
-Your goal is not to fill arbitrary templates, but to teach effectively.
-Analyze the user's learning goal, context history, and Tavily's live web discoveries.
-Make thoughtful, custom decisions on what materials are necessary for Step ${nextStepIndex}, how to study them, and how to verify understanding.
-Output your final curriculum strictly in valid JSON without preamble.`;
+  const systemPrompt = `You are an elite academic curriculum architect and master evaluator.
+You do not use fixed templates, mechanical slot-filling, or arbitrary defaults.
+For any subject in human knowledge, you evaluate the exact conceptual density and design a custom pedagogical strategy.
+You will determine the precise number of questions required to test every concept completely, and curate only the resources that genuinely move the learner toward mastery.
+Always return pure valid JSON matching the exact schema requested.`;
 
-  const userPrompt = `The learner mastered Step ${workspace.currentStepIndex} in "${workspace.title}".
-Baseline Knowledge: "${workspace.baselineKnowledge}"
-Target Goal: "${workspace.targetGoal}"
-Generate Step ${nextStepIndex} of total ${workspace.estimatedTotalSteps}.
+  const userPrompt = `
+Domain: "${workspace.category}"
+Skill / Focus: "${workspace.title}"
+Target Goal: "${workspace.targetGoal || 'Unconditional Mastery'}"
+The learner mastered Step ${workspace.currentStepIndex}. Generate Step ${nextStepIndex} of total ${workspace.estimatedTotalSteps}.
 Context Payload:
 ${contextPayload}
 ${searchPromptContext}
 
-INSTRUCTOR INSTRUCTIONS FOR STEP ${nextStepIndex}:
-1. "whatYouWillLearn":
-   - Explain the concept thoroughly (2-3 paragraphs). Break down the mental model, prerequisites, and common pitfalls learners encounter.
+TASK 1: PEDAGOGICAL DECONSTRUCTION FOR STEP ${nextStepIndex}
+1. "whatYouWillLearn": Write a deep, multi-paragraph conceptual guide explaining the foundational mechanics, mental models, governing principles, and common misconceptions for this step.
+2. "coreKeyTakeaways": List the concrete laws, syntax, principles, or structures the learner must know.
+3. "practicalApplication": State how Step ${nextStepIndex} connects directly to achieving their target goal: "${workspace.targetGoal}".
 
-2. "coreKeyTakeaways":
-   - Provide concrete takeaways (syntax, mechanisms, formulas, or architectural trade-offs).
+TASK 2: ATOMIC COMPETENCY UNIT (ACU) EVALUATION & QUIZ SIZING
+- Decompose Step ${nextStepIndex} into its distinct "Atomic Competency Units" (individual mechanisms, formulas, potential failure points, edge cases, and architectural trade-offs).
+- List these under "assessableCompetencies".
+- Set "questionCount" strictly equal to the number of critical competencies that MUST be verified (ranging anywhere from 3 to 12 based on true complexity). Do NOT default to 5. If a topic has 4 critical principles, questionCount is 4. If it has 8 complex failure modes, questionCount is 8.
 
-3. "practicalApplication":
-   - Explain how Step ${nextStepIndex} directly connects to the student's real-world target goal.
+TASK 3: UNCONSTRAINED, PATTERN-FREE RESOURCE CURATION
+- Do NOT follow a fixed pattern (no forced "1 video, 1 doc, 1 pdf" template).
+- Ask yourself: What specific medium teaches this step best?
+  * An abstract theory may need an interactive simulator or visualization.
+  * A math/physics concept may need an open academic paper or research PDF.
+  * A systems/engineering topic may need an official specification or repository.
+  * An applied craft may need a sequential masterclass walkthrough.
+- Provide anywhere from 1 to 5 resources based purely on pedagogical merit. Do not pad with filler; do not omit essentials.
+- Utilize verified links from Tavily or guaranteed search anchors (OpenLibrary, YouTube, DevDocs, Wikipedia, Google Scholar).
+- Assign an intuitive, bespoke "badge" explaining its functional role (e.g., "Interactive WebGL Simulation", "Authoritative Specification", "Field Diagnostic Manual", "Foundational Lecture", "Primary Source Paper").
+- In "pedagogicalRole", write an exact briefing on what the student must extract from this material.
 
-4. AUTONOMOUS RESOURCE SELECTION ("resources"):
-   - Decide organically on resource count (1 to 5 items based on necessity).
-   - Choose whatever media format actually helps the learner (video, pdf, interactive playground, documentation, wiki, research paper, repository).
-   - For each resource, give it an intuitive, contextual badge (e.g., "Interactive Sandbox", "Core Lecture", "Quick Cheat Sheet", "Deep Reference Paper", "Field Guide").
-   - Clearly explain in "studyGuidance" how the student should use this resource and why it fits into their sequence.
-
-5. AUTONOMOUS QUIZ SIZING ("questionCount"):
-   - Decide the exact number of questions needed to test this step (e.g. 3 to 10 questions based on difficulty).
-
-OUTPUT JSON SCHEMA:
+OUTPUT PURE JSON SCHEMA:
 {
   "step": {
     "stepIndex": ${nextStepIndex},
@@ -708,17 +712,15 @@ OUTPUT JSON SCHEMA:
     "whatYouWillLearn": "string",
     "coreKeyTakeaways": ["string"],
     "practicalApplication": "string",
-    "estimatedMinutes": 45,
-    "passingScore": 80,
-    "questionCount": 5,
+    "assessableCompetencies": ["string"],
+    "questionCount": number,
     "resources": [
       {
-        "priority": 1,
-        "badge": "string (contextual label)",
-        "type": "video" | "pdf" | "wiki" | "guide" | "website" | "interactive",
         "title": "string",
         "url": "string",
-        "studyGuidance": "string"
+        "badge": "string",
+        "type": "video" | "pdf" | "wiki" | "guide" | "website" | "interactive" | "code_repo",
+        "pedagogicalRole": "string"
       }
     ]
   }
