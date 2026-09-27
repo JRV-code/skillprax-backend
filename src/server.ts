@@ -2,6 +2,9 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import { env, getAuthRedirectUrl } from './config/env';
+import adminRoutes from './routes/admin';
+import workspaceRoutes from './routes/workspaces';
+import stepRoutes from './routes/steps';
 
 const server = Fastify({
   logger: {
@@ -31,11 +34,17 @@ const start = async () => {
         }
       },
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-secret'],
       credentials: true
     });
 
     // Register WebSockets for Socratic Rubber Duck & Sabotage Telemetry
     await server.register(websocket);
+
+    // Register REST Routes
+    await server.register(adminRoutes);
+    await server.register(workspaceRoutes);
+    await server.register(stepRoutes);
 
     // Health check endpoint (mandatory for Render cloud service health checks)
     server.get('/health', async () => {
