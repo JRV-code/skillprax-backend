@@ -21,59 +21,59 @@ model AdminConfig {
 }
 
 model Workspace {
-  id                  String       @id @default(cuid())
-  userId              String       @default("default_user")
-  title               String       // e.g. "Distributed Systems Architecture"
-  category            String       // e.g. "Computer Science"
-  baselineKnowledge   String       // User self-assessment
-  targetGoal          String       // What the user wants to be able to build/achieve
-  aiProvider          String       @default("gemini") // "gemini" | "groq" | "openai" | "anthropic" | "gemini"
-  aiModel             String?      // Specific model identifier override
-  status              String       @default("ACTIVE") // "ACTIVE" | "MASTERED" | "ARCHIVED"
-  estimatedTotalSteps Int          @default(5)
-  currentStepIndex    Int          @default(1)
-  recommendedBooks    Json?        // [{ "title": string, "author": string, "whyRead": string, "searchUrl": string }]
+  id                  String      @id @default(cuid())
+  userId              String      @default("default_user")
+  title               String // e.g. "Distributed Systems Architecture"
+  category            String // e.g. "Computer Science"
+  baselineKnowledge   String // User self-assessment
+  targetGoal          String // What the user wants to be able to build/achieve
+  aiProvider          String      @default("gemini") // "gemini" | "groq" | "openai" | "anthropic" | "gemini"
+  aiModel             String? // Specific model identifier override
+  status              String      @default("ACTIVE") // "ACTIVE" | "MASTERED" | "ARCHIVED"
+  estimatedTotalSteps Int         @default(5)
+  currentStepIndex    Int         @default(1)
+  recommendedBooks    Json? // [{ "title": string, "author": string, "whyRead": string, "searchUrl": string }]
   steps               SkillStep[]
-  createdAt           DateTime     @default(now())
-  updatedAt           DateTime     @updatedAt
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
 }
 
 model SkillStep {
-  id                   String        @id @default(cuid())
-  workspaceId          String
-  workspace            Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  stepIndex            Int
-  title                String
-  difficulty           String        // "Beginner" | "Intermediate" | "Advanced" | "Mastery"
-  
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  stepIndex   Int
+  title       String
+  difficulty  String // "Beginner" | "Intermediate" | "Advanced" | "Mastery"
+
   // Pedagogical Depth
-  whatYouWillLearn     String        // Comprehensive conceptual overview (2-3 paragraphs)
-  coreKeyTakeaways     Json          // string[]: Exact mechanisms, mental models, or syntax
-  practicalApplication String        // How this connects to the user's real-world target goal
-  estimatedMinutes     Int           @default(45)
-  
+  whatYouWillLearn     String @default("")
+  coreKeyTakeaways     Json   @default("[]")
+  practicalApplication String @default("")
+  estimatedMinutes     Int    @default(45)
+
   // Dynamic, Prioritized Resources (Only 1 to 3 items based on real necessity)
   // Structure: [{ "priority": 1, "badge": "START HERE", "title": string, "url": string, "type": "video"|"docs"|"interactive", "whyThisFirst": string }]
-  resources            Json          
-  
-  status               String        @default("IN_PROGRESS") // "IN_PROGRESS" | "READY_FOR_QUIZ" | "PASSED"
-  passingScore         Int           @default(80) 
-  questionCount        Int           @default(5)  
-  attempts             QuizAttempt[]
-  createdAt            DateTime      @default(now())
-  updatedAt            DateTime      @updatedAt
+  resources Json @default("[]")
+
+  status        String        @default("IN_PROGRESS") // "IN_PROGRESS" | "READY_FOR_QUIZ" | "PASSED"
+  passingScore  Int           @default(80)
+  questionCount Int           @default(5)
+  attempts      QuizAttempt[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 }
 
 model QuizAttempt {
   id                  String    @id @default(cuid())
   stepId              String
   step                SkillStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
-  score               Int       // Percentage 0-100
+  score               Int // Percentage 0-100
   passed              Boolean
   targetWeakAreasOnly Boolean   @default(false)
-  userAnswers         Json      // [{ "questionId": string, "selectedOptionIndex": number }]
-  diagnosticReport    String?   // AI analysis of flawed logic
-  weakConcepts        Json?     // string[] of specific failed terms/concepts
-  remedialResources   Json?     // [{ "title": string, "url": string, "type": string, "focusArea": string }]
+  userAnswers         Json // [{ "questionId": string, "selectedOptionIndex": number }]
+  diagnosticReport    String? // AI analysis of flawed logic
+  weakConcepts        Json? // string[] of specific failed terms/concepts
+  remedialResources   Json? // [{ "title": string, "url": string, "type": string, "focusArea": string }]
   createdAt           DateTime  @default(now())
 }
