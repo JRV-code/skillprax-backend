@@ -15,56 +15,51 @@ export async function runPedagogicalCuratorPipeline({
   stepTitle: string;
   goal: string;
   groqKey: string;
-  tavilyKey?: string;
+  tavilyKey?: string | null;
 }) {
-  // 1. Live Web Discovery via Tavily
-  const searchQuery = `${topic} ${stepTitle} tutorial guide interactive reference`;
-  const candidates = tavilyKey
-    ? await harvestLiveCandidates(searchQuery, tavilyKey)
-    : [];
+  // 1. Scout live candidates
+  const searchQuery = `${topic} ${stepTitle} practical tutorial guide documentation`;
+  const candidates = await harvestLiveCandidates(searchQuery, tavilyKey);
 
   // 2. Groq Master Educator Prompt
-  const systemPrompt = `You are a world-class mentor, researcher, and master educator dedicated to guiding a student toward true conceptual mastery.
-You reject mechanical templates, rigid quotas, and superficial boilerplate.
-You think like an authentic instructor: you evaluate what the student is trying to achieve, analyze the material discovered from the live web, and carefully construct an individualized lesson.
-You decide the necessary study resources, author tailored study instructions, and determine the exact number of evaluation questions required to verify understanding.
-Output your evaluation strictly in valid JSON without markdown fences.`;
+  const systemPrompt = `You are the master instructor for SkillPrax. You reject boilerplate and empty responses.
+You provide the student with deep mental models, direct learning materials, and rigorous evaluation.
+You MUST ALWAYS curate between 1 and 4 high-yield, direct destination study resources.
+NEVER return an empty "resources" array.
+Output your response strictly as a single valid JSON object without markdown fences.`;
 
   const userPrompt = `
 Domain: "${domain}"
 Discipline / Topic: "${topic}"
 Step ${stepIndex}: "${stepTitle}"
-Student's Target Goal: "${goal || 'Unconditional Mastery'}"
+Student's Target Goal: "${goal || 'Full-stack mastery'}"
 
-Verified Live Web Candidates Discovered by Tavily:
+LIVE CANDIDATES HARVESTED FROM TAVILY:
 ${JSON.stringify(candidates, null, 2)}
 
-INSTRUCTIONS FOR THE EDUCATOR:
+EDUCATOR MANDATE:
+1. "whatYouWillLearn":
+   Write a rich 2-3 paragraph breakdown of foundational concepts, mechanisms, and common developer pitfalls. Teach the core mental model directly.
 
-1. CONCEPTUAL ARCHITECTURE ("whatYouWillLearn"):
-   - Write a comprehensive, multi-paragraph conceptual guide (2-3 rich paragraphs).
-   - Unpack the core mental models, governing laws, underlying mechanics, and frequent cognitive traps or misconceptions. Avoid generic filler like "In this step you will learn foundational terms." Teach the actual concepts directly.
+2. "coreKeyTakeaways":
+   List 3 to 5 concrete terms, architectural patterns, or syntax rules.
 
-2. CONCRETE KNOWLEDGE UNITS ("coreKeyTakeaways"):
-   - Provide 3 to 6 exact principles, mechanisms, formulas, or operational syntax rules that the student must mentally retain.
-
-3. GOAL BRIDGE ("practicalApplication"):
-   - Explicitly detail how mastering this step directly advances the student's real-world target goal: "${goal}".
+3. "practicalApplication":
+   Explain how this step directly enables the student to achieve their real-world goal: "${goal}".
 
 4. ATOMIC COMPETENCY UNITS & QUIZ SIZING ("questionCount" & "assessableUnits"):
-   - Deconstruct this step into its core Atomic Competency Units (individual edge cases, failure points, trade-offs, and rules that must be evaluated).
-   - Store these in "assessableUnits".
-   - Autonomously set "questionCount" strictly equal to the number of critical competencies that need testing (ranging between 3 and 10 based on true conceptual density). Do NOT default to 5.
+   - Identify the core testable competencies (mechanisms, edge cases, trade-offs).
+   - Set "questionCount" strictly equal to the number of assessable units (typically 3 to 8). Do NOT default to 5.
 
-5. UNCONSTRAINED RESOURCE SELECTION ("resources"):
-   - Act as a mentor recommending materials. Do NOT adhere to a fixed template or arbitrary quota.
-   - If one definitive source is all that is required, select 1. If genuine mastery requires a walkthrough, an authoritative specification, and an interactive simulation, select 3 or 4.
-   - Use direct, authentic URLs from the candidate list whenever possible, or top-level verified domains (e.g. Wikipedia articles, official project docs, OpenLibrary textbooks).
-   - NEVER provide search query links (no "youtube.com/results?search_query=..." and no "google.com/search?q=...").
-   - Give each resource a tailored, contextual badge that describes its exact function (e.g., "Visual Mental Model", "Authoritative Specification", "Interactive Sandbox", "Field Diagnostic Guide", "Foundational Lecture").
-   - Write specific "studyGuidance" telling the student *how* to engage with this material (e.g., "Skip to chapter 3 to see the state machine implementation", "Inspect the sequence diagram on page 12 before writing any code").
+5. AUTONOMOUS RESOURCE CURATION ("resources"):
+   - Review Tavily's candidate links above. Pick the best direct links that genuinely teach this step.
+   - CRITICAL FALLBACK RULE: If Tavily returned 0 or weak candidates, YOU as the master educator MUST supply direct canonical, authoritative documentation links from your own knowledge (e.g. direct documentation on MDN Web Docs, React.dev, Nodejs.org, GitHub official guides, or Wikipedia articles like "https://en.wikipedia.org/wiki/Full-stack_web_development").
+   - NEVER output search query links (no "youtube.com/results?search_query=..." and no "google.com/search?q=...").
+   - Provide between 1 and 4 direct destination resources. NEVER RETURN AN EMPTY ARRAY.
+   - Give each resource a contextual badge (e.g., "Official Guide", "Core Architecture Walkthrough", "Interactive Sandbox", "Foundational Reading").
+   - In "studyGuidance", explain exactly what the student should focus on.
 
-OUTPUT PURE JSON MATCHING THIS EXACT SCHEMA:
+JSON SCHEMA:
 {
   "whatYouWillLearn": "string",
   "coreKeyTakeaways": ["string"],
@@ -83,7 +78,7 @@ OUTPUT PURE JSON MATCHING THIS EXACT SCHEMA:
 }
 `;
 
-  // 3. Invoke Groq
+  console.log(`[Groq] Curating step ${stepIndex} with LLaMA-3.3-70B...`);
   const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -98,16 +93,20 @@ OUTPUT PURE JSON MATCHING THIS EXACT SCHEMA:
       ],
       response_format: { type: "json_object" },
       temperature: 0.25,
-      max_tokens: 3800
+      max_tokens: 3500
     })
   });
 
   if (!groqRes.ok) {
     const errText = await groqRes.text();
-    throw new Error(`Groq pedagogical pipeline failed: ${errText}`);
+    console.error("[Groq Generation Error]:", errText);
+    throw new Error(`Groq generation failed: ${errText}`);
   }
 
   const groqData: any = await groqRes.json();
   const rawContent = groqData.choices[0]?.message?.content || "{}";
-  return JSON.parse(rawContent);
+  const parsed = JSON.parse(rawContent);
+
+  console.log(`[Groq] Curated ${parsed.resources?.length || 0} direct resources.`);
+  return parsed;
 }

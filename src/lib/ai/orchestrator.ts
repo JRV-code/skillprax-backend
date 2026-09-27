@@ -126,9 +126,7 @@ export function safeJsonStringify(val: any): string {
  * Retrieves the API key for a given provider from AdminConfig (DB) or fallback .env
  */
 export async function getProviderKey(provider: string): Promise<{ apiKey: string; defaultProvider: string }> {
-  const config = await prisma.adminConfig.findUnique({
-    where: { id: 'global_config' },
-  });
+  const config = await prisma.adminConfig.findFirst();
 
   let apiKey = '';
   const defaultProvider = config?.defaultProvider || 'groq';

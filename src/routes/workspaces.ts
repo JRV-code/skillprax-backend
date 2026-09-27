@@ -104,8 +104,13 @@ export async function workspaceRoutes(fastify: FastifyInstance) {
     }
 
     const config = await prisma.adminConfig.findFirst();
-    const groqKey = config?.groqKey || process.env.GROQ_API_KEY || '';
-    const tavilyKey = config?.tavilyKey || process.env.TAVILY_API_KEY || '';
+    const groqKey = config?.groqKey || process.env.GROQ_API_KEY;
+    const tavilyKey = config?.tavilyKey || process.env.TAVILY_API_KEY;
+
+    if (!groqKey) {
+      return reply.status(400).send({ error: "Groq API key is not configured in Admin panel." });
+    }
+
     const activeProvider = body.preferredProvider || config?.defaultProvider || 'groq';
 
     try {

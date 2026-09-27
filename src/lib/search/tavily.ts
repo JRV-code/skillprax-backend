@@ -6,53 +6,62 @@ export interface LiveCandidate {
 
 export async function harvestLiveCandidates(
   query: string,
-  apiKey: string
+  apiKey?: string | null
 ): Promise<LiveCandidate[]> {
-  if (!apiKey || apiKey.trim() === "") return [];
+  const cleanKey = apiKey?.trim() || process.env.TAVILY_API_KEY?.trim();
+  if (!cleanKey) {
+    console.warn("[Tavily] No API key found. Proceeding with Groq canonical knowledge.");
+    return [];
+  }
 
   try {
+    console.log(`[Tavily] Scouting web for: "${query}"...`);
     const res = await fetch("https://api.tavily.com/search", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey.trim()}`
+        "Authorization": `Bearer ${cleanKey}`
       },
       body: JSON.stringify({
+        api_key: cleanKey, // Pass in body as well for 100% API compatibility
         query: `${query}`,
-        search_depth: "advanced",
-        max_results: 8,
+        search_depth: "basic",
+        max_results: 6,
         include_answer: false
       })
     });
 
-    if (!res.ok) throw new Error(`Tavily error: ${res.statusText}`);
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error(`[Tavily API Error ${res.status}]:`, errText);
+      return [];
+    }
+
     const data: any = await res.json();
-
-    // Filter out search aggregators, scrapers, and query landing pages
     const rawResults = data.results || [];
-    const directResults: LiveCandidate[] = [];
 
+    // Filter out search aggregators
+    const candidates: LiveCandidate[] = [];
     for (const r of rawResults) {
       const u = (r.url || "").toLowerCase();
-      const isSearchTrampoline =
+      const isSearchPage =
         u.includes("youtube.com/results") ||
         u.includes("google.com/search") ||
-        u.includes("bing.com/search") ||
-        u.includes("/search?") ||
-        u.includes("duckduckgo.com");
+        u.includes("/search?");
 
-      if (!isSearchTrampoline && r.url && r.title) {
-        directResults.push({
+      if (!isSearchPage && r.url && r.title) {
+        candidates.push({
           title: r.title.trim(),
           url: r.url.trim(),
-          snippet: (r.content || "").slice(0, 300)
+          snippet: (r.content || "").slice(0, 250)
         });
       }
     }
 
-    return directResults;
+    console.log(`[Tavily] Successfully harvested ${candidates.length} direct candidates.`);
+    return candidates;
   } catch (err: any) {
-    console.warn("Tavily search warning:", err.message);
+    console.error("[Tavily Search Exception]:", err.message);
     return [];
   }
 }
