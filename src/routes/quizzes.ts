@@ -21,10 +21,6 @@ async function getGroqApiKey(): Promise<string> {
   return groqApiKey;
 }
 
-const promptQuizParamsSchema = z.object({
-  stepId: z.string().min(1),
-});
-
 const submitQuizBodySchema = z.object({
   attemptId: z.string().min(1),
   answers: z.array(
@@ -39,27 +35,38 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
   // 1. POST /api/steps/:stepId/prompt-quiz — Generate or retrieve active quiz attempt
   fastify.post("/api/steps/:stepId/prompt-quiz", async (request, reply) => {
     try {
-      const paramsResult = promptQuizParamsSchema.safeParse(request.params);
-      if (!paramsResult.success) {
-        return reply.status(400).send({ error: "Invalid stepId parameter", details: paramsResult.error.flatten() });
+      const { stepId } = request.params as { stepId: string };
+      fastify.log.info(`[Quiz] Prompting quiz for stepId: "${stepId}"`);
+
+      if (!stepId || stepId === "undefined" || stepId === "null" || stepId.trim().length === 0) {
+        return reply.status(400).send({ 
+          error: `Bad Request: Invalid or missing stepId "${stepId}".` 
+        });
       }
 
-      const { stepId } = paramsResult.data;
+      const cleanStepId = stepId.trim();
       const userId = ((request as any).userId as string) || "default_user";
 
       const step: any = await prisma.skillStep.findUnique({
-        where: { id: stepId },
-        include: { workspace: true },
+        where: { id: cleanStepId },
+        include: { 
+          workspace: true,
+          attempts: {
+            orderBy: { createdAt: "desc" },
+            take: 1
+          }
+        },
       });
 
       if (!step) {
-        return reply.status(404).send({ error: `Step "${stepId}" not found.` });
+        fastify.log.warn(`[Quiz] Step ID "${cleanStepId}" not found in database.`);
+        return reply.status(404).send({ error: `SkillStep with ID "${cleanStepId}" was not found.` });
       }
 
       // IDEMPOTENCY: Return existing unsubmitted quiz attempt if in progress
       const existingAttempt: any = await prisma.quizAttempt.findFirst({
         where: {
-          stepId,
+          stepId: cleanStepId,
           userId,
           status: "in_progress",
         } as any,
@@ -151,16 +158,16 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         return reply.status(404).send({ error: "Resource not found in database." });
       }
       fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to generate quiz" });
+      return reply.status(500).send({ error: err.message || "Failed to generate evaluation quiz" });
     }
   });
 
   // 2. POST /api/steps/:stepId/submit-quiz — Score quiz server-side & record attempt
   fastify.post("/api/steps/:stepId/submit-quiz", async (request, reply) => {
     try {
-      const paramsResult = promptQuizParamsSchema.safeParse(request.params);
-      if (!paramsResult.success) {
-        return reply.status(400).send({ error: "Invalid stepId parameter", details: paramsResult.error.flatten() });
+      const { stepId } = request.params as { stepId: string };
+      if (!stepId || stepId === "undefined" || stepId === "null" || stepId.trim().length === 0) {
+        return reply.status(400).send({ error: "Invalid stepId parameter" });
       }
 
       const bodyResult = submitQuizBodySchema.safeParse(request.body);
@@ -168,7 +175,7 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         return reply.status(400).send({ error: "Invalid quiz submission body", details: bodyResult.error.flatten() });
       }
 
-      const { stepId } = paramsResult.data;
+      const cleanStepId = stepId.trim();
       const { attemptId, answers } = bodyResult.data;
       const userId = ((request as any).userId as string) || "default_user";
 
@@ -180,7 +187,7 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         return reply.status(404).send({ error: `Quiz attempt "${attemptId}" not found.` });
       }
 
-      if (attempt.stepId !== stepId) {
+      if (attempt.stepId !== cleanStepId) {
         return reply.status(400).send({ error: "Quiz attempt does not belong to this step." });
       }
 
@@ -237,7 +244,6 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
 
         const optionKeys = ["A", "B", "C", "D"];
         const selectedKey = optionKeys[selectedIndex] || String(selectedIndex);
-        const correctKey = optionKeys[correctIndex] || String(correctIndex);
 
         const distractorExps = q.distractorExplanations || {};
         const whyWrong = distractorExps[selectedKey] || distractorExps[String(selectedIndex)] || "Selected option does not demonstrate competency.";
@@ -276,7 +282,7 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         ...(passed
           ? [
               prisma.skillStep.update({
-                where: { id: stepId },
+                where: { id: cleanStepId },
                 data: { status: "PASSED" } as any,
               }),
             ]
