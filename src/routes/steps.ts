@@ -254,38 +254,52 @@ export async function stepRoutes(fastify: FastifyInstance) {
       return reply.status(404).send({ error: 'Workspace not found' });
     }
 
-    const contextPayload = await buildContextPayload(workspaceId);
-    const nextStepData = await generateNextStep(workspace, workspace.aiProvider || 'groq', contextPayload);
-
-    const stepObj = nextStepData.step || {
-      stepIndex: workspace.currentStepIndex + 1,
-      title: `Step ${workspace.currentStepIndex + 1}: Advanced Mastery`,
-      difficulty: 'Advanced',
-      whatYouWillLearn: 'Deepen implementation skills and architectural patterns.',
-      coreKeyTakeaways: ['Architectural patterns', 'Production error handling'],
-      practicalApplication: workspace.targetGoal,
-      estimatedMinutes: 45,
-      passingScore: 80,
-      questionCount: 5,
-      resources: [],
-    };
-
+    const config = await prisma.adminConfig.findFirst();
+    const groqKey = config?.groqKey || process.env.GROQ_API_KEY || '';
+    const tavilyKey = config?.tavilyKey || process.env.TAVILY_API_KEY || '';
     const nextStepIndex = workspace.currentStepIndex + 1;
+    const nextStepTitle = `Step ${nextStepIndex}: Advanced Application & Mastery`;
     const isMastered = nextStepIndex >= workspace.estimatedTotalSteps;
+
+    let pedagogicalContent: any;
+    try {
+      const { runPedagogicalCuratorPipeline } = await import('../lib/ai/pipeline');
+      pedagogicalContent = await runPedagogicalCuratorPipeline({
+        domain: workspace.category,
+        topic: workspace.title,
+        stepIndex: nextStepIndex,
+        stepTitle: nextStepTitle,
+        goal: workspace.targetGoal,
+        groqKey,
+        tavilyKey,
+      });
+    } catch (_) {
+      pedagogicalContent = {
+        whatYouWillLearn: `Deepen practical implementation and architectural mastery for ${workspace.title}.`,
+        coreKeyTakeaways: ['Advanced implementation techniques', 'Performance optimization', 'Edge case resilience'],
+        practicalApplication: workspace.targetGoal,
+        assessableUnits: ['Advanced Implementation', 'System Resilience', 'Optimization Patterns'],
+        questionCount: 5,
+        resources: [],
+      };
+    }
+
+    const coreKeyTakeaways = pedagogicalContent.coreKeyTakeaways || ['Advanced implementation'];
+    const assessableUnits = pedagogicalContent.assessableUnits || ['Advanced Concepts'];
+    const resources = pedagogicalContent.resources || [];
 
     const newStep = await prisma.skillStep.create({
       data: {
         workspaceId,
         stepIndex: nextStepIndex,
-        title: stepObj.title,
-        difficulty: stepObj.difficulty || 'Intermediate',
-        whatYouWillLearn: stepObj.whatYouWillLearn || 'Deepen implementation skills and architectural patterns.',
-        coreKeyTakeaways: safeJsonStringify(stepObj.coreKeyTakeaways || ['Architectural patterns']),
-        practicalApplication: stepObj.practicalApplication || workspace.targetGoal,
-        estimatedMinutes: Number(stepObj.estimatedMinutes) || 45,
-        passingScore: Number(stepObj.passingScore) || 80,
-        questionCount: Number(stepObj.questionCount) || 5,
-        resources: safeJsonStringify(stepObj.resources || []),
+        title: nextStepTitle,
+        difficulty: nextStepIndex <= 2 ? 'Intermediate' : nextStepIndex <= 4 ? 'Advanced' : 'Mastery',
+        whatYouWillLearn: pedagogicalContent.whatYouWillLearn || 'Deepen implementation skills.',
+        coreKeyTakeaways: safeJsonStringify(coreKeyTakeaways),
+        practicalApplication: pedagogicalContent.practicalApplication || workspace.targetGoal,
+        assessableUnits: safeJsonStringify(assessableUnits),
+        questionCount: Number(pedagogicalContent.questionCount) || 5,
+        resources: safeJsonStringify(resources),
         status: 'IN_PROGRESS',
       },
     });
@@ -301,8 +315,9 @@ export async function stepRoutes(fastify: FastifyInstance) {
     return reply.send({
       step: {
         ...newStep,
-        coreKeyTakeaways: stepObj.coreKeyTakeaways || [],
-        resources: stepObj.resources || [],
+        coreKeyTakeaways,
+        assessableUnits,
+        resources,
         attempts: [],
       },
       workspaceMastered: isMastered,

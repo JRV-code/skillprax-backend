@@ -8,7 +8,7 @@ generator client {
 }
 
 model AdminConfig {
-  id              String   @id @default("global_config")
+  id              String   @id @default("global")
   adminSecret     String   @default("skillprax_admin_2026")
   openaiKey       String?
   anthropicKey    String?
@@ -16,7 +16,7 @@ model AdminConfig {
   groqKey         String?
   openrouterKey   String?
   tavilyKey       String?
-  defaultProvider String   @default("groq") // "groq" | "tavily" | "gemini" | "openai" | "anthropic" | "openrouter"
+  defaultProvider String   @default("groq")
   updatedAt       DateTime @updatedAt
 }
 
@@ -39,30 +39,30 @@ model Workspace {
 }
 
 model SkillStep {
-  id          String    @id @default(cuid())
-  workspaceId String
-  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  stepIndex   Int
-  title       String
-  difficulty  String // "Beginner" | "Intermediate" | "Advanced" | "Mastery"
-  objective   String? // Backward compatibility for legacy database rows
+  id                   String        @id @default(cuid())
+  workspaceId          String
+  workspace            Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  stepIndex            Int
+  title                String
+  difficulty           String        // "Beginner" | "Intermediate" | "Advanced" | "Mastery"
 
   // Pedagogical Depth
-  whatYouWillLearn     String @default("")
-  coreKeyTakeaways     Json   @default("[]")
-  practicalApplication String @default("")
-  estimatedMinutes     Int    @default(45)
+  whatYouWillLearn     String        @default("") @db.Text
+  coreKeyTakeaways     Json          @default("[]") // string[]
+  practicalApplication String        @default("") @db.Text
+  objective            String?       // Retained as optional to prevent Prisma db push data-loss errors
+  estimatedMinutes     Int           @default(45)
 
-  // Dynamic, Prioritized Resources (Only 1 to 3 items based on real necessity)
-  // Structure: [{ "priority": 1, "badge": "START HERE", "title": string, "url": string, "type": "video"|"docs"|"interactive", "whyThisFirst": string }]
-  resources Json @default("[]")
+  // Dynamic AI-Curated Content & Quiz Sizing
+  questionCount        Int           @default(5)
+  assessableUnits      Json          @default("[]") // string[]: Atomic Competency Units
+  resources            Json          @default("[]") // Array of custom-curated direct resources
 
-  status        String        @default("IN_PROGRESS") // "IN_PROGRESS" | "READY_FOR_QUIZ" | "PASSED"
-  passingScore  Int           @default(80)
-  questionCount Int           @default(5)
-  attempts      QuizAttempt[]
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  status               String        @default("IN_PROGRESS") // "IN_PROGRESS" | "READY_FOR_QUIZ" | "PASSED"
+  passingScore         Int           @default(80)
+  attempts             QuizAttempt[]
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
 }
 
 model QuizAttempt {

@@ -1,3 +1,62 @@
+export interface LiveCandidate {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export async function harvestLiveCandidates(
+  query: string,
+  apiKey: string
+): Promise<LiveCandidate[]> {
+  if (!apiKey || apiKey.trim() === "") return [];
+
+  try {
+    const res = await fetch("https://api.tavily.com/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey.trim()}`
+      },
+      body: JSON.stringify({
+        query: `${query}`,
+        search_depth: "advanced",
+        max_results: 8,
+        include_answer: false
+      })
+    });
+
+    if (!res.ok) throw new Error(`Tavily error: ${res.statusText}`);
+    const data: any = await res.json();
+
+    // Filter out search aggregators, scrapers, and query landing pages
+    const rawResults = data.results || [];
+    const directResults: LiveCandidate[] = [];
+
+    for (const r of rawResults) {
+      const u = (r.url || "").toLowerCase();
+      const isSearchTrampoline =
+        u.includes("youtube.com/results") ||
+        u.includes("google.com/search") ||
+        u.includes("bing.com/search") ||
+        u.includes("/search?") ||
+        u.includes("duckduckgo.com");
+
+      if (!isSearchTrampoline && r.url && r.title) {
+        directResults.push({
+          title: r.title.trim(),
+          url: r.url.trim(),
+          snippet: (r.content || "").slice(0, 300)
+        });
+      }
+    }
+
+    return directResults;
+  } catch (err: any) {
+    console.warn("Tavily search warning:", err.message);
+    return [];
+  }
+}
+
 export interface SearchCandidate {
   title: string;
   url: string;

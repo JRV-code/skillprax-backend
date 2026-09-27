@@ -5,6 +5,7 @@ import { env, getAuthRedirectUrl } from './config/env';
 import adminRoutes from './routes/admin';
 import workspaceRoutes from './routes/workspaces';
 import stepRoutes from './routes/steps';
+import quizRoutes from './routes/quizzes';
 
 const server = Fastify({
   logger: {
@@ -45,6 +46,7 @@ const start = async () => {
     await server.register(adminRoutes);
     await server.register(workspaceRoutes);
     await server.register(stepRoutes);
+    await server.register(quizRoutes);
 
     // Health check endpoint (mandatory for Render cloud service health checks)
     server.get('/health', async () => {

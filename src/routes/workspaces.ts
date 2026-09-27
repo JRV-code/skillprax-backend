@@ -68,6 +68,7 @@ export async function workspaceRoutes(fastify: FastifyInstance) {
     const formattedSteps = workspace.steps.map((step) => ({
       ...step,
       coreKeyTakeaways: safeJsonParse(step.coreKeyTakeaways, []),
+      assessableUnits: safeJsonParse(step.assessableUnits, []),
       resources: safeJsonParse(step.resources, []),
       attempts: step.attempts.map((attempt) => ({
         ...attempt,
@@ -102,34 +103,47 @@ export async function workspaceRoutes(fastify: FastifyInstance) {
       });
     }
 
-    const keyInfo = await getProviderKey(body.preferredProvider || 'groq');
-    const activeProvider = body.preferredProvider || keyInfo.defaultProvider || 'groq';
+    const config = await prisma.adminConfig.findFirst();
+    const groqKey = config?.groqKey || process.env.GROQ_API_KEY || '';
+    const tavilyKey = config?.tavilyKey || process.env.TAVILY_API_KEY || '';
+    const activeProvider = body.preferredProvider || config?.defaultProvider || 'groq';
 
     try {
-      // 1. Generate Step 1 and Recommended Books via LLM
-      const initData = await generateInitiationData(
-        body.title,
-        body.category,
-        body.baselineKnowledge,
-        body.targetGoal,
-        activeProvider
-      );
+      const step1Title = 'Foundations & Core Principles';
+      
+      let pedagogicalContent: any;
+      try {
+        const { runPedagogicalCuratorPipeline } = await import('../lib/ai/pipeline');
+        pedagogicalContent = await runPedagogicalCuratorPipeline({
+          domain: body.category,
+          topic: body.title,
+          stepIndex: 1,
+          stepTitle: step1Title,
+          goal: body.targetGoal,
+          groqKey,
+          tavilyKey,
+        });
+      } catch (pipelineErr: any) {
+        console.warn('Pipeline fallback triggered:', pipelineErr.message);
+        // Fallback if key missing or Groq network error
+        pedagogicalContent = {
+          whatYouWillLearn: `Master foundational principles and core mechanics of ${body.title}.`,
+          coreKeyTakeaways: ['Foundational concepts', 'Operational principles', 'Key mental models'],
+          practicalApplication: body.targetGoal,
+          assessableUnits: ['Core Concept Identification', 'Fundamental Syntax', 'Operational Mechanics'],
+          questionCount: 5,
+          resources: [],
+        };
+      }
 
-      const estimatedTotalSteps = Number(initData.estimatedTotalSteps) || 5;
-      const recommendedBooks = initData.recommendedBooks || [];
-      const step1 = initData.step1 || {
-        title: 'Foundations & Core Principles',
-        difficulty: 'Beginner',
-        whatYouWillLearn: 'Master foundational terms, introductory concepts, and key mental models required for this skill.',
-        coreKeyTakeaways: ['Foundational syntax and terminology', 'Core architectural patterns', 'Prerequisite concepts'],
-        practicalApplication: body.targetGoal,
-        estimatedMinutes: 45,
-        passingScore: 80,
-        questionCount: 5,
-        resources: [],
-      };
+      const whatYouWillLearn = pedagogicalContent.whatYouWillLearn || `Master foundational principles and core mechanics of ${body.title}.`;
+      const coreKeyTakeaways = pedagogicalContent.coreKeyTakeaways || ['Foundational concepts'];
+      const practicalApplication = pedagogicalContent.practicalApplication || body.targetGoal;
+      const assessableUnits = pedagogicalContent.assessableUnits || ['Core Principles'];
+      const questionCount = Number(pedagogicalContent.questionCount) || 5;
+      const resources = pedagogicalContent.resources || [];
 
-      // 2. Save in single Prisma transaction
+      // Save in single Prisma transaction
       const result = await prisma.$transaction(async (tx) => {
         const workspace = await tx.workspace.create({
           data: {
@@ -138,9 +152,9 @@ export async function workspaceRoutes(fastify: FastifyInstance) {
             baselineKnowledge: body.baselineKnowledge,
             targetGoal: body.targetGoal,
             aiProvider: activeProvider,
-            estimatedTotalSteps,
+            estimatedTotalSteps: 5,
             currentStepIndex: 1,
-            recommendedBooks: safeJsonStringify(recommendedBooks),
+            recommendedBooks: safeJsonStringify([]),
             status: 'ACTIVE',
           },
         });
@@ -149,15 +163,14 @@ export async function workspaceRoutes(fastify: FastifyInstance) {
           data: {
             workspaceId: workspace.id,
             stepIndex: 1,
-            title: step1.title,
-            difficulty: step1.difficulty || 'Beginner',
-            whatYouWillLearn: step1.whatYouWillLearn || 'Master foundational terms and key mental models required for this skill.',
-            coreKeyTakeaways: safeJsonStringify(step1.coreKeyTakeaways || ['Foundational syntax and terminology']),
-            practicalApplication: step1.practicalApplication || body.targetGoal,
-            estimatedMinutes: Number(step1.estimatedMinutes) || 45,
-            passingScore: Number(step1.passingScore) || 80,
-            questionCount: Number(step1.questionCount) || 5,
-            resources: safeJsonStringify(step1.resources || []),
+            title: step1Title,
+            difficulty: 'Beginner',
+            whatYouWillLearn,
+            coreKeyTakeaways: safeJsonStringify(coreKeyTakeaways),
+            practicalApplication,
+            assessableUnits: safeJsonStringify(assessableUnits),
+            questionCount,
+            resources: safeJsonStringify(resources),
             status: 'IN_PROGRESS',
           },
         });
@@ -167,12 +180,13 @@ export async function workspaceRoutes(fastify: FastifyInstance) {
 
       return reply.send({
         ...result.workspace,
-        recommendedBooks,
+        recommendedBooks: [],
         steps: [
           {
             ...result.createdStep,
-            coreKeyTakeaways: step1.coreKeyTakeaways || [],
-            resources: step1.resources || [],
+            coreKeyTakeaways,
+            assessableUnits,
+            resources,
             attempts: [],
           },
         ],
