@@ -1,205 +1,169 @@
-// skillprax-backend/src/routes/quizzes.ts
-
 import { FastifyInstance, FastifyPluginAsync } from "fastify";
-import { z } from "zod";
-import prisma from "../lib/prisma";
-import { generateQuiz, GroqConfigError, GroqGenerationError } from "../lib/ai/pipeline";
+import { PrismaClient } from "@prisma/client";
+import { getActiveGroqModel } from "../lib/ai/pipeline";
 
-const ADMIN_CONFIG_ID = "global";
+const prisma = new PrismaClient();
 
-async function getGroqApiKey(): Promise<string> {
-  let config: any = await prisma.adminConfig.findUnique({ where: { id: ADMIN_CONFIG_ID } });
-  if (!config) {
-    config = await prisma.adminConfig.findFirst();
-  }
-  const groqApiKey = config?.groqApiKey || config?.groqKey || process.env.GROQ_API_KEY;
-
-  if (!groqApiKey) {
-    throw new GroqConfigError("GROQ_API_KEY is not configured in AdminConfig or environment variables.");
-  }
-  return groqApiKey;
-}
-
-const submitQuizSchema = z.object({
-  answers: z.array(z.object({ 
-    questionId: z.string().optional(),
-    id: z.string().optional(),
-    selectedIndex: z.number().int().min(0).optional(),
-    selectedOptionIndex: z.number().int().min(0).optional(),
-  })),
-});
-
-const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
-
-  // Create & Generate Quiz for Step
-  const handleGenerateQuiz = async (request: any, reply: any) => {
-    const { workspaceId, stepId: paramStepId } = (request.params || {}) as { workspaceId?: string; stepId?: string };
-    const bodyStepId = (request.body || {})?.stepId;
-    const stepId = paramStepId || bodyStepId;
-
-    if (!stepId) {
-      return reply.status(400).send({ error: "stepId parameter is required" });
-    }
-
-    const step: any = await prisma.skillStep.findUnique({
-      where: { id: stepId },
-      include: { workspace: true },
-    });
-
-    if (!step) {
-      return reply.status(404).send({ error: "Step not found" });
-    }
-
-    let groqApiKey: string;
+const quizRoutes: FastifyPluginAsync = async (server: FastifyInstance) => {
+  // 1. Unified Route: Generate Diagnostic Quiz for a Step
+  server.post("/api/steps/:stepId/prompt-quiz", async (req, reply) => {
     try {
-      groqApiKey = await getGroqApiKey();
-    } catch (err) {
-      if (err instanceof GroqConfigError) {
-        return reply.status(503).send({ error: `Initialization failed: ${err.message}` });
-      }
-      throw err;
-    }
+      const { stepId } = req.params as { stepId: string };
 
-    let quiz;
-    try {
-      quiz = await generateQuiz({
-        groqApiKey,
-        pillar: step.workspace?.pillar || step.workspace?.domainCategory || step.workspace?.category || "General Knowledge",
-        skillName: step.workspace?.skillName || step.workspace?.title || "Skill Track",
-        stepTitle: step.title,
-        stepDescription: step.description || "",
-        conceptualOverview: step.conceptualOverview || step.whatYouWillLearn || "",
-        learnerLevel: "beginner",
+      const step: any = await prisma.skillStep.findUnique({
+        where: { id: stepId },
+        include: { workspace: true }
       });
-    } catch (err) {
-      if (err instanceof GroqConfigError || err instanceof GroqGenerationError) {
-        fastify.log.error({ err }, "Quiz generation failed");
-        return reply.status(502).send({ error: `Quiz generation failed: ${err.message}` });
+
+      if (!step) {
+        return reply.status(404).send({ error: `Step "${stepId}" not found.` });
       }
-      throw err;
-    }
 
-    const attemptData: any = {
-      stepId,
-      acuBreakdown: quiz.acuBreakdown as any,
-      questionCount: quiz.questionCount,
-      questions: quiz.questions as any,
-      status: "in_progress",
-    };
+      const config = await prisma.adminConfig.findFirst();
+      const groqKey = config?.groqKey || process.env.GROQ_API_KEY;
 
-    const attempt = await prisma.quizAttempt.create({
-      data: attemptData,
-    });
+      if (!groqKey) {
+        return reply.status(400).send({ error: "Groq API key is not configured in Admin." });
+      }
 
-    const sanitizedQuestions = quiz.questions.map(({ id, acuLabel, scenario, question, options }) => ({
-      id,
-      acuLabel,
-      scenario,
-      question,
-      options,
-    }));
+      // Sizing is controlled by the step's questionCount (calibrated by Groq)
+      const questionCount = step.questionCount || 5;
+      const model = await getActiveGroqModel(groqKey);
 
-    return reply.status(201).send({
-      attemptId: attempt.id,
-      acuBreakdown: quiz.acuBreakdown,
-      questionCount: quiz.questionCount,
-      questions: sanitizedQuestions,
-    });
-  };
+      const systemPrompt = `You are a diagnostic evaluation examiner. You must return your output strictly as a valid JSON object matching the requested schema. No markdown fences, no conversational prose.`;
 
-  fastify.post("/workspaces/:workspaceId/steps/:stepId/quiz", handleGenerateQuiz);
-  fastify.post("/api/steps/:stepId/prompt-quiz", handleGenerateQuiz);
-  fastify.post("/api/quizzes/generate", handleGenerateQuiz);
+      const userPrompt = `
+Generate a scenario-based diagnostic evaluation quiz for Step: "${step.title}".
+Learning Track: "${step.workspace?.title || step.workspace?.skillName || "Skill Track"}".
+Core Key Takeaways: ${JSON.stringify(step.coreKeyTakeaways || step.keyTakeaways || [])}.
+Assessable Competency Units: ${JSON.stringify(step.assessableUnits || [])}.
 
-  // Submit Quiz Attempt Evaluation
-  const handleSubmitQuiz = async (request: any, reply: any) => {
-    const { attemptId } = (request.params || {}) as { attemptId?: string };
-    const parsed = submitQuizSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ error: "Invalid request body", details: parsed.error.flatten() });
-    }
+REQUIREMENTS:
+1. Generate exactly ${questionCount} scenario-based multiple choice questions.
+2. Every question must test a concrete mechanism, edge case, or trade-off.
+3. Provide 4 options (A, B, C, D) for each question.
+4. For each question, explain why the correct option is right, and provide diagnostic feedback for why each incorrect option is wrong.
 
-    let attempt: any = null;
-    if (attemptId) {
-      attempt = await prisma.quizAttempt.findUnique({ where: { id: attemptId } });
-    }
-
-    if (!attempt) {
-      const stepId = (request.params || {})?.stepId || (request.body || {})?.stepId;
-      if (stepId) {
-        const attempts: any[] = await prisma.quizAttempt.findMany({
-          where: { stepId },
-          orderBy: { createdAt: "desc" },
-        });
-        attempt = attempts.find((a) => a.status === "in_progress") || attempts[0];
+JSON SCHEMA:
+{
+  "questions": [
+    {
+      "id": 1,
+      "scenario": "string",
+      "question": "string",
+      "options": [
+        { "key": "A", "text": "string" },
+        { "key": "B", "text": "string" },
+        { "key": "C", "text": "string" },
+        { "key": "D", "text": "string" }
+      ],
+      "correctOption": "A",
+      "explanation": "string",
+      "distractorAnalysis": {
+        "A": "string",
+        "B": "string",
+        "C": "string",
+        "D": "string"
       }
     }
+  ]
+}
+`;
 
-    if (!attempt) {
-      return reply.status(404).send({ error: "Quiz attempt not found" });
+      const groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${groqKey.trim()}`
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt }
+          ],
+          response_format: { type: "json_object" },
+          temperature: 0.2,
+          max_tokens: 3500
+        })
+      });
+
+      if (!groqRes.ok) {
+        const errText = await groqRes.text();
+        return reply.status(500).send({ error: `Groq error: ${errText}` });
+      }
+
+      const groqData: any = await groqRes.json();
+      const content = JSON.parse(groqData.choices[0]?.message?.content || "{}");
+
+      return reply.send(content);
+    } catch (err: any) {
+      server.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to generate quiz" });
     }
+  });
 
-    const questions = (attempt.questions || []) as unknown as Array<{
-      id: string;
-      acuLabel: string;
-      correctIndex: number;
-      distractorExplanations: string[];
-      options: string[];
-    }>;
+  // 2. Submit Quiz Attempt & Evaluate Passing Threshold
+  server.post("/api/steps/:stepId/submit-quiz", async (req, reply) => {
+    try {
+      const { stepId } = req.params as { stepId: string };
+      const { answers, questions } = (req.body || {}) as { answers: Record<string, string>; questions: any[] };
 
-    const { answers } = parsed.data;
-    const answerMap = new Map(answers.map((a) => [a.questionId || a.id, a.selectedIndex ?? a.selectedOptionIndex ?? -1]));
+      const step = await prisma.skillStep.findUnique({
+        where: { id: stepId },
+        include: { workspace: true }
+      });
 
-    let correctCount = 0;
-    const results = questions.map((q) => {
-      const selectedIndex = answerMap.get(q.id) ?? -1;
-      const isCorrect = selectedIndex === q.correctIndex;
-      if (isCorrect) correctCount += 1;
-      return {
-        questionId: q.id,
-        acuLabel: q.acuLabel,
-        selectedIndex,
-        correctIndex: q.correctIndex,
-        isCorrect,
-        explanation: q.distractorExplanations?.[selectedIndex] ?? "No answer selected.",
-        correctExplanation: q.distractorExplanations?.[q.correctIndex] ?? "",
+      if (!step) {
+        return reply.status(404).send({ error: "Step not found" });
+      }
+
+      // Calculate score
+      let correctCount = 0;
+      const totalQuestions = questions?.length || 1;
+
+      for (const q of questions || []) {
+        if (answers[q.id] === q.correctOption) {
+          correctCount++;
+        }
+      }
+
+      const scorePercentage = Math.round((correctCount / totalQuestions) * 100);
+      const passed = scorePercentage >= (step.passingScore || 80);
+
+      // Record Attempt
+      const attemptData: any = {
+        stepId: step.id,
+        score: scorePercentage,
+        passed,
+        answers: answers || {}
       };
-    });
 
-    const total = Math.max(questions.length, 1);
-    const scorePercent = Math.round((correctCount / total) * 100);
-    const passed = scorePercent >= 80;
-    const weakAcus = results.filter((r) => !r.isCorrect).map((r) => r.acuLabel);
+      const attempt = await prisma.quizAttempt.create({
+        data: attemptData
+      });
 
-    const updateData: any = {
-      status: "completed",
-      correctCount,
-      scorePercent,
-      score: scorePercent,
-      passed,
-      results: results as any,
-      completedAt: new Date(),
-    };
+      // Update Step Status if passed
+      if (passed) {
+        await prisma.skillStep.update({
+          where: { id: step.id },
+          data: { status: "PASSED" }
+        });
+      }
 
-    const updated = await prisma.quizAttempt.update({
-      where: { id: attempt.id },
-      data: updateData,
-    });
-
-    return reply.send({
-      attemptId: updated.id,
-      score: scorePercent,
-      scorePercent,
-      passed,
-      correctCount,
-      questionCount: questions.length,
-      weakAcus,
-      results,
-    });
-  };
-
-  fastify.post("/quiz-attempts/:attemptId/submit", handleSubmitQuiz);
-  fastify.post("/api/steps/:stepId/evaluate", handleSubmitQuiz);
+      return reply.send({
+        attemptId: attempt.id,
+        score: scorePercentage,
+        passed,
+        passingScore: step.passingScore || 80,
+        correctCount,
+        totalQuestions
+      });
+    } catch (err: any) {
+      server.log.error(err);
+      return reply.status(500).send({ error: err.message || "Failed to submit quiz" });
+    }
+  });
 };
 
-export default quizzesRoutes;
+export default quizRoutes;

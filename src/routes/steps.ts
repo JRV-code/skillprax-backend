@@ -12,70 +12,7 @@ import {
 import { storeQuizSession, getQuizSession } from '../lib/quizStore';
 
 export async function stepRoutes(fastify: FastifyInstance) {
-  // POST /api/steps/:stepId/prompt-quiz
-  fastify.post('/api/steps/:stepId/prompt-quiz', async (request: FastifyRequest, reply: FastifyReply) => {
-    const { stepId } = request.params as { stepId: string };
-    const body = (request.body || {}) as { questionCount?: number | string };
 
-    const step = await prisma.skillStep.findUnique({
-      where: { id: stepId },
-      include: { workspace: true },
-    });
-
-    if (!step) {
-      return reply.status(404).send({ error: 'SkillStep not found' });
-    }
-
-    const questionCount = step.questionCount || 5;
-
-    // 1. Update status to READY_FOR_QUIZ
-    await prisma.skillStep.update({
-      where: { id: stepId },
-      data: {
-        status: 'READY_FOR_QUIZ',
-      },
-    });
-
-    // 2. Build context payload & generate questions via LLM
-    const contextPayload = await buildContextPayload(step.workspaceId);
-    const quizData = await generateQuizQuestions(
-      step.title,
-      step.whatYouWillLearn || step.title,
-      step.difficulty,
-      questionCount,
-      step.workspace.aiProvider || 'groq',
-      contextPayload
-    );
-
-    const questions = quizData.questions || [];
-
-    // 3. Store full questions (with correctIndex) in in-memory session cache
-    storeQuizSession(stepId, questions);
-
-    // 4. Return questions WITHOUT correctIndex for security
-    const sanitizedQuestions = questions.map(({ correctIndex, ...q }: any) => {
-      let options = q.options;
-      if (Array.isArray(options) && options.length > 0 && typeof options[0] === 'object' && options[0].text) {
-        options = options.map((opt: any) => opt.text);
-      }
-      let cIndex = q.correctIndex;
-      if (typeof cIndex === 'string') {
-        const mapKey: Record<string, number> = { A: 0, B: 1, C: 2, D: 3, a: 0, b: 1, c: 2, d: 3 };
-        cIndex = mapKey[cIndex] ?? 0;
-      }
-      return {
-        ...q,
-        options,
-        correctIndex: cIndex,
-      };
-    }).map(({ correctIndex, ...q }: any) => q);
-
-    return reply.send({
-      stepId,
-      questionCount,
-      questions: sanitizedQuestions,
-    });
-  });
 
   // POST /api/steps/:stepId/evaluate
   fastify.post('/api/steps/:stepId/evaluate', async (request: FastifyRequest, reply: FastifyReply) => {
