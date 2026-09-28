@@ -117,6 +117,9 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
             domainCategory: cleanDomain,
             targetGoal: cleanGoal,
             level: cleanLevel,
+            aiEngine: body.aiEngine || "llama-3.3-70b-versatile",
+            userProfileId: body.userProfileId || body.profileId || "default-profile",
+            totalPlannedSteps: typeof body.totalPlannedSteps === 'number' ? body.totalPlannedSteps : 5,
             isGenerating: true,
             generationStartedAt: new Date(),
           },
@@ -197,8 +200,10 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
   // 2. GET /api/workspaces — List all workspaces enriched for Dashboard
   // ============================================================
   fastify.get("/api/workspaces", async (req, reply) => {
+    const { profileId } = req.query as { profileId?: string };
     try {
       const workspaces = await prisma.workspace.findMany({
+        where: profileId ? { userProfileId: profileId } : {},
         orderBy: { updatedAt: "desc" },
         include: {
           steps: {
@@ -210,7 +215,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
 
       const enriched = workspaces.map((ws: any) => {
         const steps = ws.steps || [];
-        const totalSteps = Math.max(steps.length, 1);
+        const totalSteps = ws.totalPlannedSteps || 5;
         const passedCount = steps.filter((s: any) => s.status === "PASSED").length;
         const progress = Math.round((passedCount / totalSteps) * 100);
         const currentStep = passedCount < totalSteps ? passedCount + 1 : totalSteps;
@@ -221,7 +226,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
           completedSteps: passedCount,
           currentStep,
           progress,
-          engine: "Groq LLaMA 3.3",
+          engine: ws.aiEngine || "llama-3.3-70b-versatile",
         };
       });
 

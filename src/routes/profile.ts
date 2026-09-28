@@ -19,18 +19,19 @@ function getTwoDaysAgoString(): string {
 
 export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
   // ─── Helper ────────────────────────────────────────────────────────────────
-  async function getOrCreateProfile() {
-    let profile = await (prisma as any).userProfile.findUnique({
-      where: { id: "default-profile" },
+  async function getOrCreateProfile(profileId: string) {
+    let profile = await prisma.userProfile.findUnique({
+      where: { id: profileId },
     });
     if (!profile) {
-      profile = await (prisma as any).userProfile.create({
+      profile = await prisma.userProfile.create({
         data: {
-          id: "default-profile",
+          id: profileId,
           name: "Skillprax Learner",
           age: 18,
           profession: "Full-Stack Builder",
-          targetDailyMinutes: 60,
+          targetDailyHours: 1,
+          targetDailyMinutes: 0,
           reminderTime: "20:00",
         },
       });
@@ -39,14 +40,15 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
   }
 
   // ─── GET /api/profile ──────────────────────────────────────────────────────
-  fastify.get("/api/profile", async (_req, reply) => {
+  fastify.get("/api/profile", async (req, reply) => {
+    const { profileId = "default-profile" } = req.query as { profileId?: string };
     try {
-      const profile = await getOrCreateProfile();
+      const profile = await getOrCreateProfile(profileId);
       const today = getTodayString();
 
       // Fetch last 7 days of activity logs
-      const rawLogs = await (prisma as any).dailyActivityLog.findMany({
-        where: { userProfileId: "default-profile" },
+      const rawLogs = await prisma.dailyActivityLog.findMany({
+        where: { userProfileId: profileId },
         orderBy: { date: "desc" },
         take: 7,
       });
@@ -79,6 +81,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
 
       // Workspace mastery summary
       const workspaces = await prisma.workspace.findMany({
+        where: { userProfileId: profileId },
         orderBy: { updatedAt: "desc" },
         include: {
           steps: {
@@ -94,10 +97,11 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
 
       const skillCards = workspaces.map((ws: any) => {
         const steps = ws.steps || [];
-        const totalSteps = Math.max(steps.length, 1);
+        const totalSteps = ws.totalPlannedSteps || 5;
         const passedCount = steps.filter((s: any) => s.status === "PASSED").length;
         const progress = Math.round((passedCount / totalSteps) * 100);
-        const isMastered = steps.length > 0 && passedCount === steps.length;
+        const currentStep = passedCount < totalSteps ? passedCount + 1 : totalSteps;
+        const isMastered = passedCount === totalSteps;
 
         totalMilestonesPassed += passedCount;
         if (isMastered) skillsMastered++;
@@ -111,7 +115,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
           level: ws.level,
           totalSteps,
           completedSteps: passedCount,
-          currentStep: ws.currentStep || (passedCount < totalSteps ? passedCount + 1 : totalSteps),
+          currentStep,
           progress,
           isMastered,
         };
@@ -126,11 +130,15 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       if (diffMonths >= 1) tenureText = `${diffMonths} month${diffMonths > 1 ? "s" : ""} active`;
       else if (diffDays === 0) tenureText = "Joined today";
 
+      const dailyGoalTotalMinutes = (profile.targetDailyHours * 60) + profile.targetDailyMinutes;
+
       return reply.status(200).send({
         profile: {
+          id: profile.id,
           name: profile.name,
           age: profile.age,
           profession: profile.profession,
+          targetDailyHours: profile.targetDailyHours,
           targetDailyMinutes: profile.targetDailyMinutes,
           reminderTime: profile.reminderTime || "20:00",
           tenureText,
@@ -144,9 +152,9 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         telemetry: {
           todayMinutes,
           todayHours: Number((todayMinutes / 60).toFixed(1)),
-          targetDailyMinutes: profile.targetDailyMinutes,
-          targetDailyHours: Number((profile.targetDailyMinutes / 60).toFixed(1)),
-          goalCompleted: todayMinutes >= profile.targetDailyMinutes,
+          targetDailyMinutes: dailyGoalTotalMinutes,
+          targetDailyHours: Number((dailyGoalTotalMinutes / 60).toFixed(1)),
+          goalCompleted: todayMinutes >= dailyGoalTotalMinutes,
           history,
         },
         stats: {
@@ -164,24 +172,25 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
   });
 
   // ─── POST /api/activity/heartbeat ─────────────────────────────────────────
-  fastify.post("/api/activity/heartbeat", async (_req, reply) => {
+  fastify.post("/api/activity/heartbeat", async (req, reply) => {
+    const { profileId = "default-profile" } = (req.body || {}) as { profileId?: string };
     try {
       const today = getTodayString();
       const yesterday = getYesterdayString();
       const twoDaysAgo = getTwoDaysAgoString();
 
-      const profile = await getOrCreateProfile();
+      const profile = await getOrCreateProfile(profileId);
 
       // Upsert today's log (+1 minute per ping)
-      const updatedLog = await (prisma as any).dailyActivityLog.upsert({
+      const updatedLog = await prisma.dailyActivityLog.upsert({
         where: {
           userProfileId_date: {
-            userProfileId: "default-profile",
+            userProfileId: profileId,
             date: today,
           },
         },
         create: {
-          userProfileId: "default-profile",
+          userProfileId: profileId,
           date: today,
           minutesSpent: 1,
         },
@@ -217,8 +226,8 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
 
         const newLongest = Math.max(profile.longestStreak, newStreak);
 
-        await (prisma as any).userProfile.update({
-          where: { id: "default-profile" },
+        await prisma.userProfile.update({
+          where: { id: profileId },
           data: {
             currentStreak: newStreak,
             longestStreak: newLongest,
@@ -239,30 +248,38 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
   fastify.patch("/api/profile", async (req, reply) => {
     try {
       const body = (req.body || {}) as {
+        profileId?: string;
         name?: string;
         age?: number;
         profession?: string;
+        targetDailyHours?: number;
         targetDailyMinutes?: number;
         reminderTime?: string;
       };
+
+      const profileId = body.profileId || "default-profile";
 
       const dataToUpdate: any = {};
       if (typeof body.name === "string" && body.name.trim()) dataToUpdate.name = body.name.trim();
       if (body.age !== undefined && !isNaN(Number(body.age))) dataToUpdate.age = Number(body.age);
       if (typeof body.profession === "string" && body.profession.trim()) dataToUpdate.profession = body.profession.trim();
+      if (body.targetDailyHours !== undefined && !isNaN(Number(body.targetDailyHours))) {
+        dataToUpdate.targetDailyHours = Math.max(0, Number(body.targetDailyHours));
+      }
       if (body.targetDailyMinutes !== undefined && !isNaN(Number(body.targetDailyMinutes))) {
-        dataToUpdate.targetDailyMinutes = Math.max(15, Number(body.targetDailyMinutes));
+        dataToUpdate.targetDailyMinutes = Math.max(0, Number(body.targetDailyMinutes));
       }
       if (typeof body.reminderTime === "string") dataToUpdate.reminderTime = body.reminderTime;
 
-      const updated = await (prisma as any).userProfile.upsert({
-        where: { id: "default-profile" },
+      const updated = await prisma.userProfile.upsert({
+        where: { id: profileId },
         create: {
-          id: "default-profile",
+          id: profileId,
           name: dataToUpdate.name || "Learner",
           age: dataToUpdate.age || 18,
           profession: dataToUpdate.profession || "Engineer",
-          targetDailyMinutes: dataToUpdate.targetDailyMinutes || 60,
+          targetDailyHours: dataToUpdate.targetDailyHours || 1,
+          targetDailyMinutes: dataToUpdate.targetDailyMinutes || 0,
           reminderTime: dataToUpdate.reminderTime || "20:00",
         },
         update: dataToUpdate,

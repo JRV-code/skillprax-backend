@@ -135,9 +135,9 @@ function isRetryableModelError(errorStr: string, status?: number): boolean {
 
 export async function callGroqWithFallback(
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
-  options: { apiKey: string; jsonMode?: boolean }
+  options: { apiKey: string; jsonMode?: boolean; model?: string; temperature?: number }
 ): Promise<{ content: string; modelUsed: string }> {
-  const availableModels = await getAvailableModels(options.apiKey);
+  const availableModels = options.model ? [options.model, ...await getAvailableModels(options.apiKey)] : await getAvailableModels(options.apiKey);
   let lastError: Error | unknown;
 
   for (const model of availableModels) {
@@ -150,7 +150,7 @@ export async function callGroqWithFallback(
         const payload: Record<string, any> = {
           model,
           messages,
-          temperature: 0.2,
+          temperature: options.temperature ?? 0.2,
           max_tokens: 4000,
         };
         if (options.jsonMode) {

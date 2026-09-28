@@ -22,56 +22,80 @@ model AdminConfig {
   updatedAt       DateTime @updatedAt
 }
 
+model UserProfile {
+  id                 String             @id @default(cuid())
+  name               String             @default("Explorer")
+  age                Int?               @default(18)
+  profession         String             @default("Lifelong Learner")
+  targetDailyHours   Int                @default(1)
+  targetDailyMinutes Int                @default(0)
+  reminderTime       String?            @default("20:00")
+  currentStreak      Int                @default(0)
+  longestStreak      Int                @default(0)
+  streakFreezes      Int                @default(0)
+  lastActiveDate     String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  workspaces         Workspace[]
+  activityLogs       DailyActivityLog[]
+}
+
 model Workspace {
-  id                  String      @id @default(cuid())
+  id                  String       @id @default(cuid())
   title               String
-  domainCategory      String      @default("General Knowledge")
-  targetGoal          String      @default("Full Mastery")
-  level               String      @default("beginner")
-  isGenerating        Boolean     @default(false)
+  domainCategory      String       @default("General Knowledge")
+  targetGoal          String       @default("Full Mastery")
+  level               String       @default("Beginner")
+  currentStep         Int          @default(1)
+  totalPlannedSteps   Int          @default(5)
+  aiEngine            String       @default("llama-3.3-70b-versatile")
+  isGenerating        Boolean      @default(false)
   generationStartedAt DateTime?
+  userProfileId       String?
+  userProfile         UserProfile? @relation(fields: [userProfileId], references: [id], onDelete: Cascade)
   steps               SkillStep[]
-  createdAt           DateTime    @default(now())
-  updatedAt           DateTime    @updatedAt
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
 }
 
 model SkillStep {
-  id                   String        @id @default(cuid())
-  workspaceId          String
-  workspace            Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  stepIndex            Int
-  title                String
-  description          String        @default("")
-  status               String        @default("IN_PROGRESS")
-  assessableUnits      Json          @default("[]")
-  quizBlueprint        Json          @default("[]")
-  resources            Json          @default("[]")
-  attempts             QuizAttempt[]
-  createdAt            DateTime      @default(now())
-  updatedAt            DateTime      @updatedAt
+  id              String        @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  stepIndex       Int
+  title           String
+  description     String        @default("")
+  status          String        @default("IN_PROGRESS")
+  assessableUnits Json          @default("[]")
+  quizBlueprint   Json          @default("[]")
+  questionCount   Int           @default(0)
+  resources       Json          @default("[]")
+  attempts        QuizAttempt[]
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 }
 
 model QuizAttempt {
-  id              String    @id @default(cuid())
-  stepId          String
-  step            SkillStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
-  score           Int       @default(0)
-  scorePercent    Int       @default(0)
-  correctCount    Int       @default(0)
-  questionCount   Int       @default(0)
-  passed          Boolean   @default(false)
-  status          String    @default("in_progress")
-  questions       Json?     @default("[]")
-  answers         Json?     @default("[]")
-  results         Json?     @default("[]")
-  userAnswers     Json?     @default("[]")
-  completedAt     DateTime?
-  createdAt       DateTime  @default(now())
+  id            String    @id @default(cuid())
+  stepId        String
+  step          SkillStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  score         Int       @default(0)
+  scorePercent  Int       @default(0)
+  correctCount  Int       @default(0)
+  questionCount Int       @default(0)
+  passed        Boolean   @default(false)
+  status        String    @default("in_progress")
+  questions     Json?     @default("[]")
+  answers       Json?     @default("[]")
+  results       Json?     @default("[]")
+  userAnswers   Json?     @default("[]")
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
 }
 
 model AbandonmentLog {
   id                  String   @id @default(cuid())
-  workspaceId         String   // plain scalar, NOT a relation — survives workspace deletion
+  workspaceId         String
   trackTitle          String
   domain              String   @default("General Knowledge")
   completedStepsCount Int      @default(0)
@@ -81,25 +105,9 @@ model AbandonmentLog {
   createdAt           DateTime @default(now())
 }
 
-model UserProfile {
-  id                 String             @id @default("default-profile")
-  name               String             @default("Explorer")
-  age                Int?               @default(18)
-  profession         String             @default("Lifelong Learner")
-  targetDailyMinutes Int                @default(60)
-  reminderTime       String?            @default("20:00")
-  currentStreak      Int                @default(0)
-  longestStreak      Int                @default(0)
-  streakFreezes      Int                @default(0)
-  lastActiveDate     String?
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
-  activityLogs       DailyActivityLog[]
-}
-
 model DailyActivityLog {
   id            String      @id @default(cuid())
-  userProfileId String      @default("default-profile")
+  userProfileId String
   date          String
   minutesSpent  Int         @default(0)
   createdAt     DateTime    @default(now())
