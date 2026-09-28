@@ -2,6 +2,7 @@ import { GoogleGenAI } from '@google/genai';
 import prisma from '../prisma';
 import { searchTavilyCandidates, searchWeb } from '../search/tavily';
 import { generateWithGemini } from './gemini';
+import { isDenylistedSearchUrl } from './pipeline';
 
 export const FREE_AI_FLEET = {
   groq: {
@@ -196,27 +197,85 @@ export function sanitizeBookUrl(title: string, author?: string): string {
 
 export function normalizeResources(resources: any[]): any[] {
   if (!Array.isArray(resources)) return [];
-  return resources.map((res, index) => {
-    const priority = typeof res.priority === 'number' ? res.priority : index + 1;
-    const badge = res.badge || (priority === 1 ? 'START HERE' : priority === 2 ? 'FOUNDATIONAL WIKI' : 'DEEP STUDY');
-    const title = res.title || `Resource ${priority}`;
-    const type = res.type || 'guide';
-    const url = sanitizeResourceUrl(res.url, title, type);
-    const studyGuidance =
-      res.studyGuidance ||
-      res.whyThisFirst ||
-      `Study this material to build your core understanding of ${title}.`;
 
-    return {
-      priority,
-      badge,
-      title,
-      url,
-      type,
-      studyGuidance,
-      whyThisFirst: studyGuidance,
-    };
+  const videos: any[] = [];
+  const docs: any[] = [];
+
+  resources.forEach((res, index) => {
+    const title = res.title || `Resource ${index + 1}`;
+    const rawType = (res.type || res.badge || 'guide').toLowerCase();
+    const isVideo = rawType.includes('video') || rawType.includes('youtube') || (res.url && String(res.url).includes('youtube.com'));
+
+    let url = String(res.url || '').trim();
+    if (isVideo) {
+      if (!url || !url.startsWith('http') || isDenylistedSearchUrl(url)) {
+        url = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${title} tutorial`)}`;
+      }
+      videos.push({
+        priority: videos.length + 1,
+        badge: 'VIDEO',
+        title,
+        url,
+        type: 'video',
+        studyGuidance: res.studyGuidance || res.whyThisFirst || res.pedagogicalRole || `Watch this tutorial to master ${title}.`,
+        whyThisFirst: res.studyGuidance || res.whyThisFirst || `Watch this tutorial to master ${title}.`,
+      });
+    } else {
+      if (!url || !url.startsWith('http') || isDenylistedSearchUrl(url)) {
+        url = `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(title)}`;
+      }
+      docs.push({
+        priority: docs.length + 1,
+        badge: res.badge && res.badge !== 'VIDEO' ? res.badge : 'DOCUMENTATION',
+        title,
+        url,
+        type: res.type || 'guide',
+        studyGuidance: res.studyGuidance || res.whyThisFirst || res.pedagogicalRole || `Study this documentation for ${title}.`,
+        whyThisFirst: res.studyGuidance || res.whyThisFirst || `Study this documentation for ${title}.`,
+      });
+    }
   });
+
+  // Enforce quota: EXACTLY 1 to 2 YouTube videos, 2 to 3 documentation articles
+  const finalVideos = videos.slice(0, 2);
+  if (finalVideos.length === 0) {
+    finalVideos.push({
+      priority: 1,
+      badge: 'VIDEO',
+      title: 'YouTube Video Tutorial & Lecture',
+      url: `https://www.youtube.com/results?search_query=learning+tutorial`,
+      type: 'video',
+      studyGuidance: 'Watch this high-yield video tutorial for practical walkthroughs.',
+      whyThisFirst: 'Watch this high-yield video tutorial for practical walkthroughs.',
+    });
+  }
+
+  const finalDocs = docs.slice(0, 3);
+  if (finalDocs.length < 2) {
+    finalDocs.push({
+      priority: finalDocs.length + 1,
+      badge: 'DOCUMENTATION',
+      title: 'Official Documentation & Canonical Reference',
+      url: 'https://en.wikipedia.org/wiki/Main_Page',
+      type: 'guide',
+      studyGuidance: 'Read the foundational documentation and canonical reference material.',
+      whyThisFirst: 'Read the foundational documentation and canonical reference material.',
+    });
+    if (finalDocs.length < 2) {
+      finalDocs.push({
+        priority: finalDocs.length + 1,
+        badge: 'ARTICLE',
+        title: 'GeeksforGeeks / MDN Reference Overview',
+        url: 'https://developer.mozilla.org',
+        type: 'guide',
+        studyGuidance: 'Review technical concepts and architectural mechanisms.',
+        whyThisFirst: 'Review technical concepts and architectural mechanisms.',
+      });
+    }
+  }
+
+  const combined = [...finalVideos, ...finalDocs];
+  return combined.map((res, i) => ({ ...res, priority: i + 1 }));
 }
 
 

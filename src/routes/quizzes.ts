@@ -97,64 +97,33 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         return reply.status(404).send({ error: `SkillStep with ID "${cleanStepId}" was not found.` });
       }
 
-      let storedBlueprint = safeJsonParse(step.quizBlueprint, []);
+      const acus = safeJsonParse(step.assessableUnits, []);
+      const resources = safeJsonParse(step.resources, []);
 
-      // GUARDRAIL 5: If quizBlueprint is empty, SYNCHRONOUSLY generate Phase B now
-      if (storedBlueprint.length === 0) {
-        fastify.log.info(`[Quiz] Blueprint empty for step "${cleanStepId}". Triggering synchronous Phase B generation...`);
+      // ALWAYS generate a fresh, novel set of questions on every quiz launch or retake
+      let freshQuestions: any[] = [];
+      const groqKey = await getGroqApiKey().catch(() => null);
 
-        const acus = safeJsonParse(step.assessableUnits, []);
-        const resources = safeJsonParse(step.resources, []);
-
-        if (acus.length > 0) {
-          try {
-            const groqKey = await getGroqApiKey();
-            const generatedQuestions = await synthesizeQuizFromMaterial(acus, resources, groqKey);
-
-            if (generatedQuestions.length > 0) {
-              await prisma.skillStep.update({
-                where: { id: cleanStepId },
-                data: {
-                  quizBlueprint: generatedQuestions as any,
-                },
-              });
-              storedBlueprint = generatedQuestions;
-            }
-          } catch (healErr) {
-            fastify.log.warn(`[Quiz] Phase B synchronous generation failed: ${(healErr as Error).message}`);
-          }
+      if (groqKey && acus.length > 0) {
+        try {
+          const seed = Math.random().toString(36).substring(7);
+          freshQuestions = await synthesizeQuizFromMaterial(
+            acus,
+            resources,
+            groqKey,
+            { seed, temperature: 0.8 } // Forces novelty in question generation
+          );
+        } catch (genErr) {
+          fastify.log.warn(`[Quiz] Fresh quiz generation warning: ${(genErr as Error).message}`);
         }
       }
 
-      // IDEMPOTENCY: Check for existing unsubmitted QuizAttempt for this stepId
-      const existingAttempt: any = await prisma.quizAttempt.findFirst({
-        where: {
-          stepId: cleanStepId,
-          status: "in_progress",
-        },
-        orderBy: { createdAt: "desc" },
-      });
-
-      if (existingAttempt && existingAttempt.questions) {
-        const rawQuestions = safeJsonParse(existingAttempt.questions, []);
-        if (rawQuestions.length > 0) {
-          const studentSafeQuestions = formatStudentSafeQuestions(rawQuestions);
-          return reply.send({
-            attemptId: existingAttempt.id,
-            passingThreshold: PASSING_THRESHOLD,
-            passingScorePercent: Math.round(PASSING_THRESHOLD * 100),
-            questionCount: studentSafeQuestions.length,
-            questions: studentSafeQuestions,
-          });
-        }
-      }
-
-      // Fallback questions if blueprint is still empty after Phase B attempt
-      if (storedBlueprint.length === 0) {
-        const acus = safeJsonParse(step.assessableUnits, [
+      // Fallback questions if Groq synthesis returned empty
+      if (!freshQuestions || freshQuestions.length === 0) {
+        const fallbackAcus = acus.length > 0 ? acus : [
           { id: "acu-1", label: "Core Principles", description: "Foundational step principles" },
-        ]);
-        storedBlueprint = acus.map((acu: any, idx: number) => ({
+        ];
+        freshQuestions = fallbackAcus.map((acu: any, idx: number) => ({
           id: `q${idx + 1}`,
           acuId: acu.id || `acu-${idx + 1}`,
           scenario: `Evaluating competency in ${acu.label || "Principles"} for ${step.title}.`,
@@ -175,16 +144,27 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         }));
       }
 
+      // Overwrite step blueprint with newly generated questions
+      await prisma.skillStep.update({
+        where: { id: step.id },
+        data: {
+          quizBlueprint: freshQuestions as any,
+        },
+      });
+
+      // Create a new QuizAttempt record
       const newAttempt = await prisma.quizAttempt.create({
         data: {
           stepId: step.id,
           status: "in_progress",
-          questionCount: storedBlueprint.length,
-          questions: storedBlueprint as any,
+          questionCount: freshQuestions.length,
+          questions: freshQuestions as any,
+          score: 0,
+          passed: false,
         },
       });
 
-      const studentSafeQuestions = formatStudentSafeQuestions(storedBlueprint);
+      const studentSafeQuestions = formatStudentSafeQuestions(freshQuestions);
 
       return reply.status(201).send({
         attemptId: newAttempt.id,

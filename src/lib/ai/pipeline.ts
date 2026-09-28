@@ -473,7 +473,8 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
 export async function synthesizeQuizFromMaterial(
   acus: ACU[],
   resources: CuratedResource[],
-  groqKey?: string
+  groqKey?: string,
+  options?: { seed?: string; temperature?: number }
 ): Promise<QuizQuestion[]> {
   const apiKey = groqKey || process.env.GROQ_API_KEY;
   if (!apiKey) {
@@ -484,9 +485,13 @@ export async function synthesizeQuizFromMaterial(
     return [];
   }
 
-  const systemPrompt = `You are a diagnostic evaluation examiner. Your task is to generate scenario-based evaluation questions.
+  const seedStr = options?.seed || Math.random().toString(36).substring(7);
+  const temp = options?.temperature ?? 0.8;
 
-Author questions using ONLY the specific concepts, explanations, and practical mechanisms introduced in the provided curated resources and Atomic Competency Units for this step. Do NOT include general knowledge, textbook trivia, or external concepts outside what is directly taught in these materials.
+  const systemPrompt = `You are a diagnostic evaluation examiner. Your task is to generate NOVEL, scenario-based evaluation questions.
+Randomization Seed: "${seedStr}". Produce completely fresh scenarios and distractor options. Do NOT repeat previous questions.
+
+Author questions using ONLY the specific concepts, explanations, and practical mechanisms introduced in the provided curated resources and Atomic Competency Units for this step.
 
 YOUR MANDATES:
 1. Write EXACTLY one scenario-based multiple choice question per ACU in the provided list. questions.length MUST equal acus.length.
