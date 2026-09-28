@@ -194,18 +194,41 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
   });
 
   // ============================================================
-  // 2. GET /api/workspaces — List all workspaces
+  // 2. GET /api/workspaces — List all workspaces enriched for Dashboard
   // ============================================================
-  fastify.get("/api/workspaces", async (_request, reply) => {
+  fastify.get("/api/workspaces", async (req, reply) => {
     try {
       const workspaces = await prisma.workspace.findMany({
         orderBy: { updatedAt: "desc" },
-        include: { steps: { orderBy: { stepIndex: "asc" } } },
+        include: {
+          steps: {
+            select: { id: true, stepIndex: true, status: true, title: true },
+            orderBy: { stepIndex: "asc" },
+          },
+        },
       });
-      return reply.send(workspaces.map(formatWorkspaceClientSafe));
+
+      const enriched = workspaces.map((ws: any) => {
+        const steps = ws.steps || [];
+        const totalSteps = Math.max(steps.length, 1);
+        const passedCount = steps.filter((s: any) => s.status === "PASSED").length;
+        const progress = Math.round((passedCount / totalSteps) * 100);
+        const currentStep = passedCount < totalSteps ? passedCount + 1 : totalSteps;
+
+        return {
+          ...ws,
+          totalSteps,
+          completedSteps: passedCount,
+          currentStep,
+          progress,
+          engine: "Groq LLaMA 3.3",
+        };
+      });
+
+      return reply.status(200).send(enriched);
     } catch (err: any) {
-      fastify.log.error(err);
-      return reply.send([]);
+      fastify.log.error(err, "[GET /api/workspaces] Failed");
+      return reply.status(500).send({ error: "Failed to fetch tracks" });
     }
   });
 
@@ -423,9 +446,9 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
           include: { steps: { orderBy: { stepIndex: "asc" } } },
         });
 
-        return reply.status(201).send({
-          step: formatStepClientSafe(updatedStep),
-          workspace: formatWorkspaceClientSafe(updatedWorkspace),
+        return reply.status(200).send({
+          ...(updatedWorkspace || {}),
+          workspace: updatedWorkspace,
         });
       } finally {
         await prisma.workspace.update({

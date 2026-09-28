@@ -214,130 +214,161 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
         return reply.status(400).send({ error: `Invalid stepId "${stepId}".` });
       }
 
+      const step: any = await prisma.skillStep.findUnique({
+        where: { id: cleanStepId },
+      });
+
+      if (!step) {
+        return reply.status(404).send({ error: `SkillStep with ID "${cleanStepId}" was not found.` });
+      }
+
       const body: any = request.body || {};
       const attemptId = String(body.attemptId || "").trim();
 
-      if (!attemptId || (!CUID_REGEX.test(attemptId) && attemptId.length < 5)) {
-        return reply.status(400).send({ error: `Invalid or malformed attemptId "${attemptId}".` });
-      }
-
-      // GUARDRAIL 4: normalize answers from either shape
-      const answersArray = normalizeAnswers(body.answers);
-
-      const attempt: any = await prisma.quizAttempt.findUnique({
-        where: { id: attemptId },
-      });
-
-      if (!attempt) {
-        return reply.status(404).send({ error: `Quiz attempt "${attemptId}" not found.` });
-      }
-
-      // Verify attempt belongs to this step — mismatch is 404 (not 403, no auth concept)
-      if (attempt.stepId !== cleanStepId) {
-        return reply.status(404).send({ error: "Quiz attempt does not match this step." });
-      }
-
-      // IDEMPOTENCY: If already submitted, return previous result
-      if (attempt.status === "completed") {
-        const previousResults = safeJsonParse(attempt.results, []);
-        return reply.send({
-          attemptId: attempt.id,
-          scorePercent: attempt.scorePercent,
-          score: attempt.scorePercent,
-          passed: attempt.passed,
-          passingThresholdPercent: Math.round(PASSING_THRESHOLD * 100),
-          correctCount: attempt.correctCount,
-          totalQuestions: attempt.questionCount,
-          results: previousResults,
+      let attempt: any = null;
+      if (attemptId) {
+        attempt = await prisma.quizAttempt.findUnique({
+          where: { id: attemptId },
         });
       }
 
-      const storedQuestions: any[] = safeJsonParse(attempt.questions, []);
-      const answerMap = new Map<string, string>();
-      for (const a of answersArray) {
-        answerMap.set(a.questionId, a.selectedOptionId);
+      // If attempt is already completed, return existing result payload
+      if (attempt && attempt.status === "completed") {
+        const previousResults = safeJsonParse(attempt.results, []);
+        const prevScore = attempt.score ?? attempt.scorePercent ?? 0;
+        const prevPassed = attempt.passed ?? false;
+        return reply.status(200).send({
+          attemptId: attempt.id,
+          score: prevScore,
+          passed: prevPassed,
+          passingThreshold: 80,
+          totalQuestions: attempt.questionCount,
+          correctCount: attempt.correctCount,
+          results: previousResults,
+          evaluation: {
+            score: prevScore,
+            passed: prevPassed,
+            results: previousResults,
+          },
+        });
       }
+
+      // Parse blueprint defensively
+      let rawBlueprint: any[] = [];
+      try {
+        rawBlueprint = Array.isArray(step.quizBlueprint)
+          ? step.quizBlueprint
+          : JSON.parse(step.quizBlueprint || "[]");
+      } catch (_) {
+        rawBlueprint = safeJsonParse(step.quizBlueprint, []);
+      }
+
+      if ((!rawBlueprint || rawBlueprint.length === 0) && attempt?.questions) {
+        rawBlueprint = safeJsonParse(attempt.questions, []);
+      }
+
+      const rawAnswers = body.answers !== undefined ? body.answers : body;
+      const normalizedAnswers = normalizeAnswers(rawAnswers);
 
       let correctCount = 0;
-      const diagnosticResults: any[] = [];
+      const results = rawBlueprint.map((q: any) => {
+        const qId = String(q.id);
+        const userAns = normalizedAnswers.find((a: any) => String(a.questionId) === qId);
+        const chosenOptionId = userAns ? String(userAns.selectedOptionId) : null;
+        const correctOptionId = String(q.correctOptionId);
+        const isCorrect = Boolean(chosenOptionId && chosenOptionId.toUpperCase() === correctOptionId.toUpperCase());
 
-      for (const q of storedQuestions) {
-        const userChoiceKey = answerMap.get(q.id) || "NONE";
-        const correctKey = String(q.correctOptionId || "A").toUpperCase();
-        const isCorrect = userChoiceKey === correctKey;
+        if (isCorrect) correctCount++;
 
-        if (isCorrect) {
-          correctCount++;
+        let whyWrong: string | null = null;
+        if (!isCorrect && chosenOptionId) {
+          whyWrong =
+            q.distractorExplanations?.[chosenOptionId] ||
+            q.distractorExplanations?.[chosenOptionId.toUpperCase()] ||
+            q.distractorAnalysis?.[chosenOptionId] ||
+            `Selected option ${chosenOptionId} fails to resolve the scenario's constraint.`;
         }
 
-        const optionsArray: Array<{ id: string; text: string }> = Array.isArray(q.options)
-          ? q.options.map((opt: any, idx: number) => {
-              if (typeof opt === "string") {
-                const keys = ["A", "B", "C", "D"];
-                return { id: keys[idx] || String(idx), text: opt };
-              }
-              return { id: String(opt.id || opt.key || "A"), text: String(opt.text || "") };
-            })
-          : [];
-
-        const chosenOptObj = optionsArray.find((o) => o.id.toUpperCase() === userChoiceKey);
-        const correctOptObj = optionsArray.find((o) => o.id.toUpperCase() === correctKey);
-
-        const distractorExps = q.distractorExplanations || {};
-        const whyWrong = distractorExps[userChoiceKey] || "Selected option does not demonstrate required ACU competency.";
-
-        diagnosticResults.push({
-          questionId: q.id,
-          acuId: q.acuId || "acu-1",
-          question: q.question,
+        return {
+          questionId: qId,
+          scenario: q.scenario || q.question || "Scenario assessment",
+          chosenOptionId,
+          correctOptionId,
           isCorrect,
-          chosenOptionId: userChoiceKey,
-          chosenOption: chosenOptObj ? chosenOptObj.text : "No Answer",
-          correctOptionId: correctKey,
-          correctOption: correctOptObj ? correctOptObj.text : "Correct Option",
-          whyWrong: isCorrect ? "Correct application of competency." : whyWrong,
-        });
-      }
+          whyWrong,
+        };
+      });
 
-      const totalQuestions = Math.max(storedQuestions.length, 1);
-      const scoreFraction = correctCount / totalQuestions;
-      const scorePercent = Math.round(scoreFraction * 100);
-      const passed = scoreFraction >= PASSING_THRESHOLD;
+      const totalQuestions = Math.max(rawBlueprint.length, 1);
+      const score = Math.round((correctCount / totalQuestions) * 100);
+      const passed = score >= 80;
 
-      // SINGLE PRISMA TRANSACTION: update attempt + update step status if passed
-      const [updatedAttempt] = await prisma.$transaction([
-        prisma.quizAttempt.update({
-          where: { id: attemptId },
+      const targetAttemptId = attempt?.id || attemptId;
+
+      const transactionOps: any[] = [];
+      if (targetAttemptId && attempt) {
+        transactionOps.push(
+          prisma.quizAttempt.update({
+            where: { id: targetAttemptId },
+            data: {
+              status: "completed",
+              score,
+              scorePercent: score,
+              correctCount,
+              passed,
+              results: results as any,
+              userAnswers: normalizedAnswers as any,
+              completedAt: new Date(),
+            },
+          })
+        );
+      } else {
+        const createdAttempt = await prisma.quizAttempt.create({
           data: {
+            stepId: step.id,
             status: "completed",
-            score: scorePercent,
-            scorePercent,
+            questionCount: rawBlueprint.length,
+            questions: rawBlueprint as any,
+            score,
+            scorePercent: score,
             correctCount,
             passed,
-            results: diagnosticResults as any,
-            userAnswers: answersArray as any,
+            results: results as any,
+            userAnswers: normalizedAnswers as any,
             completedAt: new Date(),
           },
-        }),
-        ...(passed
-          ? [
-              prisma.skillStep.update({
-                where: { id: cleanStepId },
-                data: { status: "PASSED" },
-              }),
-            ]
-          : []),
-      ]);
+        });
+        attempt = createdAttempt;
+      }
 
-      return reply.send({
-        attemptId: updatedAttempt.id,
-        scorePercent,
-        score: scorePercent,
+      if (passed) {
+        transactionOps.push(
+          prisma.skillStep.update({
+            where: { id: step.id },
+            data: { status: "PASSED" },
+          })
+        );
+      }
+
+      if (transactionOps.length > 0) {
+        await prisma.$transaction(transactionOps);
+      }
+
+      const finalAttemptId = attempt?.id || targetAttemptId || cleanStepId;
+
+      return reply.status(200).send({
+        attemptId: finalAttemptId,
+        score,
         passed,
-        passingThresholdPercent: Math.round(PASSING_THRESHOLD * 100),
-        correctCount,
+        passingThreshold: 80,
         totalQuestions,
-        results: diagnosticResults,
+        correctCount,
+        results,
+        evaluation: {
+          score,
+          passed,
+          results,
+        },
       });
     } catch (err: any) {
       if (err?.code === "P2025") {
