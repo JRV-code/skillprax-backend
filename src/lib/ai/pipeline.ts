@@ -486,7 +486,7 @@ export async function synthesizeQuizFromMaterial(
 
   const systemPrompt = `You are a diagnostic evaluation examiner. Your task is to generate scenario-based evaluation questions.
 
-CRITICAL CONSTRAINT: Write every question using ONLY the concepts, mechanisms, and material scope defined in the ACUs below. Do not introduce test content outside what these ACUs cover. Do not import generic textbook trivia unrelated to this specific curated material.
+Author questions using ONLY the specific concepts, explanations, and practical mechanisms introduced in the provided curated resources and Atomic Competency Units for this step. Do NOT include general knowledge, textbook trivia, or external concepts outside what is directly taught in these materials.
 
 YOUR MANDATES:
 1. Write EXACTLY one scenario-based multiple choice question per ACU in the provided list. questions.length MUST equal acus.length.
@@ -512,7 +512,11 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
 
   const userPrompt = JSON.stringify({
     acus,
-    resourceContext: resources.map((r) => ({ title: r.title, badge: r.badge })),
+    curatedResources: resources.map((r) => ({
+      title: r.title,
+      badge: r.badge,
+      studyGuidance: r.studyGuidance,
+    })),
     expectedQuestionCount: acus.length,
   });
 

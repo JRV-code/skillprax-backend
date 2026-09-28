@@ -59,13 +59,14 @@ function stripQuizAnswers(questions: any[]): any[] {
 const formatStepClientSafe = (step: any) => {
   const rawBlueprint = safeJsonParse(step.quizBlueprint, []);
   const studentSafeQuestions = stripQuizAnswers(rawBlueprint);
+  const acus = safeJsonParse(step.assessableUnits, []);
 
   return {
     ...step,
-    assessableUnits: safeJsonParse(step.assessableUnits, []),
+    assessableUnits: acus,
     resources: safeJsonParse(step.resources, []),
     quizBlueprint: studentSafeQuestions,
-    questionCount: studentSafeQuestions.length,
+    questionCount: studentSafeQuestions.length > 0 ? studentSafeQuestions.length : acus.length,
   };
 };
 
@@ -153,27 +154,12 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
           apiKeys.groqApiKey
         );
 
-        // Persist Phase A results
-        await prisma.skillStep.update({
+        // Persist Phase A results (Quiz generation happens on-demand via prompt-quiz button click)
+        const updatedStep = await prisma.skillStep.update({
           where: { id: step.id },
           data: {
             assessableUnits: materials.acus as any,
             resources: materials.resources as any,
-          },
-        });
-
-        // Phase B: quiz generation (best-effort, non-blocking failure)
-        let quizQuestions: any[] = [];
-        try {
-          quizQuestions = await synthesizeQuizFromMaterial(materials.acus, materials.resources, apiKeys.groqApiKey);
-        } catch (quizErr) {
-          console.warn("[workspaces] Phase B quiz gen failed during initiate (non-blocking):", (quizErr as Error).message);
-        }
-
-        const updatedStep = await prisma.skillStep.update({
-          where: { id: step.id },
-          data: {
-            quizBlueprint: quizQuestions as any,
           },
         });
 
@@ -423,20 +409,12 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
           apiKeys.groqApiKey
         );
 
-        // Phase B quiz
-        let quizQuestions: any[] = [];
-        try {
-          quizQuestions = await synthesizeQuizFromMaterial(materials.acus, materials.resources, apiKeys.groqApiKey);
-        } catch (quizErr) {
-          console.warn("[workspaces] Phase B quiz gen failed during next-step (non-blocking):", (quizErr as Error).message);
-        }
-
+        // Persist Phase A results for next step (Quiz generation happens on-demand via prompt-quiz button click)
         const updatedStep = await prisma.skillStep.update({
           where: { id: newStep.id },
           data: {
             assessableUnits: materials.acus as any,
             resources: materials.resources as any,
-            quizBlueprint: quizQuestions as any,
           },
         });
 
