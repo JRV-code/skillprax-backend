@@ -82,12 +82,31 @@ model AbandonmentLog {
 }
 
 model UserProfile {
-  id         String   @id @default("default-profile")
-  name       String   @default("Explorer")
-  age        Int?     @default(18)
-  profession String   @default("Lifelong Learner")
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id                 String             @id @default("default-profile")
+  name               String             @default("Explorer")
+  age                Int?               @default(18)
+  profession         String             @default("Lifelong Learner")
+  targetDailyMinutes Int                @default(60)
+  reminderTime       String?            @default("20:00")
+  currentStreak      Int                @default(0)
+  longestStreak      Int                @default(0)
+  streakFreezes      Int                @default(0)
+  lastActiveDate     String?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  activityLogs       DailyActivityLog[]
+}
+
+model DailyActivityLog {
+  id            String      @id @default(cuid())
+  userProfileId String      @default("default-profile")
+  date          String
+  minutesSpent  Int         @default(0)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  userProfile   UserProfile @relation(fields: [userProfileId], references: [id], onDelete: Cascade)
+
+  @@unique([userProfileId, date])
 }
 
 model AdminSecurity {
