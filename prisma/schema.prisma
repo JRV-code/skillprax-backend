@@ -80,3 +80,12 @@ model AbandonmentLog {
   reasonDetail        String?
   createdAt           DateTime @default(now())
 }
+
+model UserProfile {
+  id         String   @id @default("default-profile")
+  name       String   @default("Explorer")
+  age        Int?     @default(18)
+  profession String   @default("Lifelong Learner")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
