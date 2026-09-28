@@ -446,95 +446,82 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
   });
 
   // ============================================================
-  // 5. POST /api/workspaces/:id/abandon-reflection — Groq-generated stakes reflection
+  // 5. POST /api/workspaces/:id/abandon-reflection — Resilient reflection handler
   // ============================================================
-  fastify.post("/api/workspaces/:id/abandon-reflection", async (request, reply) => {
-    try {
-      const { id: workspaceId } = request.params as { id: string };
-      const cleanId = (workspaceId || "").trim();
+  fastify.post('/api/workspaces/:id/abandon-reflection', async (request, reply) => {
+    const params = (request.params || {}) as { id?: string };
+    const cleanId = (params.id || "").trim();
 
+    try {
       const workspace: any = await prisma.workspace.findUnique({
         where: { id: cleanId },
-        include: { steps: { orderBy: { stepIndex: "asc" } } },
+        include: {
+          steps: {
+            where: { status: 'PASSED' },
+            orderBy: { stepIndex: 'asc' },
+          },
+        },
       });
 
       if (!workspace) {
-        return reply.status(404).send({ error: `Workspace "${cleanId}" not found.` });
+        return reply.status(404).send({ error: 'Workspace not found' });
       }
 
-      const passedSteps = (workspace.steps || []).filter((s: any) => s.status === "PASSED");
-      const passedStepData = passedSteps.map((s: any) => ({
-        title: s.title,
-        acus: safeJsonParse(s.assessableUnits, []),
-      }));
+      const passedSteps = workspace.steps || [];
 
-      // Fallback: plain computed summary (no Groq needed)
-      const fallbackMilestones = passedSteps.map((s: any) => s.title);
-
-      // If no steps completed, no reflection needed — return minimal payload
+      // Return 200 with clear initial context if 0 steps passed yet
       if (passedSteps.length === 0) {
-        return reply.send({
-          reflectionText: null,
+        return reply.status(200).send({
+          reflectionText: `You are at the start of your journey in "${workspace.title}". Pausing now leaves your initial foundational milestone uncompleted.`,
           milestonesSummary: [],
         });
       }
 
+      const completedSummary = passedSteps.map((s: any) => `Milestone ${s.stepIndex}: ${s.title}`);
+
       try {
-        const apiKeys = await getApiKeys();
-
-        const systemPrompt = `You are a learning reflection assistant. Given a user's track progress, generate a short (3-5 sentence) honest, specific reflection naming the actual concepts and capabilities this learner has built. Also produce a milestonesSummary array of short strings (one per completed step, naming what was mastered).
-
-Rules:
-- Reference the REAL ACU content and step titles provided. No generic motivational filler.
-- Be concrete about what real-world capability these concepts unlock.
-- Keep tone honest and respectful — not manipulative, not guilt-tripping.
-
-Output strict JSON: { "reflectionText": "string", "milestonesSummary": ["string", ...] }`;
-
-        const userPrompt = JSON.stringify({
-          trackTitle: workspace.title,
-          domain: workspace.domainCategory,
-          completedSteps: passedStepData,
-        });
-
-        const res = await callGroqWithFallback(
-          [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          { apiKey: apiKeys.groqApiKey, jsonMode: true }
-        );
-
-        let parsed: any;
+        let groqKey: string | undefined;
         try {
-          let cleaned = res.content.trim();
-          if (cleaned.startsWith("```json")) {
-            cleaned = cleaned.replace(/^```json\s*/i, "").replace(/\s*```$/, "");
-          } else if (cleaned.startsWith("```")) {
-            cleaned = cleaned.replace(/^```\s*/, "").replace(/\s*```$/, "");
-          }
-          parsed = JSON.parse(cleaned.trim());
+          const apiKeys = await getApiKeys();
+          groqKey = apiKeys.groqApiKey;
         } catch (_) {
-          parsed = {};
+          groqKey = process.env.GROQ_API_KEY;
         }
 
-        return reply.send({
-          reflectionText: parsed.reflectionText || null,
-          milestonesSummary: Array.isArray(parsed.milestonesSummary) ? parsed.milestonesSummary : fallbackMilestones,
+        if (!groqKey) {
+          return reply.status(200).send({
+            reflectionText: `You have completed ${passedSteps.length} milestone(s) in "${workspace.title}".`,
+            milestonesSummary: completedSummary,
+          });
+        }
+
+        const prompt = `The user is considering abandoning or pausing their learning track titled "${workspace.title}" (${workspace.domainCategory}).
+They have completed ${passedSteps.length} milestones:
+${completedSummary.join('\n')}
+
+Generate a concise, honest 2-3 sentence reflection acknowledging what they have built and what pausing leaves unfinished. No generic motivational fluff. Keep it grounded.`;
+
+        const aiResponse = await callGroqWithFallback([
+          { role: 'user', content: prompt }
+        ], { apiKey: groqKey });
+
+        return reply.status(200).send({
+          reflectionText: aiResponse.content.trim(),
+          milestonesSummary: completedSummary,
         });
       } catch (groqErr) {
-        console.warn("[workspaces] Abandon reflection Groq call failed, using fallback:", (groqErr as Error).message);
-        return reply.send({
-          reflectionText: null,
-          milestonesSummary: fallbackMilestones,
+        fastify.log.warn(`[AbandonReflection] AI fallback used: ${(groqErr as Error).message}`);
+        return reply.status(200).send({
+          reflectionText: `You have completed ${passedSteps.length} milestone(s) in "${workspace.title}".`,
+          milestonesSummary: completedSummary,
         });
       }
-    } catch (err: any) {
-      if (err?.code === "P2025") {
-        return reply.status(404).send({ error: "Workspace not found." });
-      }
-      fastify.log.error(err);
-      return reply.status(500).send({ error: err.message || "Failed to generate abandon reflection" });
+    } catch (err) {
+      fastify.log.error(err, '[AbandonReflection] Failed');
+      return reply.status(200).send({
+        reflectionText: null,
+        milestonesSummary: [],
+      });
     }
   });
 
