@@ -13,14 +13,17 @@ function shuffleArray<T>(array: T[]): T[] {
 }
 
 const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
-  // POST /api/steps/:stepId/prompt-quiz - On-demand, unique, randomized evaluation
-  fastify.post('/api/steps/:stepId/prompt-quiz', async (req, reply) => {
+  // Common handler for quiz generation
+  const generateStepQuizHandler = async (req: any, reply: any) => {
     const { stepId } = req.params as { stepId: string };
-    const { aiEngine, retestMode, focusAcus } = (req.body || {}) as {
+    const { aiEngine, retestMode, focusAcus, priorityAcus } = (req.body || {}) as {
       aiEngine?: string;
       retestMode?: boolean;
       focusAcus?: string[];
+      priorityAcus?: string[];
     };
+
+    const targetFocusAcus = focusAcus || priorityAcus || [];
 
     try {
       const step = await prisma.skillStep.findUnique({
@@ -45,12 +48,12 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
 
       // Build adaptive weighting directive for retest mode
       let weightingDirective = '';
-      if (retestMode && Array.isArray(focusAcus) && focusAcus.length > 0) {
+      if (retestMode && Array.isArray(targetFocusAcus) && targetFocusAcus.length > 0) {
         const focusCount = Math.max(1, Math.round(dynamicQuestionCount * 0.7));
         const retentionCount = dynamicQuestionCount - focusCount;
         weightingDirective = `
 ADAPTIVE RETEST MODE ACTIVE:
-- Generate exactly ${focusCount} questions (70%) targeting these DEFICIENT ACU IDs: ${JSON.stringify(focusAcus)}.
+- Generate exactly ${focusCount} questions (70%) targeting these DEFICIENT ACU IDs/topics: ${JSON.stringify(targetFocusAcus)}.
 - Generate exactly ${retentionCount} questions (30%) as retention checks on OTHER ACUs not in the focus list.
 - All questions MUST be completely novel — never reuse scenarios or phrasing from prior evaluations.
 - Prioritize testing the specific misconceptions that caused prior failure.`;
@@ -135,7 +138,9 @@ Output strictly valid JSON with no markdown formatting:
       const sanitizedQuestions = finalizedBlueprint.map((q: any) => ({
         id: q.id,
         scenario: q.scenario,
+        prompt: q.scenario || q.prompt || q.question || 'Scenario Evaluation',
         options: q.options,
+        acuId: q.acuId || null,
       }));
 
       return reply.send({
@@ -145,15 +150,20 @@ Output strictly valid JSON with no markdown formatting:
         passingThreshold: 0.8
       });
     } catch (err) {
-      fastify.log.error(err, '[PromptQuiz] Failed');
+      fastify.log.error(err, '[QuizGeneration] Failed');
       return reply.status(500).send({ error: 'Quiz generation failed' });
     }
-  });
+  };
+
+  // POST /api/steps/:stepId/prompt-quiz
+  fastify.post('/api/steps/:stepId/prompt-quiz', generateStepQuizHandler);
+  // POST /api/steps/:stepId/level-up-quiz
+  fastify.post('/api/steps/:stepId/level-up-quiz', generateStepQuizHandler);
 
   // POST /api/steps/:stepId/submit-quiz (Evaluation route)
   fastify.post('/api/steps/:stepId/submit-quiz', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
-    const { attemptId, answers } = (req.body || {}) as { attemptId: string; answers: any };
+    const { attemptId, answers } = (req.body || {}) as { attemptId?: string; answers: any };
 
     try {
       const step = await prisma.skillStep.findUnique({
@@ -161,6 +171,15 @@ Output strictly valid JSON with no markdown formatting:
         include: { workspace: true },
       });
       if (!step) return reply.status(404).send({ error: 'Step not found' });
+
+      let targetAttemptId = attemptId;
+      if (!targetAttemptId) {
+        const latestAttempt = await prisma.quizAttempt.findFirst({
+          where: { stepId: step.id },
+          orderBy: { createdAt: 'desc' },
+        });
+        targetAttemptId = latestAttempt?.id;
+      }
 
       const blueprintRaw = step.quizBlueprint;
       const blueprint = Array.isArray(blueprintRaw) ? blueprintRaw : JSON.parse((blueprintRaw as string) || '[]');
@@ -203,16 +222,23 @@ Output strictly valid JSON with no markdown formatting:
       const score = Math.round((correctCount / total) * 100);
       const passed = score >= 80;
 
-      await prisma.$transaction([
-        prisma.quizAttempt.update({
-          where: { id: attemptId },
-          data: { score, scorePercent: score, correctCount, passed, status: "completed", results: results as any, userAnswers: normalizedAnswers as any, completedAt: new Date() },
-        }),
-        prisma.skillStep.update({
+      if (targetAttemptId) {
+        await prisma.$transaction([
+          prisma.quizAttempt.update({
+            where: { id: targetAttemptId },
+            data: { score, scorePercent: score, correctCount, passed, status: "completed", results: results as any, userAnswers: normalizedAnswers as any, completedAt: new Date() },
+          }),
+          prisma.skillStep.update({
+            where: { id: step.id },
+            data: { status: passed ? 'PASSED' : 'FAILED_REMEDIATION' },
+          }),
+        ]);
+      } else {
+        await prisma.skillStep.update({
           where: { id: step.id },
           data: { status: passed ? 'PASSED' : 'FAILED_REMEDIATION' },
-        }),
-      ]);
+        });
+      }
 
       // On failure: trigger targeted weakness diagnostic & remediation
       let diagnosticPrescription = null;
@@ -267,8 +293,9 @@ Output strictly valid JSON with no markdown formatting:
       }
 
       return reply.send({
-        attemptId,
+        attemptId: targetAttemptId,
         score,
+        scorePercentage: score,
         passed,
         passingThreshold: 80,
         totalQuestions: total,
