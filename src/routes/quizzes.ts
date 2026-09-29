@@ -314,6 +314,60 @@ Output strictly valid JSON with no markdown formatting:
         }
       }
 
+      let unlockedNextStepId: string | null = null;
+      let xpEarned = 0;
+      let isFinalStep = false;
+      let nextStepIndex: number | null = null;
+      let workspaceProgress = 0;
+
+      if (passed) {
+        // Fetch all steps for this workspace
+        const allWorkspaceSteps = await prisma.skillStep.findMany({
+          where: { workspaceId: step.workspaceId },
+          orderBy: { stepIndex: 'asc' },
+        });
+
+        const totalSteps = Math.max(allWorkspaceSteps.length, 1);
+        const nextStep = allWorkspaceSteps.find((s) => s.stepIndex === step.stepIndex + 1);
+        isFinalStep = step.stepIndex === totalSteps || !nextStep;
+
+        if (nextStep && (nextStep.status === 'LOCKED' || nextStep.status === 'IN_PROGRESS')) {
+          const updatedNext = await prisma.skillStep.update({
+            where: { id: nextStep.id },
+            data: { status: 'STUDY_UNGENERATED' },
+          });
+          unlockedNextStepId = updatedNext.id;
+          nextStepIndex = nextStep.stepIndex;
+        }
+
+        // Calculate scaled XP: 500 XP * stepIndex + 1000 XP bonus for final completion
+        xpEarned = step.stepIndex * 500 + (isFinalStep ? 1000 : 0);
+
+        const passedCount = allWorkspaceSteps.filter((s) => s.status === 'PASSED').length + 1;
+        workspaceProgress = Math.min(100, Math.round((passedCount / totalSteps) * 100));
+
+        await (prisma.workspace as any).update({
+          where: { id: step.workspaceId },
+          data: { progress: workspaceProgress },
+        });
+
+        if (step.workspace?.userProfileId) {
+          try {
+            await (prisma.userProfile as any).update({
+              where: { id: step.workspace.userProfileId },
+              data: { totalXp: { increment: xpEarned } },
+            });
+          } catch (_) {
+            try {
+              await (prisma as any).profile?.update({
+                where: { id: step.workspace.userProfileId },
+                data: { totalXp: { increment: xpEarned } },
+              });
+            } catch (e) {}
+          }
+        }
+      }
+
       return reply.send({
         attemptId: targetAttemptId,
         score,
@@ -323,6 +377,11 @@ Output strictly valid JSON with no markdown formatting:
         totalQuestions: total,
         correctCount,
         results,
+        xpEarned,
+        isFinalStep,
+        nextStepIndex,
+        unlockedNextStepId,
+        workspaceProgress,
         ...(diagnosticPrescription ? { diagnosticPrescription } : {}),
       });
     } catch (err) {
