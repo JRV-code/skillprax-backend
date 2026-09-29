@@ -177,12 +177,26 @@ export async function searchForStep(params: {
     skillName,
     pillar,
     stepDescription ? stepDescription.slice(0, 120) : "",
-    "tutorial OR documentation OR guide",
+    "2026 latest technical tutorial documentation canonical reference",
   ]
     .filter(Boolean)
     .join(" ");
 
-  return searchTavily(query, apiKey, { maxResults: 8, searchDepth: "advanced" });
+  return searchTavily(query, apiKey, {
+    maxResults: 12,
+    searchDepth: "advanced",
+    includeDomains: [
+      "youtube.com",
+      "developer.mozilla.org",
+      "github.com",
+      "wikipedia.org",
+      "geeksforgeeks.org",
+      "w3schools.com",
+      "arxiv.org",
+      "docs.python.org",
+      "khanacademy.org"
+    ]
+  });
 }
 
 // Backward compatibility exports for orchestrator

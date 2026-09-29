@@ -1,4 +1,5 @@
 // skillprax-backend/src/lib/ai/pipeline.ts
+import { getEffectiveKeys } from "../keyManager";
 
 export class GroqConfigError extends Error {
   constructor(message: string) {
@@ -292,19 +293,25 @@ export async function harvestResources(
   domainCategory?: string,
   targetGoal?: string
 ): Promise<RawCandidate[]> {
-  const apiKey = tavilyApiKey || process.env.TAVILY_API_KEY;
+  let apiKey: string | undefined = tavilyApiKey || process.env.TAVILY_API_KEY || undefined;
+  if (!apiKey) {
+    try {
+      const keys = await getEffectiveKeys();
+      apiKey = keys.tavilyKey || undefined;
+    } catch (_) {}
+  }
   if (!apiKey) {
     console.warn("[pipeline] TAVILY_API_KEY missing. Returning empty candidate pool.");
     return [];
   }
 
   try {
-    // Bias search terms toward the stated domain and goal
+    // Bias search terms toward the stated domain and goal + 2026 freshness filters
     const domainBias = domainCategory && domainCategory !== "General Knowledge" ? ` ${domainCategory}` : "";
     const goalBias = targetGoal && targetGoal !== "Full Mastery" ? ` ${targetGoal}` : "";
-    const query = `${topic}${domainBias}${goalBias} ${stepContext} official guide documentation tutorial reference`.trim();
+    const query = `${topic}${domainBias}${goalBias} ${stepContext} 2026 latest technical tutorial documentation canonical reference`.trim();
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
+    const timeout = setTimeout(() => controller.abort(), 8000);
 
     const res = await fetch("https://api.tavily.com/search", {
       method: "POST",
@@ -312,16 +319,28 @@ export async function harvestResources(
       body: JSON.stringify({
         api_key: apiKey.trim(),
         query,
+        search_depth: "advanced",
+        include_domains: [
+          "youtube.com",
+          "developer.mozilla.org",
+          "github.com",
+          "wikipedia.org",
+          "geeksforgeeks.org",
+          "w3schools.com",
+          "arxiv.org",
+          "docs.python.org",
+          "khanacademy.org"
+        ],
+        max_results: 12,
         include_raw_content: false,
-        max_results: 10,
-        search_depth: "basic",
       }),
       signal: controller.signal,
     });
     clearTimeout(timeout);
 
     if (!res.ok) {
-      console.warn(`[pipeline] Tavily API returned HTTP ${res.status}. Fallback to internal knowledge.`);
+      const errorData: any = await res.json().catch(() => ({}));
+      console.warn(`[pipeline] Tavily API returned HTTP ${res.status}: ${errorData.error || res.statusText}`);
       return [];
     }
 
@@ -332,7 +351,7 @@ export async function harvestResources(
     const candidates: RawCandidate[] = [];
 
     for (const r of results) {
-      if (!r.url || typeof r.url !== "string") continue;
+      if (!r.url || typeof r.url !== "string" || !r.url.startsWith("http")) continue;
       if (isDenylistedSearchUrl(r.url)) continue;
 
       const norm = normalizeUrl(r.url);
@@ -340,10 +359,10 @@ export async function harvestResources(
       seenUrls.add(norm);
 
       candidates.push({
-        title: r.title || topic,
+        title: (r.title || topic).trim(),
         url: norm,
         content: r.content ? String(r.content).slice(0, 300) : "",
-        score: r.score,
+        score: typeof r.score === "number" ? r.score : 0,
       });
     }
 
@@ -386,7 +405,13 @@ export async function synthesizeStepMaterials(
   groqKey?: string,
   stepIndex: number = 1
 ): Promise<{ resources: CuratedResource[]; acus: ACU[] }> {
-  const apiKey = groqKey || process.env.GROQ_API_KEY;
+  let apiKey: string | undefined = groqKey || process.env.GROQ_API_KEY || undefined;
+  if (!apiKey) {
+    try {
+      const keys = await getEffectiveKeys();
+      apiKey = keys.groqKey || undefined;
+    } catch (_) {}
+  }
   if (!apiKey) {
     throw new GroqConfigError("GROQ_API_KEY is required for synthesizeStepMaterials.");
   }
@@ -394,35 +419,43 @@ export async function synthesizeStepMaterials(
   const tierDescription = getTierDescription(stepIndex);
 
   const levelGuidance = level === "advanced" || level === "expert"
-    ? "This learner is ADVANCED. Produce denser ACUs covering edge cases, failure modes, architectural trade-offs, and non-obvious interactions. Resources should target advanced documentation, primary papers, and expert-level references."
+    ? "This learner is ADVANCED. Produce denser ACUs covering edge cases, failure modes, architectural trade-offs, and non-obvious interactions."
     : level === "intermediate"
-    ? "This learner is INTERMEDIATE. Balance foundational reinforcement with practical application ACUs. Resources should mix tutorials with deeper reference material."
-    : "This learner is a BEGINNER. Produce foundational ACUs covering core concepts, mental models, and first-principles understanding. Resources should be accessible introductions, official getting-started guides, and beginner-friendly references.";
+    ? "This learner is INTERMEDIATE. Balance foundational reinforcement with practical application ACUs."
+    : "This learner is a BEGINNER. Produce foundational ACUs covering core concepts, mental models, and first-principles understanding.";
+
+  // Pass indexed candidates to Groq so Groq returns candidateIndex instead of writing URLs
+  const candidatePool = candidates.map((c, idx) => ({
+    candidateIndex: idx,
+    title: c.title,
+    snippet: c.content || "",
+    isYoutube: c.url.includes("youtube.com") || c.url.includes("youtu.be")
+  }));
 
   const systemPrompt = `You are an expert Principal Systems Architect and Cognitive Educator.
 
 PEDAGOGICAL DIFFICULTY TIER: Level ${stepIndex} (${tierDescription}).
-CRITICAL CONSTRAINT: Do NOT return introductory 101 definitions or basic summaries. Provide high-signal technical documentation and specialized video breakdowns matching Level ${stepIndex} complexity.
 
-RESOURCES SELECTION: Select between 1 and 3 high-impact video tutorial links and between 2 and 4 canonical technical documentation links (guaranteed zero 404s, e.g., MDN, official docs, Wikipedia, rust-lang, python.org, arxiv, GitHub).
+STRICT ZERO-HALLUCINATION URL RULE:
+You MUST NOT generate, guess, mutate, or invent URL strings.
+Select resources exclusively from the provided \`harvestedCandidates\` by returning their \`candidateIndex\`.
 
-YOUR MANDATES:
-1. "resources": Curate destination learning materials (1-3 videos, 2-4 canonical docs).
-   - Decide independently how many of the provided Tavily candidates, if any, are worth surfacing. Extract real titles and real URLs from the provided Tavily search results.
-   - If candidates are empty, low-quality, or search-query URLs, supply canonical resources from internal knowledge (MDN, official docs, primary papers, Wikipedia).
-   - NEVER return an empty resources array.
-   - NEVER output search-query URLs.
-   - Assign each resource a descriptive "badge" (2-4 words) and "studyGuidance".
+RESOURCES SELECTION MANDATE:
+Select up to 3 video candidates and up to 4 documentation candidates from \`harvestedCandidates\`.
+For each selected candidate, output its \`candidateIndex\`, a 2-4 word \`badge\` (e.g. "Official Documentation", "Video Walkthrough"), and concise \`studyGuidance\`.
 
-2. "acus": Deconstruct this topic into an EXHAUSTIVE list of Atomic Competency Units (ACUs) calibrated to the learner's level and difficulty tier.
-   - ${levelGuidance}
-   - Every distinct, independently testable concept, mechanism, edge case, or trade-off must be its own ACU.
-   - Format each ACU as { "id": "acu-N", "label": "Short Title", "description": "What is evaluated" }.
+ACUs DECONSTRUCTION MANDATE:
+Deconstruct this topic into an EXHAUSTIVE list of Atomic Competency Units (ACUs) calibrated to Level ${stepIndex}.
+Format each ACU as { "id": "acu-1", "label": "Short Title", "description": "What is evaluated" }.
 
 OUTPUT STRICT JSON MATCHING THIS SCHEMA:
 {
-  "resources": [{ "title": "string", "url": "string", "badge": "string", "studyGuidance": "string" }],
-  "acus": [{ "id": "acu-1", "label": "string", "description": "string" }]
+  "selectedIndices": [
+    { "candidateIndex": 0, "badge": "string", "studyGuidance": "string" }
+  ],
+  "acus": [
+    { "id": "acu-1", "label": "string", "description": "string" }
+  ]
 }`;
 
   const userPrompt = JSON.stringify({
@@ -431,11 +464,11 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
     targetGoal,
     level,
     stepIndex,
-    harvestedCandidates: candidates,
+    harvestedCandidates: candidatePool,
     candidateCount: candidates.length,
     instruction: candidates.length === 0
-      ? "Tavily candidate pool is EMPTY. Use internal canonical knowledge to output direct destination URLs (MDN, Wikipedia, official docs). Do NOT return an empty resources array."
-      : "Curate direct destination URLs from harvestedCandidates if valid. Supplement with canonical documentation if needed.",
+      ? "Tavily candidate pool is EMPTY. Return empty selectedIndices array and generate high-signal ACUs."
+      : "Select the best learning materials from harvestedCandidates using candidateIndex.",
   });
 
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
@@ -451,9 +484,41 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
     const rawOutput = cleanJsonFence(res.content);
     const parsed: any = JSON.parse(rawOutput);
 
-    if (Array.isArray(parsed.resources)) {
-      resources = parsed.resources.filter((r: any) => r && r.url && !isDenylistedSearchUrl(r.url));
+    if (Array.isArray(parsed.selectedIndices)) {
+      const selectedSet = new Set<number>();
+      for (const item of parsed.selectedIndices) {
+        const cIdx = typeof item.candidateIndex === "number" ? item.candidateIndex : -1;
+        if (cIdx >= 0 && cIdx < candidates.length && !selectedSet.has(cIdx)) {
+          selectedSet.add(cIdx);
+          const cand = candidates[cIdx];
+          if (cand && cand.url && !isDenylistedSearchUrl(cand.url)) {
+            resources.push({
+              title: cand.title,
+              url: cand.url, // 100% exact Tavily URL, ZERO hallucination!
+              badge: item.badge || (cand.url.includes("youtube.com") ? "Video Tutorial" : "Canonical Documentation"),
+              studyGuidance: item.studyGuidance || "Study this canonical resource.",
+              sourceOrigin: "tavily"
+            });
+          }
+        }
+      }
+    } else if (Array.isArray(parsed.resources)) {
+      // Fallback: match returned URLs back against candidates list
+      for (const r of parsed.resources) {
+        if (!r) continue;
+        const matched = candidates.find(c => c.url === r.url || (r.title && c.title.toLowerCase() === r.title.toLowerCase()));
+        if (matched && matched.url) {
+          resources.push({
+            title: matched.title,
+            url: matched.url,
+            badge: r.badge || "Canonical Resource",
+            studyGuidance: r.studyGuidance || "Study this canonical resource.",
+            sourceOrigin: "tavily"
+          });
+        }
+      }
     }
+
     if (Array.isArray(parsed.acus)) {
       acus = parsed.acus;
     }
@@ -461,7 +526,18 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
     console.warn("[pipeline] Phase A (synthesizeStepMaterials) failed. Using fallback.", err);
   }
 
-  // Fallbacks if Groq returned empty
+  // If no resources were selected by Groq, map directly from harvested candidates
+  if (resources.length === 0 && candidates.length > 0) {
+    resources = candidates.slice(0, 5).map((c) => ({
+      title: c.title,
+      url: c.url,
+      badge: c.url.includes("youtube.com") ? "Video Walkthrough" : "Canonical Documentation",
+      studyGuidance: `Master the core concepts of ${title}.`,
+      sourceOrigin: "tavily"
+    }));
+  }
+
+  // Fallbacks if Tavily pool was empty, using guaranteed non-hallucinated search trampoline-free URLs
   if (resources.length === 0) {
     resources = [
       {
@@ -469,6 +545,13 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
         url: `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(title)}`,
         badge: "Canonical Reference",
         studyGuidance: `Review foundational concepts for ${title}.`,
+        sourceOrigin: "fallback",
+      },
+      {
+        title: `MDN Technical Documentation: ${title}`,
+        url: `https://developer.mozilla.org/en-US/search?q=${encodeURIComponent(title)}`,
+        badge: "Official Documentation",
+        studyGuidance: `Explore standard technical specifications for ${title}.`,
         sourceOrigin: "fallback",
       },
     ];
@@ -505,8 +588,22 @@ export async function synthesizeQuizFromMaterial(
 
   const seedStr = options?.seed || Math.random().toString(36).substring(7);
 
+  const resourceContext = resources && resources.length > 0
+    ? resources.map(r => `• [${r.badge || 'Resource'}] "${r.title}": ${r.studyGuidance || 'Assigned study material'}`).join('\n')
+    : 'Foundational first-principles for this domain.';
+
   const systemPrompt = `You are a diagnostic Socratic evaluation examiner. Your task is to generate scenario-based evaluation questions based strictly on the provided ACUs and curated resources.
 Randomization Seed: "${seedStr}". Produce completely fresh scenarios and distractor options.
+
+ASSIGNED STUDY CURRICULUM (Researched via Tavily & Curated for this Step):
+${resourceContext}
+
+ASSESSABLE COMPETENCY UNITS (ACUs to Test):
+${acus.map((a) => `- [ID: ${a.id}] ${a.label}: ${a.description}`).join('\n')}
+
+CRITICAL GROUNDING DIRECTIVE:
+1. Every scenario question MUST directly assess concepts, principles, takeaways, or failure modes covered in the ASSIGNED STUDY CURRICULUM above and the ACUs.
+2. Do NOT generate questions on external, unassigned trivia.
 
 DYNAMIC QUESTION COUNT:
 Inspect the step's ACUs and generate between 3 to 6 questions dynamically based on content density (3 <= questions.length <= 6).
@@ -518,7 +615,7 @@ STRICT DISTRACTOR EQUALITY RULES:
 4. NO META-OPTIONS: Do NOT use 'All of the above', 'None of the above', or 'Both A and B'.
 
 YOUR MANDATES:
-1. Generate between 3 to 6 questions dynamically mapped to the provided ACUs.
+1. Generate between 3 to 6 questions dynamically mapped to the provided ACUs and assigned resources.
 2. Tag each question with the "acuId" of the ACU it evaluates.
 3. Provide 4 options (A, B, C, D) for each question obeying the STRICT DISTRACTOR EQUALITY RULES.
 4. Set "correctOptionId" to "A", "B", "C", or "D".

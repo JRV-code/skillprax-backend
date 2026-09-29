@@ -69,40 +69,52 @@ ADAPTIVE RETEST MODE ACTIVE:
       }
 
       const resourcesRaw = step.resources;
-      const stepResources = Array.isArray(resourcesRaw) ? resourcesRaw : safeJsonParse(resourcesRaw as string, []);
+      const stepResources: any[] = Array.isArray(resourcesRaw) ? resourcesRaw : safeJsonParse(resourcesRaw as string, []);
 
-      const systemPrompt = `You are a strict competency evaluator. Generate an evaluation of scenario-based multiple-choice questions for "${step.title}".
+      // Format the curated curriculum that the student actually studied
+      const resourceContext = stepResources.length > 0
+        ? stepResources.map((r: any) => `• [${r.badge || r.type || 'Resource'}] "${r.title}": ${r.studyGuidance || r.takeaway || r.subtitle || 'Assigned study material'}`).join('\n')
+        : 'Foundational first-principles for this domain.';
+
+      const systemPrompt = `You are the SkillPrax Socratic Evaluation Architect.
+Milestone: "Step ${step.stepIndex} of ${step.workspace?.totalPlannedSteps || 5} - ${step.title}".
 Entropy seed: ${entropySeed}. Ensure questions are 100% unique, scenario-focused, and never repetitive.
+
+ASSIGNED STUDY CURRICULUM (Researched via Tavily & Curated for this Step):
+${resourceContext}
+
+ASSESSABLE COMPETENCY UNITS (ACUs to Test):
+${acus.map((a: any) => `- [ID: ${a.id || a.acuId || 'acu-1'}] ${a.label || a.title || 'ACU'}: ${a.description || 'Description'}`).join('\n')}
+
 ${weightingDirective}
 
-STRICT RESOURCE & ACU-BASED GENERATION:
-- Build questions strictly based on the concepts, skills, and materials present in the provided step resources and ACUs.
-
-CRITICAL OPTION RANDOMIZATION & EXPLANATION RULES:
-1. Place the correct option at a completely RANDOM position (A, B, C, or D). DO NOT always place the correct answer as option A.
-2. For EVERY option (the correct option and all distractors), provide detailed explanations explaining why that option is correct (if true) or what specific misconception it represents (if false).
-3. All 4 options (A, B, C, D) MUST have comparable word counts (within ±15% of each other). Never make the correct option noticeably longer or more detailed.
+CRITICAL GROUNDING DIRECTIVE:
+1. Every scenario question MUST directly assess concepts, principles, takeaways, or failure modes covered in the ASSIGNED STUDY CURRICULUM above and the ACUs.
+2. Do NOT generate questions on external, unassigned trivia.
+3. Place the correct option at a completely RANDOM position (A, B, C, or D). DO NOT always place the correct answer as option A.
+4. Obey the Equal Length Rule: All 4 choices (A, B, C, D) MUST have strictly comparable sentence length and word counts (within ±10%). Never make the correct option noticeably longer or more detailed.
+5. Provide specific diagnostic explanations for EVERY option (A, B, C, D) detailing why that option is correct or what specific misconception trap it represents.
 
 Output strictly valid JSON with no markdown formatting:
 {
   "questions": [
     {
       "id": "q1",
-      "acuId": "acu-N",
-      "scenario": "A realistic real-world problem statement...",
+      "acuId": "${acus[0]?.id || 'acu-1'}",
+      "scenario": "A scenario challenge grounded strictly in the assigned study curriculum...",
       "rawCorrectText": "The exact correct technical explanation",
-      "correctExplanation": "Why this option is correct based on the resources",
+      "correctExplanation": "First-principles verification based on assigned resources.",
       "rawDistractors": [
-        { "text": "Plausible wrong option 1", "whyWrong": "Specific misconception analysis..." },
-        { "text": "Plausible wrong option 2", "whyWrong": "Specific misconception analysis..." },
-        { "text": "Plausible wrong option 3", "whyWrong": "Specific misconception analysis..." }
+        { "text": "Balanced length wrong option 1", "whyWrong": "Specific misconception trap analysis..." },
+        { "text": "Balanced length wrong option 2", "whyWrong": "Specific misconception trap analysis..." },
+        { "text": "Balanced length wrong option 3", "whyWrong": "Specific misconception trap analysis..." }
       ]
     }
   ]
 }`;
 
       const aiResponse = await callGroqWithFallback(
-        [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Material ACUs: ${JSON.stringify(acus)}\nProvided Step Resources: ${JSON.stringify(stepResources)}` }],
+        [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Material ACUs: ${JSON.stringify(acus)}\nAssigned Study Resources: ${JSON.stringify(stepResources)}` }],
         { apiKey: groqKey, jsonMode: true, model: aiEngine || step.workspace?.aiEngine || 'llama-3.3-70b-versatile', temperature: 0.85 }
       );
 
