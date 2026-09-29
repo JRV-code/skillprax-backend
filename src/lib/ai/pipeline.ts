@@ -404,11 +404,11 @@ export async function synthesizeStepMaterials(
 PEDAGOGICAL DIFFICULTY TIER: Level ${stepIndex} (${tierDescription}).
 CRITICAL CONSTRAINT: Do NOT return introductory 101 definitions or basic summaries. Provide high-signal technical documentation and specialized video breakdowns matching Level ${stepIndex} complexity.
 
-RESOURCES QUOTA: Curate strictly 1 to 2 YouTube video links (or high-quality video guides) and 2 to 3 canonical documentation links (guaranteed zero 404s, e.g., MDN, official docs, Wikipedia, rust-lang, python.org, arxiv).
+RESOURCES SELECTION: Select between 1 and 3 high-impact video tutorial links and between 2 and 4 canonical technical documentation links (guaranteed zero 404s, e.g., MDN, official docs, Wikipedia, rust-lang, python.org, arxiv, GitHub).
 
 YOUR MANDATES:
-1. "resources": Curate destination learning materials matching the quota (1-2 videos, 2-3 canonical docs).
-   - Decide independently how many of the provided Tavily candidates, if any, are worth surfacing. You may select zero of them and supply only your own canonical resources, all of them, or any subset.
+1. "resources": Curate destination learning materials (1-3 videos, 2-4 canonical docs).
+   - Decide independently how many of the provided Tavily candidates, if any, are worth surfacing. Extract real titles and real URLs from the provided Tavily search results.
    - If candidates are empty, low-quality, or search-query URLs, supply canonical resources from internal knowledge (MDN, official docs, primary papers, Wikipedia).
    - NEVER return an empty resources array.
    - NEVER output search-query URLs.
