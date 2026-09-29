@@ -2,6 +2,8 @@ import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import prisma from '../lib/prisma';
 import { testProviderConnection } from '../lib/ai/orchestrator';
 import crypto from 'crypto';
+import { callGroqWithFallback } from '../lib/ai/pipeline';
+import { getEffectiveKeys, invalidateKeyCache } from '../lib/keyManager';
 
 function hashPasscode(passcode: string, salt: string): string {
   return crypto.scryptSync(passcode, salt, 64).toString('hex');
@@ -197,15 +199,112 @@ export async function adminRoutes(fastify: FastifyInstance) {
     });
   });
 
-  // POST /api/admin/test-connection
-  fastify.post('/api/admin/test-connection', async (request: FastifyRequest, reply: FastifyReply) => {
-    const body = request.body as { provider: string; key?: string };
-    if (!body?.provider) {
-      return reply.status(400).send({ error: 'Provider is required' });
+  // GET /api/admin/config — status & masked keys
+  fastify.get('/api/admin/config', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { groqKey, tavilyKey } = await getEffectiveKeys();
+    return reply.send({
+      groqConfigured: !!groqKey && groqKey.length > 5,
+      tavilyConfigured: !!tavilyKey && tavilyKey.length > 5,
+      groqKeyMasked: groqKey ? `${groqKey.slice(0, 4)}...${groqKey.slice(-4)}` : '',
+      tavilyKeyMasked: tavilyKey ? `${tavilyKey.slice(0, 4)}...${tavilyKey.slice(-4)}` : '',
+    });
+  });
+
+  // POST /api/admin/config — save keys
+  fastify.post('/api/admin/config', async (request: FastifyRequest, reply: FastifyReply) => {
+    const body = (request.body || {}) as any;
+    const groqApiKey = body.groqApiKey || body.groqKey || '';
+    const tavilyApiKey = body.tavilyApiKey || body.tavilyKey || '';
+
+    try {
+      await (prisma as any).systemConfig?.upsert({
+        where: { id: 'global' },
+        update: {
+          ...(groqApiKey ? { groqApiKey } : {}),
+          ...(tavilyApiKey ? { tavilyApiKey } : {}),
+        },
+        create: {
+          id: 'global',
+          groqApiKey: groqApiKey || '',
+          tavilyApiKey: tavilyApiKey || '',
+        },
+      });
+    } catch (_) {}
+
+    try {
+      await (prisma as any).adminConfig?.upsert({
+        where: { id: 'global' },
+        update: {
+          ...(groqApiKey ? { groqApiKey, groqKey: groqApiKey } : {}),
+          ...(tavilyApiKey ? { tavilyApiKey, tavilyKey: tavilyApiKey } : {}),
+        },
+        create: {
+          id: 'global',
+          groqApiKey: groqApiKey || '',
+          tavilyApiKey: tavilyApiKey || '',
+        },
+      });
+    } catch (_) {}
+
+    invalidateKeyCache();
+    return reply.send({ success: true, message: 'API credentials updated successfully.' });
+  });
+
+  // POST /api/admin/test-groq — test Groq latency
+  fastify.post('/api/admin/test-groq', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { apiKey } = (request.body || {}) as any;
+    const { groqKey } = await getEffectiveKeys();
+    const keyToTest = apiKey || groqKey;
+
+    if (!keyToTest) {
+      return reply.status(400).send({ success: false, error: 'No Groq API Key provided or configured.' });
     }
 
-    const result = await testProviderConnection(body.provider, body.key);
-    return reply.send(result);
+    const start = Date.now();
+    try {
+      const response = await callGroqWithFallback(
+        [{ role: 'user', content: 'Ping. Output OK.' }],
+        { apiKey: keyToTest, model: 'llama-3.3-70b-versatile' }
+      );
+      const latency = Date.now() - start;
+      const replyText = response.content?.trim() || 'OK';
+      return reply.send({ success: true, latency, reply: replyText });
+    } catch (err: any) {
+      return reply.status(500).send({ success: false, error: err.message || 'Groq connection failed' });
+    }
+  });
+
+  // POST /api/admin/test-tavily — test Tavily latency
+  fastify.post('/api/admin/test-tavily', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { apiKey } = (request.body || {}) as any;
+    const { tavilyKey } = await getEffectiveKeys();
+    const keyToTest = apiKey || tavilyKey;
+
+    if (!keyToTest) {
+      return reply.status(400).send({ success: false, error: 'No Tavily API Key provided or configured.' });
+    }
+
+    const start = Date.now();
+    try {
+      const res = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: keyToTest,
+          query: 'Next.js 14 App Router state management',
+          max_results: 1,
+        }),
+      });
+      const data: any = await res.json();
+      const latency = Date.now() - start;
+      if (res.ok && data.results) {
+        return reply.send({ success: true, latency, resultsCount: data.results.length });
+      } else {
+        return reply.status(400).send({ success: false, error: data.error || 'Tavily rejection' });
+      }
+    } catch (err: any) {
+      return reply.status(500).send({ success: false, error: err.message || 'Tavily connection failed' });
+    }
   });
 }
 

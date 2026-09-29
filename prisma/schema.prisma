@@ -27,34 +27,98 @@ model UserProfile {
   name               String             @default("Explorer")
   age                Int?               @default(18)
   profession         String             @default("Class 12 Student")
-  educationBoard     String             @default("CBSE")
+  educationBoard     String             @default("GSEB")
   grade              String             @default("Class 12")
+  activeMonths       Int                @default(1)
+  streakDays         Int                @default(1)
+  freezeShields      Int                @default(3)
+  targetHours        Int                @default(1)
+  targetMinutes      Int                @default(50)
+  alertNotification  String             @default("20:30")
+  totalXp            Int                @default(0)
   targetDailyHours   Int                @default(1)
-  targetDailyMinutes Int                @default(0)
-  reminderTime       String?            @default("20:00")
-  currentStreak      Int                @default(0)
-  longestStreak      Int                @default(0)
-  streakFreezes      Int                @default(0)
+  targetDailyMinutes Int                @default(50)
+  reminderTime       String?            @default("20:30")
+  currentStreak      Int                @default(1)
+  longestStreak      Int                @default(1)
+  streakFreezes      Int                @default(3)
   lastActiveDate     String?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
   workspaces         Workspace[]
   activityLogs       DailyActivityLog[]
+  studySessions      StudySession[]
+  badges             BadgeEarned[]
+}
+
+model SystemConfig {
+  id           String   @id @default("global")
+  groqApiKey   String?
+  tavilyApiKey String?
+  updatedAt    DateTime @updatedAt
+}
+
+model Profile {
+  id                String         @id @default(cuid())
+  name              String         @default("Explorer")
+  educationBoard    String         @default("GSEB")
+  grade             String         @default("Class 12")
+  age               Int            @default(18)
+  activeMonths      Int            @default(1)
+  streakDays        Int            @default(1)
+  freezeShields     Int            @default(3)
+  targetHours       Int            @default(1)
+  targetMinutes     Int            @default(50)
+  alertNotification String         @default("20:30")
+  totalXp           Int            @default(0)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  workspaces        Workspace[]
+  studySessions     StudySession[]
+  badges            BadgeEarned[]
+}
+
+model StudySession {
+  id            String       @id @default(uuid())
+  profileId     String
+  userProfile   UserProfile? @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  profile       Profile?     @relation(fields: [profileId], references: [id], onDelete: Cascade, map: "StudySession_profile_fkey")
+  minutes       Int          // Duration of study session
+  sessionDate   DateTime     @default(now()) // Timestamp
+  createdAt     DateTime     @default(now())
+
+  @@index([profileId, sessionDate])
+}
+
+model BadgeEarned {
+  id          String       @id @default(uuid())
+  profileId   String
+  userProfile UserProfile? @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  profile     Profile?     @relation(fields: [profileId], references: [id], onDelete: Cascade, map: "BadgeEarned_profile_fkey")
+  badgeKey    String       // e.g., "REACTION_VELOCITY", "ZERO_MISCONCEPTIONS", "MOMENTUM_14"
+  tier        String       // "LEGENDARY", "EPIC", "RARE"
+  unlockedAt  DateTime     @default(now())
+
+  @@unique([profileId, badgeKey])
 }
 
 model Workspace {
   id                  String       @id @default(cuid())
   title               String
+  subTitle            String       @default("")
   domainCategory      String       @default("General Knowledge")
   targetGoal          String       @default("Full Mastery")
   level               String       @default("Beginner")
   currentStep         Int          @default(1)
   totalPlannedSteps   Int          @default(5)
+  progress            Float        @default(0)
   aiEngine            String       @default("llama-3.3-70b-versatile")
   isGenerating        Boolean      @default(false)
   generationStartedAt DateTime?
   userProfileId       String?
+  profileId           String?
   userProfile         UserProfile? @relation(fields: [userProfileId], references: [id], onDelete: Cascade)
+  profile             Profile?     @relation(fields: [profileId], references: [id], onDelete: Cascade, map: "Workspace_profile_fkey")
   steps               SkillStep[]
   createdAt           DateTime     @default(now())
   updatedAt           DateTime     @updatedAt
