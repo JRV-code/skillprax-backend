@@ -1,5 +1,6 @@
 import { getEffectiveKeys } from '../lib/keyManager';
 import { callGroqWithFallback } from '../lib/ai/pipeline';
+import { SearchResultItem } from './search';
 
 export interface ACUInput {
   id: string;
@@ -83,4 +84,90 @@ Output strictly valid JSON with no markdown syntax:
   }
 
   return JSON.parse(cleaned || '{"questions":[]}');
+}
+
+// ZERO-HALLUCINATION REMEDIATION CURATOR
+export async function synthesizeTargetedRemediationWithTavily(
+  stepTitle: string,
+  failedItems: { prompt: string; userOption: string; correctOption: string; acuTitle: string }[],
+  tavilyResultsPerTopic: Record<string, SearchResultItem[]>
+) {
+  const { groqKey } = await getEffectiveKeys();
+  if (!groqKey) throw new Error('Groq API Key is not configured in /admin or .env');
+
+  // Prepare indexed search items for Groq to choose from
+  const topicCandidatesMap: Record<string, any[]> = {};
+  for (const [topic, items] of Object.entries(tavilyResultsPerTopic)) {
+    topicCandidatesMap[topic] = items.map((item, idx) => ({
+      index: idx,
+      title: item.title,
+      isYouTube: item.url.includes('youtube.com') || item.url.includes('youtu.be'),
+      snippet: item.content?.slice(0, 150) || ''
+    }));
+  }
+
+  const systemPrompt = `You are the SkillPrax Socratic Diagnostic Specialist.
+Milestone: "${stepTitle}".
+Student Missed Challenges:
+${JSON.stringify(failedItems, null, 2)}
+
+Live Web Search Candidates Per Failed Competency:
+${JSON.stringify(topicCandidatesMap, null, 2)}
+
+TASK:
+1. Formulate the "overallDiagnosis" summarizing the cognitive traps identified.
+2. For each failed topic:
+   - Provide "misconceptionAnalysis": Explain why the student's reasoning failed based on what they selected.
+   - Provide "coreConcept": State the first-principles law, rule, or physical mechanic.
+   - Select ONE best document index and ONE best video index from the candidates provided.
+   - DO NOT invent or fabricate URLs! Return only the chosen candidate integer indices.
+
+Output strictly valid JSON with this schema:
+{
+  "overallDiagnosis": "Summary of cognitive blindspots...",
+  "weakAreas": [
+    {
+      "topic": "Name of failed topic",
+      "misconceptionAnalysis": "Detailed Socratic breakdown...",
+      "coreConcept": "Governing principle...",
+      "selectedDocIndex": 0,
+      "docTakeaway": "Single sentence takeaway for the document",
+      "selectedVideoIndex": 1,
+      "videoTakeaway": "Single sentence takeaway for the video"
+    }
+  ]
+}`;
+
+  const response = await callGroqWithFallback(
+    [{ role: 'system', content: systemPrompt }],
+    { apiKey: groqKey, jsonMode: true, temperature: 0.1 }
+  );
+
+  let cleaned = response.content.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '');
+  const parsed = JSON.parse(cleaned || '{"weakAreas":[]}');
+
+  // Map candidate indices directly back to real Tavily URLs
+  const finalWeakAreas = (parsed.weakAreas || []).map((wa: any) => {
+    const candidates = tavilyResultsPerTopic[wa.topic] || [];
+    const docItem = (typeof wa.selectedDocIndex === 'number' && candidates[wa.selectedDocIndex]) || candidates.find(c => !c.url.includes('youtube.com')) || candidates[0];
+    const videoItem = (typeof wa.selectedVideoIndex === 'number' && candidates[wa.selectedVideoIndex]) || candidates.find(c => c.url.includes('youtube.com')) || candidates[1] || candidates[0];
+
+    return {
+      topic: wa.topic,
+      misconceptionAnalysis: wa.misconceptionAnalysis || 'Conceptual confusion identified.',
+      coreConcept: wa.coreConcept || 'Review foundational mechanics.',
+      resources: {
+        docTitle: docItem ? docItem.title : `${wa.topic} Canonical Guide`,
+        docUrl: docItem ? docItem.url : 'https://en.wikipedia.org/wiki/Special:Search?search=' + encodeURIComponent(wa.topic),
+        videoTitle: videoItem ? videoItem.title : `${wa.topic} Video Breakdown`,
+        videoUrl: videoItem ? videoItem.url : 'https://www.youtube.com/results?search_query=' + encodeURIComponent(`${stepTitle} ${wa.topic} tutorial`),
+        criticalTakeaway: wa.docTakeaway || 'Targeted study reference.'
+      }
+    };
+  });
+
+  return {
+    overallDiagnosis: parsed.overallDiagnosis || 'Targeted remediation required before retesting.',
+    weakAreas: finalWeakAreas
+  };
 }

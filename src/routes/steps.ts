@@ -10,6 +10,7 @@ import {
   safeJsonStringify,
 } from '../lib/ai/orchestrator';
 import { harvestResources, synthesizeStepMaterials } from '../lib/ai/pipeline';
+import { searchTavilyCurriculum } from '../services/search';
 import { storeQuizSession, getQuizSession } from '../lib/quizStore';
 
 export async function stepRoutes(fastify: FastifyInstance) {
@@ -32,19 +33,38 @@ export async function stepRoutes(fastify: FastifyInstance) {
       let config = await prisma.adminConfig.findUnique({ where: { id: 'global' } });
       if (!config) config = await prisma.adminConfig.findFirst();
       const groqKey = config?.groqApiKey || config?.groqKey || process.env.GROQ_API_KEY;
-      const tavilyKey = config?.tavilyApiKey || config?.tavilyKey || process.env.TAVILY_API_KEY;
 
-      const candidates = await harvestResources(
-        body.workspaceTitle || step.workspace?.title || step.title,
-        body.title || step.title,
-        tavilyKey,
-        step.workspace?.domainCategory,
-        step.workspace?.targetGoal
-      );
+      const acusRaw = step.assessableUnits;
+      const acusList = Array.isArray(acusRaw) ? acusRaw.map((a: any) => typeof a === 'string' ? a : (a.label || a.title || 'ACU')) : [];
+
+      let searchItems: any[] = [];
+      try {
+        searchItems = await searchTavilyCurriculum(
+          body.workspaceTitle || step.workspace?.title || step.title,
+          body.title || step.title,
+          step.workspace?.domainCategory || 'General',
+          acusList
+        );
+      } catch (searchErr) {
+        fastify.log.warn(searchErr, '[LevelUpResources] searchTavilyCurriculum fallback to harvestResources');
+        searchItems = await harvestResources(
+          body.workspaceTitle || step.workspace?.title || step.title,
+          body.title || step.title,
+          config?.tavilyApiKey || config?.tavilyKey || process.env.TAVILY_API_KEY,
+          step.workspace?.domainCategory,
+          step.workspace?.targetGoal
+        );
+      }
+
+      const candidates = searchItems.map((item) => ({
+        title: item.title,
+        url: item.url,
+        content: item.content,
+      }));
 
       const materials = await synthesizeStepMaterials(
         body.title || step.title,
-        step.workspace?.domainCategory || 'Science',
+        step.workspace?.domainCategory || 'General',
         step.workspace?.targetGoal || 'Full Mastery',
         step.workspace?.level || 'beginner',
         candidates,

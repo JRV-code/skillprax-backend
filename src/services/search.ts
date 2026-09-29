@@ -1,19 +1,39 @@
 import { getEffectiveKeys } from '../lib/keyManager';
 
+export interface SearchResultItem {
+  title: string;
+  url: string;
+  content: string;
+}
+
+// 1. UNIVERSAL CURRICULUM SEARCH (Supports Athletics, Coding, Arts, Science, etc.)
 export async function searchTavilyCurriculum(
   workspaceTitle: string,
   stepTitle: string,
-  acuTitles: string[]
-): Promise<Array<{ content: string; title: string; url: string }>> {
+  domain: string = 'General',
+  acuTitles: string[] = []
+): Promise<SearchResultItem[]> {
   const { tavilyKey } = await getEffectiveKeys();
-  if (!tavilyKey) {
-    throw new Error('Tavily API Key is not configured. Add it in /admin or .env');
+  if (!tavilyKey) throw new Error('Tavily API Key missing in /admin or .env');
+
+  // Domain-specific query qualifiers
+  let domainKeywords = 'canonical tutorial breakdown guide';
+  const lowerDomain = domain.toLowerCase();
+
+  if (lowerDomain.includes('athletic') || lowerDomain.includes('sport') || lowerDomain.includes('football')) {
+    domainKeywords = 'drills technique biomechanics video breakdown coaching analysis';
+  } else if (lowerDomain.includes('code') || lowerDomain.includes('logic') || lowerDomain.includes('software') || lowerDomain.includes('program')) {
+    domainKeywords = 'implementation documentation architecture tutorial repository';
+  } else if (lowerDomain.includes('art') || lowerDomain.includes('design')) {
+    domainKeywords = 'walkthrough workflow visual design process demonstration';
+  } else if (lowerDomain.includes('science') || lowerDomain.includes('chem') || lowerDomain.includes('phys')) {
+    domainKeywords = 'first principles derivation experimental analysis lecture';
   }
 
-  // Modernized search query with 2026 freshness filters
   const focusKeywords = acuTitles.slice(0, 3).join(' ');
-  const query = `${workspaceTitle} ${stepTitle} ${focusKeywords} 2026 latest technical tutorial documentation`;
+  const query = `${workspaceTitle} ${stepTitle} ${focusKeywords} ${domainKeywords} 2026 latest`;
 
+  // Query Tavily with open search (No restrictive domain bottlenecks)
   const response = await fetch('https://api.tavily.com/search', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -21,19 +41,8 @@ export async function searchTavilyCurriculum(
       api_key: tavilyKey,
       query,
       search_depth: 'advanced',
-      include_domains: [
-        'youtube.com',
-        'developer.mozilla.org',
-        'github.com',
-        'wikipedia.org',
-        'geeksforgeeks.org',
-        'w3schools.com',
-        'arxiv.org',
-        'docs.python.org',
-        'khanacademy.org'
-      ],
-      max_results: 12
-    })
+      max_results: 12,
+    }),
   });
 
   if (!response.ok) {
@@ -42,8 +51,53 @@ export async function searchTavilyCurriculum(
   }
 
   const data: any = await response.json();
-  const results = data.results || [];
+  const results: any[] = data.results || [];
 
-  // Filter out invalid or blank URLs
-  return results.filter((r: any) => r.url && r.url.startsWith('http') && r.title);
+  return results
+    .filter((r) => r.url && r.url.startsWith('http') && r.title)
+    .map((r) => ({
+      title: (r.title || '').trim(),
+      url: (r.url || '').trim(),
+      content: r.content || '',
+    }));
+}
+
+// 2. FOCUSED SEARCH FOR FAILED ACU REMEDIATION
+export async function searchTavilyRemediation(
+  workspaceTitle: string,
+  weakTopic: string,
+  misconception: string
+): Promise<SearchResultItem[]> {
+  const { tavilyKey } = await getEffectiveKeys();
+  if (!tavilyKey) return [];
+
+  const query = `${workspaceTitle} ${weakTopic} correct technique concept tutorial explanation 2026 latest`;
+
+  try {
+    const response = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: tavilyKey,
+        query,
+        search_depth: 'basic',
+        max_results: 6,
+      }),
+    });
+
+    if (!response.ok) return [];
+    const data: any = await response.json();
+    const results: any[] = data.results || [];
+
+    return results
+      .filter((r) => r.url && r.url.startsWith('http') && r.title)
+      .map((r) => ({
+        title: (r.title || '').trim(),
+        url: (r.url || '').trim(),
+        content: r.content || '',
+      }));
+  } catch (err) {
+    console.error('Tavily remediation search error:', err);
+    return [];
+  }
 }

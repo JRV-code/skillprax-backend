@@ -1,6 +1,8 @@
 import { FastifyInstance, FastifyPluginAsync } from "fastify";
 import prisma from "../lib/prisma";
 import { callGroqWithFallback, synthesizeTargetedRemediation, FailedQuestionContext, ACU, CuratedResource } from "../lib/ai/pipeline";
+import { searchTavilyRemediation, SearchResultItem } from "../services/search";
+import { synthesizeTargetedRemediationWithTavily } from "../services/ai";
 
 // Fisher-Yates array shuffle helper
 function shuffleArray<T>(array: T[]): T[] {
@@ -274,55 +276,52 @@ Output strictly valid JSON with no markdown formatting:
         });
       }
 
-      // On failure: trigger targeted weakness diagnostic & remediation
+      // On failure: trigger zero-hallucination Tavily-first weakness diagnostic & remediation
       let diagnosticPrescription = null;
       if (!passed) {
         try {
-          const failedQuestions: FailedQuestionContext[] = results
-            .filter((r: any) => !r.isCorrect)
-            .map((r: any) => ({
-              questionId: r.questionId,
-              scenario: r.scenario,
-              chosenOptionId: r.chosenOptionId,
-              correctOptionId: r.correctOptionId,
-              chosenOptionText: r.chosenOptionText,
-              correctOptionText: r.correctOptionText,
-              whyWrong: r.whyWrong,
-              acuId: r.acuId,
-            }));
-
-          // Parse step ACUs and resources
           const acusRaw = step.assessableUnits;
-          const acus: ACU[] = Array.isArray(acusRaw)
-            ? acusRaw as unknown as ACU[]
+          const acus: any[] = Array.isArray(acusRaw)
+            ? acusRaw
             : typeof acusRaw === 'string'
               ? JSON.parse(acusRaw || '[]')
               : [];
 
-          const resourcesRaw = step.resources;
-          const resources: CuratedResource[] = Array.isArray(resourcesRaw)
-            ? resourcesRaw as unknown as CuratedResource[]
-            : typeof resourcesRaw === 'string'
-              ? JSON.parse(resourcesRaw || '[]')
-              : [];
+          const failedItems = results
+            .filter((r: any) => !r.isCorrect)
+            .map((r: any) => {
+              const matchedAcu = acus.find((a: any) => a.id === r.acuId);
+              const acuTitle = matchedAcu?.label || matchedAcu?.title || r.acuId || 'Competency Gap';
+              return {
+                prompt: r.scenario || 'Scenario Evaluation',
+                userOption: r.chosenOptionText || `Option ${r.chosenOptionId}`,
+                correctOption: r.correctOptionText || `Option ${r.correctOptionId}`,
+                acuTitle,
+              };
+            });
 
-          // Retrieve Groq key
-          let config = await prisma.adminConfig.findUnique({ where: { id: "global" } });
-          if (!config) config = await prisma.adminConfig.findFirst();
-          const groqKey = config?.groqApiKey || config?.groqKey || process.env.GROQ_API_KEY;
+          const uniqueWeakTopics: string[] = Array.from(new Set(failedItems.map((f: any) => String(f.acuTitle))));
 
-          const domainCategory = step.workspace?.domainCategory || 'General Knowledge';
+          const tavilyResultsPerTopic: Record<string, SearchResultItem[]> = {};
+          await Promise.all(
+            uniqueWeakTopics.map(async (topic: string) => {
+              const relatedFail = failedItems.find((f: any) => String(f.acuTitle) === topic);
+              const searchResults = await searchTavilyRemediation(
+                step.workspace?.title || step.title,
+                topic,
+                relatedFail?.userOption || ''
+              );
+              tavilyResultsPerTopic[topic] = searchResults;
+            })
+          );
 
-          diagnosticPrescription = await synthesizeTargetedRemediation(
+          diagnosticPrescription = await synthesizeTargetedRemediationWithTavily(
             step.title,
-            domainCategory,
-            failedQuestions,
-            acus,
-            resources,
-            groqKey || undefined
+            failedItems,
+            tavilyResultsPerTopic
           );
         } catch (diagnosticErr) {
-          fastify.log.warn(diagnosticErr, '[SubmitQuiz] Targeted remediation synthesis failed; returning results without prescription.');
+          fastify.log.warn(diagnosticErr, '[SubmitQuiz] Zero-hallucination Tavily remediation synthesis failed; returning results without prescription.');
         }
       }
 
