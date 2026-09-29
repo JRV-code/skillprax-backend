@@ -367,18 +367,31 @@ function cleanJsonFence(raw: string): string {
 // ============================================================
 // PHASE A: SYNTHESIZE STEP MATERIALS — Level-calibrated resource curation + ACU decomposition
 // ============================================================
+function getTierDescription(stepIndex: number = 1): string {
+  if (stepIndex <= 1) return "Foundational mental models, core terminology, and high-level intuition.";
+  if (stepIndex === 2) return "Applied mechanics, interactive workflows, standard design patterns, and problem solving.";
+  if (stepIndex === 3) return "Performance optimization, memory constraints, edge cases, and non-trivial debugging.";
+  return "System architecture, production trade-offs, scalability bottlenecks, and deep internals.";
+}
+
+// ============================================================
+// PHASE A: SYNTHESIZE STEP MATERIALS — Level-calibrated resource curation + ACU decomposition
+// ============================================================
 export async function synthesizeStepMaterials(
   title: string,
   domainCategory: string,
   targetGoal: string,
   level: string,
   candidates: RawCandidate[],
-  groqKey?: string
+  groqKey?: string,
+  stepIndex: number = 1
 ): Promise<{ resources: CuratedResource[]; acus: ACU[] }> {
   const apiKey = groqKey || process.env.GROQ_API_KEY;
   if (!apiKey) {
     throw new GroqConfigError("GROQ_API_KEY is required for synthesizeStepMaterials.");
   }
+
+  const tierDescription = getTierDescription(stepIndex);
 
   const levelGuidance = level === "advanced" || level === "expert"
     ? "This learner is ADVANCED. Produce denser ACUs covering edge cases, failure modes, architectural trade-offs, and non-obvious interactions. Resources should target advanced documentation, primary papers, and expert-level references."
@@ -387,17 +400,21 @@ export async function synthesizeStepMaterials(
     : "This learner is a BEGINNER. Produce foundational ACUs covering core concepts, mental models, and first-principles understanding. Resources should be accessible introductions, official getting-started guides, and beginner-friendly references.";
 
   const systemPrompt = `You are an expert Principal Systems Architect and Cognitive Educator.
-You have full pedagogical authority over how many learning resources to curate and how many Atomic Competency Units (ACUs) to identify.
+
+PEDAGOGICAL DIFFICULTY TIER: Level ${stepIndex} (${tierDescription}).
+CRITICAL CONSTRAINT: Do NOT return introductory 101 definitions or basic summaries. Provide high-signal technical documentation and specialized video breakdowns matching Level ${stepIndex} complexity.
+
+RESOURCES QUOTA: Curate strictly 1 to 2 YouTube video links (or high-quality video guides) and 2 to 3 canonical documentation links (guaranteed zero 404s, e.g., MDN, official docs, Wikipedia, rust-lang, python.org, arxiv).
 
 YOUR MANDATES:
-1. "resources": Curate destination learning materials.
-   - Decide independently how many of the provided Tavily candidates, if any, are worth surfacing. You may select zero of them and supply only your own canonical resources, all of them, or any subset. There is no target number — the only test is genuine pedagogical necessity for a learner at the stated level pursuing the stated goal.
+1. "resources": Curate destination learning materials matching the quota (1-2 videos, 2-3 canonical docs).
+   - Decide independently how many of the provided Tavily candidates, if any, are worth surfacing. You may select zero of them and supply only your own canonical resources, all of them, or any subset.
    - If candidates are empty, low-quality, or search-query URLs, supply canonical resources from internal knowledge (MDN, official docs, primary papers, Wikipedia).
    - NEVER return an empty resources array.
    - NEVER output search-query URLs.
    - Assign each resource a descriptive "badge" (2-4 words) and "studyGuidance".
 
-2. "acus": Deconstruct this topic into an EXHAUSTIVE list of Atomic Competency Units (ACUs) calibrated to the learner's level.
+2. "acus": Deconstruct this topic into an EXHAUSTIVE list of Atomic Competency Units (ACUs) calibrated to the learner's level and difficulty tier.
    - ${levelGuidance}
    - Every distinct, independently testable concept, mechanism, edge case, or trade-off must be its own ACU.
    - Format each ACU as { "id": "acu-N", "label": "Short Title", "description": "What is evaluated" }.
@@ -413,6 +430,7 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
     domainCategory,
     targetGoal,
     level,
+    stepIndex,
     harvestedCandidates: candidates,
     candidateCount: candidates.length,
     instruction: candidates.length === 0
@@ -468,7 +486,7 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
 }
 
 // ============================================================
-// PHASE B: SYNTHESIZE QUIZ FROM MATERIAL — Material-scoped, 1 question per ACU
+// PHASE B: SYNTHESIZE QUIZ FROM MATERIAL — Material-scoped Socratic Evaluation
 // ============================================================
 export async function synthesizeQuizFromMaterial(
   acus: ACU[],
@@ -486,17 +504,23 @@ export async function synthesizeQuizFromMaterial(
   }
 
   const seedStr = options?.seed || Math.random().toString(36).substring(7);
-  const temp = options?.temperature ?? 0.8;
 
-  const systemPrompt = `You are a diagnostic evaluation examiner. Your task is to generate NOVEL, scenario-based evaluation questions.
-Randomization Seed: "${seedStr}". Produce completely fresh scenarios and distractor options. Do NOT repeat previous questions.
+  const systemPrompt = `You are a diagnostic Socratic evaluation examiner. Your task is to generate scenario-based evaluation questions based strictly on the provided ACUs and curated resources.
+Randomization Seed: "${seedStr}". Produce completely fresh scenarios and distractor options.
 
-Author questions using ONLY the specific concepts, explanations, and practical mechanisms introduced in the provided curated resources and Atomic Competency Units for this step.
+DYNAMIC QUESTION COUNT:
+Inspect the step's ACUs and generate between 3 to 6 questions dynamically based on content density (3 <= questions.length <= 6).
+
+STRICT DISTRACTOR EQUALITY RULES:
+1. EQUAL LENGTH: All 4 options (A, B, C, D) MUST have strictly comparable word counts and sentence structures (within ±10% word count of each other).
+2. NO OBVIOUS ANSWERS: NEVER make the correct option noticeably longer, more nuanced, or more technically detailed than incorrect options.
+3. HIGH-PLAUSIBILITY DISTRACTORS: Every distractor MUST represent a sophisticated, realistic misconception that an intermediate learner would genuinely fall for. Do not use throwaway or obviously absurd choices.
+4. NO META-OPTIONS: Do NOT use 'All of the above', 'None of the above', or 'Both A and B'.
 
 YOUR MANDATES:
-1. Write EXACTLY one scenario-based multiple choice question per ACU in the provided list. questions.length MUST equal acus.length.
+1. Generate between 3 to 6 questions dynamically mapped to the provided ACUs.
 2. Tag each question with the "acuId" of the ACU it evaluates.
-3. Provide 4 options (A, B, C, D) for each question.
+3. Provide 4 options (A, B, C, D) for each question obeying the STRICT DISTRACTOR EQUALITY RULES.
 4. Set "correctOptionId" to "A", "B", "C", or "D".
 5. Provide specific diagnostic "distractorExplanations" for EVERY option (A, B, C, D) detailing why that specific option is correct or represents a misconception.
 
@@ -595,4 +619,227 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
       D: "Hardcoding parameters breaks environment portability.",
     },
   }));
+}
+
+// ============================================================
+// PHASE C: TARGETED WEAKNESS DIAGNOSTIC & LASER-FOCUSED REMEDIATION
+// ============================================================
+
+export interface WeaknessArea {
+  topic: string;
+  misconceptionAnalysis: string;
+  coreConcept: string;
+  resources: {
+    docTitle: string;
+    docUrl: string;
+    videoTitle: string;
+    videoUrl: string;
+    criticalTakeaway: string;
+  };
+  acuId: string;
+  acuLabel: string;
+  rootCausePattern: string;
+  remediationResources: {
+    document: { title: string; url: string; studyGuidance: string };
+    video: { title: string; url: string; studyGuidance: string };
+  };
+}
+
+export interface DiagnosticPrescription {
+  overallDiagnosis: string;
+  weakAreas: WeaknessArea[];
+  weaknessAreas: WeaknessArea[];
+  retakeGuidance: string;
+}
+
+export interface FailedQuestionContext {
+  questionId: string;
+  scenario: string;
+  chosenOptionId: string | null;
+  correctOptionId: string;
+  chosenOptionText?: string;
+  correctOptionText?: string;
+  whyWrong?: string | null;
+  acuId?: string;
+}
+
+export async function synthesizeTargetedRemediation(
+  stepTitle: string,
+  domainCategory: string,
+  failedQuestions: FailedQuestionContext[],
+  acus: ACU[],
+  resources: CuratedResource[],
+  groqKey?: string
+): Promise<DiagnosticPrescription> {
+  const apiKey = groqKey || process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    throw new GroqConfigError("GROQ_API_KEY is required for synthesizeTargetedRemediation.");
+  }
+
+  if (!failedQuestions || failedQuestions.length === 0) {
+    return {
+      overallDiagnosis: "No specific weaknesses detected.",
+      weakAreas: [],
+      weaknessAreas: [],
+      retakeGuidance: "You may retake the evaluation when ready.",
+    };
+  }
+
+  const systemPrompt = `You are a Socratic Diagnostic Evaluator specializing in targeted misconception analysis and laser-focused remediation.
+
+YOUR TASK: Analyze the learner's incorrect quiz answers and produce a precise diagnostic prescription.
+
+CRITICAL TONE & FORMAT RULES:
+1. SOCRATIC MISCONCEPTION ANALYSIS: For each failed question, your "misconceptionAnalysis" MUST begin with "Your choice of [Wrong Option Text] indicates..." and then explain the specific cognitive error or knowledge gap that led to this choice. Be empathetic but precise.
+2. ROOT CAUSE PATTERN: Identify the underlying conceptual misunderstanding (e.g., "Confusion between compile-time and runtime type checking", "Misattribution of synchronous behavior to asynchronous APIs").
+3. REMEDIATION RESOURCES: For EACH weakness area, prescribe EXACTLY:
+   - 1 canonical documentation resource (official docs, MDN, Wikipedia, etc.)
+   - 1 video resource (YouTube tutorial, conference talk, etc.)
+   Both must be real, high-quality, direct destination URLs. NEVER output search-query URLs.
+4. Study guidance must explain specifically what to look for in each resource to correct the misconception.
+
+OUTPUT STRICT JSON MATCHING THIS SCHEMA:
+{
+  "overallDiagnosis": "A 1-2 sentence high-level summary of the learner's weakness pattern across all failed questions.",
+  "weaknessAreas": [
+    {
+      "acuId": "acu-N",
+      "acuLabel": "Short label of the ACU",
+      "misconceptionAnalysis": "Your choice of [X] indicates...",
+      "rootCausePattern": "Underlying conceptual error description",
+      "remediationResources": {
+        "document": { "title": "string", "url": "string", "studyGuidance": "string" },
+        "video": { "title": "string", "url": "string", "studyGuidance": "string" }
+      }
+    }
+  ],
+  "retakeGuidance": "A concise instruction on what the learner should focus on before retaking."
+}`;
+
+  const userPrompt = JSON.stringify({
+    stepTitle,
+    domainCategory,
+    failedQuestions: failedQuestions.map((fq) => ({
+      scenario: fq.scenario,
+      chosenOption: fq.chosenOptionId,
+      chosenOptionText: fq.chosenOptionText || `Option ${fq.chosenOptionId}`,
+      correctOption: fq.correctOptionId,
+      correctOptionText: fq.correctOptionText || `Option ${fq.correctOptionId}`,
+      existingWhyWrong: fq.whyWrong,
+      acuId: fq.acuId,
+    })),
+    acus,
+    existingResources: resources.map((r) => ({ title: r.title, url: r.url, badge: r.badge })),
+  });
+
+  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userPrompt },
+  ];
+
+  try {
+    const res = await callGroqWithFallback(messages, { apiKey, jsonMode: true, temperature: 0.3 });
+    const rawOutput = cleanJsonFence(res.content);
+    const parsed: any = JSON.parse(rawOutput);
+
+    const weaknessAreas: WeaknessArea[] = Array.isArray(parsed.weaknessAreas || parsed.weakAreas)
+      ? (parsed.weaknessAreas || parsed.weakAreas).map((wa: any) => {
+          const docTitle = wa.resources?.docTitle || wa.remediationResources?.document?.title || `${stepTitle} Documentation`;
+          const docUrl = wa.resources?.docUrl || wa.remediationResources?.document?.url || `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(stepTitle)}`;
+          const docGuidance = wa.resources?.criticalTakeaway || wa.remediationResources?.document?.studyGuidance || "Review the foundational concepts.";
+          const videoTitle = wa.resources?.videoTitle || wa.remediationResources?.video?.title || `${stepTitle} Explained`;
+          const videoUrl = wa.resources?.videoUrl || wa.remediationResources?.video?.url || `https://www.youtube.com/results?search_query=${encodeURIComponent(stepTitle + " tutorial")}`;
+          const videoGuidance = wa.resources?.criticalTakeaway || wa.remediationResources?.video?.studyGuidance || "Watch a walkthrough of the core mechanics.";
+          const topic = wa.topic || wa.acuLabel || "Unknown Competency";
+          const coreConcept = wa.coreConcept || wa.rootCausePattern || "Pattern not identified.";
+
+          return {
+            topic,
+            misconceptionAnalysis: wa.misconceptionAnalysis || "Analysis unavailable.",
+            coreConcept,
+            resources: {
+              docTitle,
+              docUrl,
+              videoTitle,
+              videoUrl,
+              criticalTakeaway: docGuidance,
+            },
+            acuId: wa.acuId || "unknown",
+            acuLabel: topic,
+            rootCausePattern: coreConcept,
+            remediationResources: {
+              document: {
+                title: docTitle,
+                url: docUrl,
+                studyGuidance: docGuidance,
+              },
+              video: {
+                title: videoTitle,
+                url: videoUrl,
+                studyGuidance: videoGuidance,
+              },
+            },
+          };
+        })
+      : [];
+
+    return {
+      overallDiagnosis: parsed.overallDiagnosis || "Competency gaps detected. Review the targeted resources below.",
+      weakAreas: weaknessAreas,
+      weaknessAreas,
+      retakeGuidance: parsed.retakeGuidance || "Study the prescribed materials thoroughly, then retake the evaluation.",
+    };
+  } catch (err) {
+    console.warn("[pipeline] Phase C (synthesizeTargetedRemediation) failed. Using fallback diagnostics.", err);
+
+    // Fallback: construct basic diagnostics from the failed questions directly
+    const fallbackAreas: WeaknessArea[] = failedQuestions.map((fq, idx) => {
+      const matchedAcu = acus.find((a) => a.id === fq.acuId);
+      const topic = matchedAcu?.label || `Question ${idx + 1} Competency`;
+      const coreConcept = matchedAcu?.description || "Conceptual misunderstanding in this area.";
+      const docTitle = `${stepTitle} Reference`;
+      const docUrl = `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(stepTitle)}`;
+      const docGuidance = "Review the canonical reference for this topic.";
+      const videoTitle = `${stepTitle} Video Guide`;
+      const videoUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(stepTitle + " explained")}`;
+      const videoGuidance = "Watch a comprehensive walkthrough.";
+
+      return {
+        topic,
+        misconceptionAnalysis: fq.whyWrong
+          ? `Your choice of Option ${fq.chosenOptionId} indicates: ${fq.whyWrong}`
+          : `Your selection of Option ${fq.chosenOptionId} suggests a gap in understanding for this scenario.`,
+        coreConcept,
+        resources: {
+          docTitle,
+          docUrl,
+          videoTitle,
+          videoUrl,
+          criticalTakeaway: docGuidance,
+        },
+        acuId: fq.acuId || `weak-${idx + 1}`,
+        acuLabel: topic,
+        rootCausePattern: coreConcept,
+        remediationResources: {
+          document: {
+            title: docTitle,
+            url: docUrl,
+            studyGuidance: docGuidance,
+          },
+          video: {
+            title: videoTitle,
+            url: videoUrl,
+            studyGuidance: videoGuidance,
+          },
+        },
+      };
+    });
+
+    return {
+      overallDiagnosis: "Competency gaps detected across multiple areas. Focused remediation is prescribed below.",
+      weakAreas: fallbackAreas,
+      weaknessAreas: fallbackAreas,
+      retakeGuidance: "Review each prescribed resource, paying close attention to the specific misconceptions identified, then retake the evaluation.",
+    };
+  }
 }

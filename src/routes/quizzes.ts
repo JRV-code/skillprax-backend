@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyPluginAsync } from "fastify";
 import prisma from "../lib/prisma";
-import { callGroqWithFallback } from "../lib/ai/pipeline";
+import { callGroqWithFallback, synthesizeTargetedRemediation, FailedQuestionContext, ACU, CuratedResource } from "../lib/ai/pipeline";
 
 // Fisher-Yates array shuffle helper
 function shuffleArray<T>(array: T[]): T[] {
@@ -16,7 +16,11 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
   // POST /api/steps/:stepId/prompt-quiz - On-demand, unique, randomized evaluation
   fastify.post('/api/steps/:stepId/prompt-quiz', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
-    const { aiEngine } = (req.body || {}) as { aiEngine?: string };
+    const { aiEngine, retestMode, focusAcus } = (req.body || {}) as {
+      aiEngine?: string;
+      retestMode?: boolean;
+      focusAcus?: string[];
+    };
 
     try {
       const step = await prisma.skillStep.findUnique({
@@ -39,14 +43,34 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
       const dynamicQuestionCount = Math.min(6, Math.max(3, acus.length || 4));
       const entropySeed = Math.random().toString(36).substring(7);
 
+      // Build adaptive weighting directive for retest mode
+      let weightingDirective = '';
+      if (retestMode && Array.isArray(focusAcus) && focusAcus.length > 0) {
+        const focusCount = Math.max(1, Math.round(dynamicQuestionCount * 0.7));
+        const retentionCount = dynamicQuestionCount - focusCount;
+        weightingDirective = `
+ADAPTIVE RETEST MODE ACTIVE:
+- Generate exactly ${focusCount} questions (70%) targeting these DEFICIENT ACU IDs: ${JSON.stringify(focusAcus)}.
+- Generate exactly ${retentionCount} questions (30%) as retention checks on OTHER ACUs not in the focus list.
+- All questions MUST be completely novel — never reuse scenarios or phrasing from prior evaluations.
+- Prioritize testing the specific misconceptions that caused prior failure.`;
+      }
+
       const systemPrompt = `You are a strict competency evaluator. Generate an evaluation of exactly ${dynamicQuestionCount} high-friction scenario-based multiple-choice questions for "${step.title}".
 Entropy seed: ${entropySeed}. Ensure questions are 100% unique, scenario-focused, and never repetitive.
+${weightingDirective}
+
+STRICT DISTRACTOR EQUALITY RULES:
+1. All 4 options (A, B, C, D) MUST have comparable word counts (within ±15% of each other).
+2. NEVER make the correct option noticeably longer or more detailed than distractors.
+3. Every distractor must be a sophisticated, realistic misconception.
 
 Output strictly valid JSON with no markdown formatting:
 {
   "questions": [
     {
       "id": "q1",
+      "acuId": "acu-N",
       "scenario": "A realistic real-world problem statement...",
       "rawCorrectText": "The exact correct technical explanation",
       "rawDistractors": [
@@ -88,6 +112,7 @@ Output strictly valid JSON with no markdown formatting:
 
         return {
           id: `q_${qIdx + 1}_${entropySeed}`,
+          acuId: q.acuId || null,
           scenario: q.scenario || q.question || 'Evaluation Scenario',
           options,
           correctOptionId,
@@ -131,7 +156,10 @@ Output strictly valid JSON with no markdown formatting:
     const { attemptId, answers } = (req.body || {}) as { attemptId: string; answers: any };
 
     try {
-      const step = await prisma.skillStep.findUnique({ where: { id: stepId } });
+      const step = await prisma.skillStep.findUnique({
+        where: { id: stepId },
+        include: { workspace: true },
+      });
       if (!step) return reply.status(404).send({ error: 'Step not found' });
 
       const blueprintRaw = step.quizBlueprint;
@@ -150,13 +178,24 @@ Output strictly valid JSON with no markdown formatting:
 
         if (isCorrect) correctCount++;
 
+        // Resolve option text for diagnostic enrichment
+        const chosenOptionText = chosenOptionId && Array.isArray(q.options)
+          ? q.options.find((o: any) => String(o.id).toUpperCase() === chosenOptionId)?.text || `Option ${chosenOptionId}`
+          : null;
+        const correctOptionText = Array.isArray(q.options)
+          ? q.options.find((o: any) => String(o.id).toUpperCase() === correctOptionId)?.text || `Option ${correctOptionId}`
+          : `Option ${correctOptionId}`;
+
         return {
           questionId: q.id,
           scenario: q.scenario,
           chosenOptionId,
           correctOptionId,
+          chosenOptionText,
+          correctOptionText,
           isCorrect,
           whyWrong: !isCorrect && chosenOptionId ? q.distractorExplanations?.[chosenOptionId] || 'Fails scenario constraints.' : null,
+          acuId: q.acuId || null,
         };
       });
 
@@ -169,8 +208,63 @@ Output strictly valid JSON with no markdown formatting:
           where: { id: attemptId },
           data: { score, scorePercent: score, correctCount, passed, status: "completed", results: results as any, userAnswers: normalizedAnswers as any, completedAt: new Date() },
         }),
-        ...(passed ? [prisma.skillStep.update({ where: { id: step.id }, data: { status: 'PASSED' } })] : []),
+        prisma.skillStep.update({
+          where: { id: step.id },
+          data: { status: passed ? 'PASSED' : 'FAILED_REMEDIATION' },
+        }),
       ]);
+
+      // On failure: trigger targeted weakness diagnostic & remediation
+      let diagnosticPrescription = null;
+      if (!passed) {
+        try {
+          const failedQuestions: FailedQuestionContext[] = results
+            .filter((r: any) => !r.isCorrect)
+            .map((r: any) => ({
+              questionId: r.questionId,
+              scenario: r.scenario,
+              chosenOptionId: r.chosenOptionId,
+              correctOptionId: r.correctOptionId,
+              chosenOptionText: r.chosenOptionText,
+              correctOptionText: r.correctOptionText,
+              whyWrong: r.whyWrong,
+              acuId: r.acuId,
+            }));
+
+          // Parse step ACUs and resources
+          const acusRaw = step.assessableUnits;
+          const acus: ACU[] = Array.isArray(acusRaw)
+            ? acusRaw as unknown as ACU[]
+            : typeof acusRaw === 'string'
+              ? JSON.parse(acusRaw || '[]')
+              : [];
+
+          const resourcesRaw = step.resources;
+          const resources: CuratedResource[] = Array.isArray(resourcesRaw)
+            ? resourcesRaw as unknown as CuratedResource[]
+            : typeof resourcesRaw === 'string'
+              ? JSON.parse(resourcesRaw || '[]')
+              : [];
+
+          // Retrieve Groq key
+          let config = await prisma.adminConfig.findUnique({ where: { id: "global" } });
+          if (!config) config = await prisma.adminConfig.findFirst();
+          const groqKey = config?.groqApiKey || config?.groqKey || process.env.GROQ_API_KEY;
+
+          const domainCategory = step.workspace?.domainCategory || 'General Knowledge';
+
+          diagnosticPrescription = await synthesizeTargetedRemediation(
+            step.title,
+            domainCategory,
+            failedQuestions,
+            acus,
+            resources,
+            groqKey || undefined
+          );
+        } catch (diagnosticErr) {
+          fastify.log.warn(diagnosticErr, '[SubmitQuiz] Targeted remediation synthesis failed; returning results without prescription.');
+        }
+      }
 
       return reply.send({
         attemptId,
@@ -180,6 +274,7 @@ Output strictly valid JSON with no markdown formatting:
         totalQuestions: total,
         correctCount,
         results,
+        ...(diagnosticPrescription ? { diagnosticPrescription } : {}),
       });
     } catch (err) {
       fastify.log.error(err, '[SubmitQuiz] Failed');

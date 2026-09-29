@@ -197,13 +197,14 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
   });
 
   // ============================================================
-  // 2. GET /api/workspaces — List all workspaces enriched for Dashboard
-  // ============================================================
   fastify.get("/api/workspaces", async (req, reply) => {
     const { profileId } = req.query as { profileId?: string };
+    if (!profileId) {
+      return reply.status(400).send({ error: "profileId query parameter is required" });
+    }
     try {
       const workspaces = await prisma.workspace.findMany({
-        where: profileId ? { userProfileId: profileId } : {},
+        where: { userProfileId: profileId },
         orderBy: { updatedAt: "desc" },
         include: {
           steps: {
@@ -230,7 +231,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
         };
       });
 
-      return reply.status(200).send(enriched);
+      return reply.status(200).send({ workspaces: enriched });
     } catch (err: any) {
       fastify.log.error(err, "[GET /api/workspaces] Failed");
       return reply.status(500).send({ error: "Failed to fetch tracks" });
