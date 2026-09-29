@@ -197,6 +197,160 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
   });
 
   // ============================================================
+  // 1B. POST /api/workspaces — Create workspace with Groq AI roadmap synthesis
+  // ============================================================
+  fastify.post("/api/workspaces", async (request, reply) => {
+    try {
+      const body: any = request.body || {};
+      const cleanTitle = sanitizeInput((body.title ?? body.topic ?? "").trim()).slice(0, 140);
+      if (!cleanTitle) {
+        return reply.status(400).send({ error: "Title parameter is required." });
+      }
+
+      const cleanDomain = sanitizeInput((body.domain ?? body.domainCategory ?? body.category ?? "Science").trim());
+      const profileId = body.profileId || body.userProfileId || "default-profile";
+
+      let apiKeys;
+      try {
+        apiKeys = await getApiKeys();
+      } catch (err) {
+        if (err instanceof GroqConfigError) {
+          return reply.status(503).send({ error: `AI configuration error: ${(err as Error).message}` });
+        }
+        throw err;
+      }
+
+      // Fetch profile context if available
+      const profile = await prisma.userProfile.findUnique({ where: { id: profileId } });
+      const eduContext = profile ? `${profile.educationBoard} ${profile.grade}` : "Class 12 Science";
+
+      const systemPrompt = `You are the SkillPrax Curriculum Engine.
+Domain: "${cleanDomain}"
+Target Skill: "${cleanTitle}"
+Learner Educational Context: "${eduContext}" (e.g. Class 12 Science / High-Performance Competitive Track).
+
+Generate a rigorous, 4 to 5 step sequential mastery curriculum tailored specifically to "${cleanTitle}".
+DO NOT generate a generic course. DO NOT output Chemistry/Haloalkanes unless the skill title is explicitly Chemistry.
+
+CRITICAL STEP TITLE & PROGRESSION RULES:
+- Every step MUST have a completely UNIQUE, DISTINCT title reflecting a clear progressive level-up in difficulty and mastery.
+- Step 1 must focus on Foundational Mental Models & Core Principles.
+- Step 2 must focus on Applied Mechanics & Intermediate Problem-Solving.
+- Step 3 must focus on Non-Linear Edge Cases, Optimization & Debugging.
+- Step 4 (and 5) must focus on Advanced System Synthesis & Apex Mastery.
+- No two steps may share identical or repetitive titles.
+
+STRICT OUTPUT RULES:
+- Output ONLY a raw, valid JSON object conforming exactly to the schema below.
+- Each step must have 2 to 3 granular Assessable Competency Units (ACUs) detailing what specific skill is assessed.
+
+JSON SCHEMA:
+{
+  "title": "${cleanTitle}",
+  "subTitle": "An authoritative, domain-accurate subtitle",
+  "steps": [
+    {
+      "stepIndex": 1,
+      "title": "Unique Foundational Module Name",
+      "acus": [
+        { "title": "Competency Unit Name", "description": "Specific measurable skill tested" },
+        { "title": "Competency Unit Name", "description": "Specific measurable skill tested" }
+      ]
+    },
+    {
+      "stepIndex": 2,
+      "title": "Unique Applied Mechanics Module Name",
+      "acus": [
+        { "title": "Competency Unit Name", "description": "Specific measurable skill tested" }
+      ]
+    }
+  ]
+}`;
+
+      let generatedData: any = null;
+      try {
+        const aiRes = await callGroqWithFallback(
+          [{ role: "system", content: systemPrompt }, { role: "user", content: `Generate curriculum for ${cleanTitle}` }],
+          { apiKey: apiKeys.groqApiKey, jsonMode: true, model: "llama-3.3-70b-versatile" }
+        );
+        const cleaned = aiRes.content.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '');
+        generatedData = JSON.parse(cleaned);
+      } catch (aiErr) {
+        fastify.log.warn(`[POST /api/workspaces] Groq fallback used: ${(aiErr as Error).message}`);
+        generatedData = {
+          title: cleanTitle,
+          subTitle: `${cleanDomain} Mastery Track`,
+          steps: [
+            {
+              stepIndex: 1,
+              title: `${cleanTitle}: Foundational Principles`,
+              acus: [
+                { title: `Axiomatic ${cleanTitle} Baseline`, description: "Verify baseline principles" },
+                { title: "Boundary Conditions", description: "First-principles verification" }
+              ]
+            },
+            {
+              stepIndex: 2,
+              title: `${cleanTitle}: Applied Mechanics`,
+              acus: [
+                { title: "Procedural Execution", description: "Applied synthesis and operational steps" }
+              ]
+            },
+            {
+              stepIndex: 3,
+              title: `${cleanTitle}: Advanced Optimization`,
+              acus: [
+                { title: "Non-linear edge cases", description: "Cross-domain synthesis verification" }
+              ]
+            },
+            {
+              stepIndex: 4,
+              title: `${cleanTitle}: Apex Mastery`,
+              acus: [
+                { title: "Apex Competency Clearance", description: "Comprehensive Socratic verification" }
+              ]
+            }
+          ]
+        };
+      }
+
+      // Create Workspace + Steps in Prisma transaction
+      const newWorkspace = await prisma.workspace.create({
+        data: {
+          title: generatedData.title || cleanTitle,
+          domainCategory: cleanDomain,
+          targetGoal: body.targetGoal || "Full Mastery",
+          level: body.level || "Beginner",
+          aiEngine: "llama-3.3-70b-versatile",
+          userProfileId: profileId,
+          totalPlannedSteps: (generatedData.steps || []).length || 4,
+          steps: {
+            create: (generatedData.steps || []).map((s: any, idx: number) => ({
+              stepIndex: s.stepIndex || (idx + 1),
+              title: s.title || `Step ${idx + 1}`,
+              description: `Mastery gate for step ${idx + 1}`,
+              status: idx === 0 ? "STUDY_UNGENERATED" : "LOCKED",
+              assessableUnits: (s.acus || []).map((a: any) => ({
+                title: typeof a === "string" ? a : a.title || "Competency Unit",
+                description: typeof a === "string" ? a : a.description || "Specific skill tested"
+              })) as any
+            }))
+          }
+        },
+        include: {
+          steps: { orderBy: { stepIndex: "asc" } }
+        }
+      });
+
+      const formatted = formatWorkspaceClientSafe(newWorkspace);
+      return reply.status(201).send({ workspace: formatted, id: newWorkspace.id });
+    } catch (err: any) {
+      fastify.log.error(err, "[POST /api/workspaces] Failed");
+      return reply.status(500).send({ error: err.message || "Failed to create workspace" });
+    }
+  });
+
+  // ============================================================
   fastify.get("/api/workspaces", async (req, reply) => {
     const { profileId } = req.query as { profileId?: string };
     if (!profileId) {

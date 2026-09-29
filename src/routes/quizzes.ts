@@ -12,6 +12,15 @@ function shuffleArray<T>(array: T[]): T[] {
   return arr;
 }
 
+function safeJsonParse(str: any, fallback: any = []): any {
+  if (typeof str !== "string") return str || fallback;
+  try {
+    return JSON.parse(str);
+  } catch (_) {
+    return fallback;
+  }
+}
+
 const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
   // Common handler for quiz generation
   const generateStepQuizHandler = async (req: any, reply: any) => {
@@ -59,14 +68,20 @@ ADAPTIVE RETEST MODE ACTIVE:
 - Prioritize testing the specific misconceptions that caused prior failure.`;
       }
 
-      const systemPrompt = `You are a strict competency evaluator. Generate an evaluation of exactly ${dynamicQuestionCount} high-friction scenario-based multiple-choice questions for "${step.title}".
+      const resourcesRaw = step.resources;
+      const stepResources = Array.isArray(resourcesRaw) ? resourcesRaw : safeJsonParse(resourcesRaw as string, []);
+
+      const systemPrompt = `You are a strict competency evaluator. Generate an evaluation of scenario-based multiple-choice questions for "${step.title}".
 Entropy seed: ${entropySeed}. Ensure questions are 100% unique, scenario-focused, and never repetitive.
 ${weightingDirective}
 
-STRICT DISTRACTOR EQUALITY RULES:
-1. All 4 options (A, B, C, D) MUST have comparable word counts (within ±15% of each other).
-2. NEVER make the correct option noticeably longer or more detailed than distractors.
-3. Every distractor must be a sophisticated, realistic misconception.
+STRICT RESOURCE & ACU-BASED GENERATION:
+- Build questions strictly based on the concepts, skills, and materials present in the provided step resources and ACUs.
+
+CRITICAL OPTION RANDOMIZATION & EXPLANATION RULES:
+1. Place the correct option at a completely RANDOM position (A, B, C, or D). DO NOT always place the correct answer as option A.
+2. For EVERY option (the correct option and all distractors), provide detailed explanations explaining why that option is correct (if true) or what specific misconception it represents (if false).
+3. All 4 options (A, B, C, D) MUST have comparable word counts (within ±15% of each other). Never make the correct option noticeably longer or more detailed.
 
 Output strictly valid JSON with no markdown formatting:
 {
@@ -76,6 +91,7 @@ Output strictly valid JSON with no markdown formatting:
       "acuId": "acu-N",
       "scenario": "A realistic real-world problem statement...",
       "rawCorrectText": "The exact correct technical explanation",
+      "correctExplanation": "Why this option is correct based on the resources",
       "rawDistractors": [
         { "text": "Plausible wrong option 1", "whyWrong": "Specific misconception analysis..." },
         { "text": "Plausible wrong option 2", "whyWrong": "Specific misconception analysis..." },
@@ -86,31 +102,36 @@ Output strictly valid JSON with no markdown formatting:
 }`;
 
       const aiResponse = await callGroqWithFallback(
-        [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Material ACUs: ${JSON.stringify(acus)}` }],
+        [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Material ACUs: ${JSON.stringify(acus)}\nProvided Step Resources: ${JSON.stringify(stepResources)}` }],
         { apiKey: groqKey, jsonMode: true, model: aiEngine || step.workspace?.aiEngine || 'llama-3.3-70b-versatile', temperature: 0.85 }
       );
 
       let cleaned = aiResponse.content.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '');
       const parsed = JSON.parse(cleaned);
 
-      // Randomize option order (A, B, C, D) so correct answer is NOT consistently "A"
+      // Randomize option order (A, B, C, D) so correct answer position is completely random
       const keys = ['A', 'B', 'C', 'D'];
       const finalizedBlueprint = (parsed.questions || []).map((q: any, qIdx: number) => {
         const optionPool = [
-          { text: q.rawCorrectText, isCorrect: true, whyWrong: null },
-          ...(q.rawDistractors || []).map((d: any) => ({ text: d.text || d, isCorrect: false, whyWrong: d.whyWrong || 'Incorrect option' })),
+          { text: q.rawCorrectText, isCorrect: true, whyWrong: null, explanation: q.correctExplanation || 'Correct technical explanation based on step resources.' },
+          ...(q.rawDistractors || []).map((d: any) => ({ text: d.text || d, isCorrect: false, whyWrong: d.whyWrong || 'Incorrect option', explanation: d.whyWrong || 'Incorrect option' })),
         ];
 
         const shuffled = shuffleArray(optionPool);
-        const options: Array<{ id: string; text: string }> = [];
+        const options: Array<{ id: string; text: string; explanation?: string }> = [];
         let correctOptionId = 'A';
         const distractorExplanations: Record<string, string> = {};
+        const optionExplanations: Record<string, string> = {};
 
         shuffled.forEach((opt, idx) => {
           const key = keys[idx];
           options.push({ id: key, text: opt.text });
-          if (opt.isCorrect) correctOptionId = key;
-          else if (opt.whyWrong) distractorExplanations[key] = opt.whyWrong;
+          optionExplanations[key] = opt.explanation || (opt.isCorrect ? 'Correct explanation' : 'Incorrect option');
+          if (opt.isCorrect) {
+            correctOptionId = key;
+          } else if (opt.whyWrong) {
+            distractorExplanations[key] = opt.whyWrong;
+          }
         });
 
         return {
@@ -120,6 +141,7 @@ Output strictly valid JSON with no markdown formatting:
           options,
           correctOptionId,
           distractorExplanations,
+          optionExplanations,
         };
       });
 

@@ -9,9 +9,68 @@ import {
   safeJsonParse,
   safeJsonStringify,
 } from '../lib/ai/orchestrator';
+import { harvestResources, synthesizeStepMaterials } from '../lib/ai/pipeline';
 import { storeQuizSession, getQuizSession } from '../lib/quizStore';
 
 export async function stepRoutes(fastify: FastifyInstance) {
+
+  // POST /api/steps/:stepId/level-up-resources
+  fastify.post('/api/steps/:stepId/level-up-resources', async (request: FastifyRequest, reply: FastifyReply) => {
+    const { stepId } = request.params as { stepId: string };
+    const body = (request.body as any) || {};
+
+    try {
+      const step: any = await prisma.skillStep.findUnique({
+        where: { id: stepId },
+        include: { workspace: true },
+      });
+
+      if (!step) {
+        return reply.status(404).send({ error: 'Step not found' });
+      }
+
+      let config = await prisma.adminConfig.findUnique({ where: { id: 'global' } });
+      if (!config) config = await prisma.adminConfig.findFirst();
+      const groqKey = config?.groqApiKey || config?.groqKey || process.env.GROQ_API_KEY;
+      const tavilyKey = config?.tavilyApiKey || config?.tavilyKey || process.env.TAVILY_API_KEY;
+
+      const candidates = await harvestResources(
+        body.workspaceTitle || step.workspace?.title || step.title,
+        body.title || step.title,
+        tavilyKey,
+        step.workspace?.domainCategory,
+        step.workspace?.targetGoal
+      );
+
+      const materials = await synthesizeStepMaterials(
+        body.title || step.title,
+        step.workspace?.domainCategory || 'Science',
+        step.workspace?.targetGoal || 'Full Mastery',
+        step.workspace?.level || 'beginner',
+        candidates,
+        groqKey || undefined,
+        body.stepIndex || step.stepIndex || 1
+      );
+
+      const updatedStep = await prisma.skillStep.update({
+        where: { id: stepId },
+        data: {
+          resources: materials.resources as any,
+          assessableUnits: (materials.acus && materials.acus.length > 0) ? (materials.acus as any) : step.assessableUnits,
+          status: 'STUDY_READY',
+        },
+      });
+
+      return reply.send({
+        resources: materials.resources,
+        acus: materials.acus,
+        step: updatedStep,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, '[LevelUpResources] Failed');
+      return reply.status(500).send({ error: err.message || 'Failed to synthesize resources' });
+    }
+  });
 
 
   // POST /api/steps/:stepId/evaluate
