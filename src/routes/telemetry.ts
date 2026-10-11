@@ -277,6 +277,119 @@ export async function telemetryRoutes(fastify: FastifyInstance) {
 
     return reply.send({ success: true, session });
   });
+
+  // GET /api/profiles/:id/recommendations - Curated Next Horizons
+  fastify.get('/api/profiles/:id/recommendations', async (request, reply) => {
+    const { id } = request.params as { id: string };
+
+    let profile: any = await prisma.userProfile.findUnique({
+      where: { id },
+      include: {
+        workspaces: {
+          include: { steps: true },
+        },
+      },
+    });
+
+    if (!profile) {
+      profile = await (prisma as any).profile?.findUnique({
+        where: { id },
+        include: {
+          workspaces: {
+            include: { steps: true },
+          },
+        },
+      });
+    }
+
+    const enrolled = profile?.workspaces || [];
+    const enrolledSummary = enrolled.map((w: any) => ({
+      title: w.title,
+      domain: w.domainCategory,
+      subGenre: w.subGenre,
+      progress: w.progress,
+      stepsCount: w.steps?.length || 0,
+      passedCount: (w.steps || []).filter((s: any) => s.status === 'PASSED').length,
+    }));
+
+    try {
+      const { getEffectiveKeys } = await import('../lib/keyManager');
+      const { callGroqWithFallback } = await import('../lib/ai/pipeline');
+      const { groqKey } = await getEffectiveKeys();
+
+      if (groqKey) {
+        const prompt = `You are the SKILL-TRACK Pedagogy & Curriculum Engine.
+Learner Context:
+Profession: ${profile?.profession || 'Student'}
+Age: ${profile?.age || 18}
+Education: ${profile?.educationBoard || 'Standard'} ${profile?.grade || ''}
+Enrolled Tracks:
+${JSON.stringify(enrolledSummary, null, 2)}
+
+Synthesize EXACTLY 3 complementary future skill tracks for this learner:
+1. Lateral Progression (Adjacent domain expanding immediate skills)
+2. Cross-Disciplinary Amplifier (Different domain creating unique T-shaped mastery synergy)
+3. Foundational Deepening (Deeper theoretical or apex specialization)
+
+Output strictly valid JSON with this schema:
+{
+  "recommendations": [
+    {
+      "domain": "Domain Name (e.g. Engineering & Applied Technology, Natural & Physical Sciences, Arts, Media & Spatial Design, Formal Sciences & Mathematics)",
+      "title": "Title of Skill Track",
+      "subGenre": "Specialized Sub-Genre",
+      "affinityScore": 95,
+      "categoryType": "Lateral Progression",
+      "rationale": "Clear pedagogical explanation of why this amplifies their capabilities."
+    }
+  ]
+}`;
+
+        const aiRes = await callGroqWithFallback([
+          { role: 'system', content: prompt }
+        ], { apiKey: groqKey, jsonMode: true, model: 'llama-3.3-70b-versatile' });
+
+        const cleaned = aiRes.content.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '');
+        const parsed = JSON.parse(cleaned);
+        if (Array.isArray(parsed.recommendations) && parsed.recommendations.length > 0) {
+          return reply.send({ recommendations: parsed.recommendations });
+        }
+      }
+    } catch (err) {
+      fastify.log.warn(err, '[Recommendations] Groq recommendation fallback used');
+    }
+
+    // High-affinity fallback recommendations
+    return reply.send({
+      recommendations: [
+        {
+          domain: "Engineering & Applied Technology",
+          title: "Rust Systems Architecture & Memory Concurrency",
+          subGenre: "Low-Level Concurrency",
+          affinityScore: 96,
+          categoryType: "Lateral Progression",
+          rationale: "Builds rigorous deterministic thinking and zero-cost abstraction fluency.",
+        },
+        {
+          domain: "Natural & Physical Sciences",
+          title: "Reaction Kinetics & Molecular Thermodynamics",
+          subGenre: "Physical Chemistry",
+          affinityScore: 92,
+          categoryType: "Foundational Deepening",
+          rationale: "Deepens first-principles understanding of transition states and bond enthalpy.",
+        },
+        {
+          domain: "Formal Sciences & Mathematics",
+          title: "Discrete Graph Theory & Combinatorial Algorithms",
+          subGenre: "Graph Traversal",
+          affinityScore: 89,
+          categoryType: "Cross-Disciplinary Amplifier",
+          rationale: "Amplifies multi-variable scenario resolution across both computational and scientific models.",
+        },
+      ],
+    });
+  });
 }
 
 export default telemetryRoutes;
+

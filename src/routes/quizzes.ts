@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyPluginAsync } from "fastify";
 import prisma from "../lib/prisma";
-import { callGroqWithFallback, synthesizeTargetedRemediation, FailedQuestionContext, ACU, CuratedResource } from "../lib/ai/pipeline";
+import { callGroqWithFallback } from "../lib/ai/pipeline";
 import { searchTavilyRemediation, SearchResultItem } from "../services/search";
 import { synthesizeTargetedRemediationWithTavily } from "../services/ai";
 
@@ -27,14 +27,17 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
   // Common handler for quiz generation
   const generateStepQuizHandler = async (req: any, reply: any) => {
     const { stepId } = req.params as { stepId: string };
-    const { aiEngine, retestMode, focusAcus, priorityAcus } = (req.body || {}) as {
+    const { aiEngine, retestMode, focusAcus, priorityAcus, perfectionMode, failedQuestionIds } = (req.body || {}) as {
       aiEngine?: string;
       retestMode?: boolean;
       focusAcus?: string[];
       priorityAcus?: string[];
+      perfectionMode?: boolean;
+      failedQuestionIds?: string[];
     };
 
     const targetFocusAcus = focusAcus || priorityAcus || [];
+    const isPerfection = Boolean(perfectionMode);
 
     try {
       const step = await prisma.skillStep.findUnique({
@@ -53,16 +56,25 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
       const acusRaw = step.assessableUnits;
       const acus = Array.isArray(acusRaw) ? acusRaw : (typeof acusRaw === 'string' ? JSON.parse(acusRaw || '[]') : []);
 
-      // Determine dynamic question count based on ACU complexity (3 to 6 questions)
-      const dynamicQuestionCount = Math.min(6, Math.max(3, acus.length || 4));
+      // Dynamic question scaling: 8 to 12 scenario questions in standard mode, 2 to 4 in perfection mode
+      const dynamicQuestionCount = isPerfection
+        ? Math.min(4, Math.max(2, targetFocusAcus.length || 3))
+        : Math.min(12, Math.max(8, Math.round((acus.length * 2.5) || 8)));
+
       const entropySeed = Math.random().toString(36).substring(7);
 
-      // Build adaptive weighting directive for retest mode
-      let weightingDirective = '';
-      if (retestMode && Array.isArray(targetFocusAcus) && targetFocusAcus.length > 0) {
+      // Mode-specific directives
+      let modeDirective = '';
+      if (isPerfection) {
+        modeDirective = `
+TARGETED PERFECTION DRILL (100% MASTERY TARGET):
+- Generate exactly ${dynamicQuestionCount} high-precision scenario questions.
+- Focus exclusively on the concepts missed in prior attempt: ${JSON.stringify(targetFocusAcus)}.
+- Verify that previous misconception traps have been completely resolved.`;
+      } else if (retestMode && Array.isArray(targetFocusAcus) && targetFocusAcus.length > 0) {
         const focusCount = Math.max(1, Math.round(dynamicQuestionCount * 0.7));
         const retentionCount = dynamicQuestionCount - focusCount;
-        weightingDirective = `
+        modeDirective = `
 ADAPTIVE RETEST MODE ACTIVE:
 - Generate exactly ${focusCount} questions (70%) targeting these DEFICIENT ACU IDs/topics: ${JSON.stringify(targetFocusAcus)}.
 - Generate exactly ${retentionCount} questions (30%) as retention checks on OTHER ACUs not in the focus list.
@@ -78,7 +90,7 @@ ADAPTIVE RETEST MODE ACTIVE:
         ? stepResources.map((r: any) => `• [${r.badge || r.type || 'Resource'}] "${r.title}": ${r.studyGuidance || r.takeaway || r.subtitle || 'Assigned study material'}`).join('\n')
         : 'Foundational first-principles for this domain.';
 
-      const systemPrompt = `You are the SkillPrax Socratic Evaluation Architect.
+      const systemPrompt = `You are the SKILL-TRACK Pedagogy & Curriculum Engine (v2.6) Socratic Evaluation Architect.
 Milestone: "Step ${step.stepIndex} of ${step.workspace?.totalPlannedSteps || 5} - ${step.title}".
 Entropy seed: ${entropySeed}. Ensure questions are 100% unique, scenario-focused, and never repetitive.
 
@@ -88,13 +100,13 @@ ${resourceContext}
 ASSESSABLE COMPETENCY UNITS (ACUs to Test):
 ${acus.map((a: any) => `- [ID: ${a.id || a.acuId || 'acu-1'}] ${a.label || a.title || 'ACU'}: ${a.description || 'Description'}`).join('\n')}
 
-${weightingDirective}
+${modeDirective}
 
-CRITICAL GROUNDING DIRECTIVE:
-1. Every scenario question MUST directly assess concepts, principles, takeaways, or failure modes covered in the ASSIGNED STUDY CURRICULUM above and the ACUs.
-2. Do NOT generate questions on external, unassigned trivia.
-3. Place the correct option at a completely RANDOM position (A, B, C, or D). DO NOT always place the correct answer as option A.
-4. Obey the Equal Length Rule: All 4 choices (A, B, C, D) MUST have strictly comparable sentence length and word counts (within ±10%). Never make the correct option noticeably longer or more detailed.
+CRITICAL GROUNDING DIRECTIVES:
+1. Generate EXACTLY ${dynamicQuestionCount} scenario-grounded challenge questions.
+2. Every scenario challenge MUST directly assess concepts, principles, takeaways, or edge cases from the ASSIGNED STUDY CURRICULUM and the ACUs.
+3. EQUAL LENGTH RULE (MANDATORY): All 4 choices (A, B, C, D) for EVERY question MUST have strictly comparable sentence length and character counts (within ±10%). The correct answer must NOT be conspicuously longer or more detailed than the distractors.
+4. Place the correct option at a completely RANDOM position (A, B, C, or D). DO NOT always place the correct answer as option A.
 5. Provide specific diagnostic explanations for EVERY option (A, B, C, D) detailing why that option is correct or what specific misconception trap it represents.
 
 Output strictly valid JSON with no markdown formatting:
@@ -116,7 +128,7 @@ Output strictly valid JSON with no markdown formatting:
 }`;
 
       const aiResponse = await callGroqWithFallback(
-        [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Material ACUs: ${JSON.stringify(acus)}\nAssigned Study Resources: ${JSON.stringify(stepResources)}` }],
+        [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Generate ${dynamicQuestionCount} Socratic questions for ${step.title}` }],
         { apiKey: groqKey, jsonMode: true, model: aiEngine || step.workspace?.aiEngine || 'llama-3.3-70b-versatile', temperature: 0.85 }
       );
 
@@ -183,7 +195,8 @@ Output strictly valid JSON with no markdown formatting:
         attemptId: attempt.id,
         questions: sanitizedQuestions,
         questionCount: sanitizedQuestions.length,
-        passingThreshold: 0.8
+        passingThreshold: 0.70,
+        isPerfectionMode: isPerfection,
       });
     } catch (err) {
       fastify.log.error(err, '[QuizGeneration] Failed');
@@ -196,7 +209,7 @@ Output strictly valid JSON with no markdown formatting:
   // POST /api/steps/:stepId/level-up-quiz
   fastify.post('/api/steps/:stepId/level-up-quiz', generateStepQuizHandler);
 
-  // POST /api/steps/:stepId/submit-quiz (Evaluation route)
+  // POST /api/steps/:stepId/submit-quiz (Evaluation route - 70% Mastery Gate)
   fastify.post('/api/steps/:stepId/submit-quiz', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
     const { attemptId, answers } = (req.body || {}) as { attemptId?: string; answers: any };
@@ -256,7 +269,9 @@ Output strictly valid JSON with no markdown formatting:
 
       const total = Math.max(blueprint.length, 1);
       const score = Math.round((correctCount / total) * 100);
-      const passed = score >= 80;
+
+      // 70% MASTERY THRESHOLD: missing a single question on an 8-12 pool does not unfairly fail
+      const passed = score >= 70;
 
       if (targetAttemptId) {
         await prisma.$transaction([
@@ -276,9 +291,9 @@ Output strictly valid JSON with no markdown formatting:
         });
       }
 
-      // On failure: trigger zero-hallucination Tavily-first weakness diagnostic & remediation
+      // On failure or score < 100%: isolate weak ACUs for targeted review / perfection mode
       let diagnosticPrescription = null;
-      if (!passed) {
+      if (!passed || score < 100) {
         try {
           const acusRaw = step.assessableUnits;
           const acus: any[] = Array.isArray(acusRaw)
@@ -300,26 +315,28 @@ Output strictly valid JSON with no markdown formatting:
               };
             });
 
-          const uniqueWeakTopics: string[] = Array.from(new Set(failedItems.map((f: any) => String(f.acuTitle))));
+          if (failedItems.length > 0) {
+            const uniqueWeakTopics: string[] = Array.from(new Set(failedItems.map((f: any) => String(f.acuTitle))));
 
-          const tavilyResultsPerTopic: Record<string, SearchResultItem[]> = {};
-          await Promise.all(
-            uniqueWeakTopics.map(async (topic: string) => {
-              const relatedFail = failedItems.find((f: any) => String(f.acuTitle) === topic);
-              const searchResults = await searchTavilyRemediation(
-                step.workspace?.title || step.title,
-                topic,
-                relatedFail?.userOption || ''
-              );
-              tavilyResultsPerTopic[topic] = searchResults;
-            })
-          );
+            const tavilyResultsPerTopic: Record<string, SearchResultItem[]> = {};
+            await Promise.all(
+              uniqueWeakTopics.map(async (topic: string) => {
+                const relatedFail = failedItems.find((f: any) => String(f.acuTitle) === topic);
+                const searchResults = await searchTavilyRemediation(
+                  step.workspace?.title || step.title,
+                  topic,
+                  relatedFail?.userOption || ''
+                );
+                tavilyResultsPerTopic[topic] = searchResults;
+              })
+            );
 
-          diagnosticPrescription = await synthesizeTargetedRemediationWithTavily(
-            step.title,
-            failedItems,
-            tavilyResultsPerTopic
-          );
+            diagnosticPrescription = await synthesizeTargetedRemediationWithTavily(
+              step.title,
+              failedItems,
+              tavilyResultsPerTopic
+            );
+          }
         } catch (diagnosticErr) {
           fastify.log.warn(diagnosticErr, '[SubmitQuiz] Zero-hallucination Tavily remediation synthesis failed; returning results without prescription.');
         }
@@ -351,8 +368,10 @@ Output strictly valid JSON with no markdown formatting:
           nextStepIndex = nextStep.stepIndex;
         }
 
-        // Calculate scaled XP: 500 XP * stepIndex + 1000 XP bonus for final completion
-        xpEarned = step.stepIndex * 500 + (isFinalStep ? 1000 : 0);
+        // Calculate scaled XP: 500 XP * stepIndex + 1000 XP Grandmaster bonus if 100% + 1000 XP final track bonus
+        const grandmasterBonus = score === 100 ? 1000 : 0;
+        const completionBonus = isFinalStep ? 1000 : 0;
+        xpEarned = step.stepIndex * 500 + grandmasterBonus + completionBonus;
 
         const passedCount = allWorkspaceSteps.filter((s) => s.status === 'PASSED').length + 1;
         workspaceProgress = Math.min(100, Math.round((passedCount / totalSteps) * 100));
@@ -384,7 +403,7 @@ Output strictly valid JSON with no markdown formatting:
         score,
         scorePercentage: score,
         passed,
-        passingThreshold: 80,
+        passingThreshold: 70,
         totalQuestions: total,
         correctCount,
         results,

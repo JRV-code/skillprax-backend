@@ -61,8 +61,9 @@ model SystemConfig {
 model Profile {
   id                String         @id @default(cuid())
   name              String         @default("Explorer")
-  educationBoard    String         @default("GSEB")
-  grade             String         @default("Class 12")
+  profession        String         @default("Student")
+  educationBoard    String?        @default("GSEB")
+  grade             String?        @default("Class 12")
   age               Int            @default(18)
   activeMonths      Int            @default(1)
   streakDays        Int            @default(1)
@@ -106,6 +107,7 @@ model Workspace {
   id                  String       @id @default(cuid())
   title               String
   subTitle            String       @default("")
+  subGenre            String?
   domainCategory      String       @default("General Knowledge")
   targetGoal          String       @default("Full Mastery")
   level               String       @default("Beginner")

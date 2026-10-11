@@ -74,6 +74,7 @@ const formatWorkspaceClientSafe = (workspace: any) => ({
   ...workspace,
   title: workspace.title || "",
   domainCategory: workspace.domainCategory || "General Knowledge",
+  subGenre: workspace.subGenre || null,
   steps: Array.isArray(workspace.steps) ? workspace.steps.map(formatStepClientSafe) : [],
 });
 
@@ -96,6 +97,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       }
 
       const cleanDomain = sanitizeInput((body.domainCategory ?? body.pillar ?? body.category ?? "General Knowledge").trim());
+      const cleanSubGenre = body.subGenre ? sanitizeInput(String(body.subGenre).trim()) : null;
       const cleanGoal = sanitizeInput((body.targetGoal ?? "Full Mastery").trim());
       const cleanLevel = sanitizeInput((body.level ?? "beginner").trim()).toLowerCase() || "beginner";
 
@@ -115,11 +117,12 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
           data: {
             title: cleanTitle,
             domainCategory: cleanDomain,
+            subGenre: cleanSubGenre,
             targetGoal: cleanGoal,
             level: cleanLevel,
             aiEngine: body.aiEngine || "llama-3.3-70b-versatile",
             userProfileId: body.userProfileId || body.profileId || "default-profile",
-            totalPlannedSteps: typeof body.totalPlannedSteps === 'number' ? body.totalPlannedSteps : 5,
+            totalPlannedSteps: typeof body.totalPlannedSteps === 'number' ? Math.min(8, Math.max(3, body.totalPlannedSteps)) : 5,
             isGenerating: true,
             generationStartedAt: new Date(),
           },
@@ -157,7 +160,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
           apiKeys.groqApiKey
         );
 
-        // Persist Phase A results (Quiz generation happens on-demand via prompt-quiz button click)
+        // Persist Phase A results
         const updatedStep = await prisma.skillStep.update({
           where: { id: step.id },
           data: {
@@ -197,7 +200,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
   });
 
   // ============================================================
-  // 1B. POST /api/workspaces — Create workspace with Groq AI roadmap synthesis
+  // 1B. POST /api/workspaces — Dynamic Sizing (3-8 steps) & Sub-Genre
   // ============================================================
   fastify.post("/api/workspaces", async (request, reply) => {
     try {
@@ -207,7 +210,8 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
         return reply.status(400).send({ error: "Title parameter is required." });
       }
 
-      const cleanDomain = sanitizeInput((body.domain ?? body.domainCategory ?? body.category ?? "Science").trim());
+      const cleanDomain = sanitizeInput((body.domain ?? body.domainCategory ?? body.category ?? "General Knowledge").trim());
+      const cleanSubGenre = body.subGenre ? sanitizeInput(String(body.subGenre).trim()) : null;
       const profileId = body.profileId || body.userProfileId || "default-profile";
 
       let apiKeys;
@@ -222,27 +226,24 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
 
       // Fetch profile context if available
       const profile = await prisma.userProfile.findUnique({ where: { id: profileId } });
-      const eduContext = profile ? `${profile.educationBoard} ${profile.grade}` : "Class 12 Science";
+      const eduContext = profile ? `${profile.educationBoard} ${profile.grade}` : "Standard Track";
 
-      const systemPrompt = `You are the SkillPrax Curriculum Engine.
+      const systemPrompt = `You are the SKILL-TRACK Pedagogy & Curriculum Engine (v2.6).
 Domain: "${cleanDomain}"
 Target Skill: "${cleanTitle}"
-Learner Educational Context: "${eduContext}" (e.g. Class 12 Science / High-Performance Competitive Track).
+${cleanSubGenre ? `Specialized Sub-Genre: "${cleanSubGenre}"` : ''}
+Learner Educational Context: "${eduContext}".
 
-Generate a rigorous, 4 to 5 step sequential mastery curriculum tailored specifically to "${cleanTitle}".
-DO NOT generate a generic course. DO NOT output Chemistry/Haloalkanes unless the skill title is explicitly Chemistry.
+TASK:
+Generate a rigorous, sequentially mastered curriculum tailored specifically to "${cleanTitle}".
 
-CRITICAL STEP TITLE & PROGRESSION RULES:
+DYNAMIC SIZING DIRECTIVE (3 to 8 Milestones):
+- DYNAMICALLY SCOPE ROADMAP DEPTH BETWEEN 3 AND 8 MILESTONES based on technical complexity:
+  * Niche technical drill or narrow specialization: 3 to 4 milestones.
+  * Intermediate applied systems: 4 to 6 milestones.
+  * Deep multi-layered disciplines (e.g. Organic Chemistry, Distributed Systems): 6 to 8 milestones.
 - Every step MUST have a completely UNIQUE, DISTINCT title reflecting a clear progressive level-up in difficulty and mastery.
-- Step 1 must focus on Foundational Mental Models & Core Principles.
-- Step 2 must focus on Applied Mechanics & Intermediate Problem-Solving.
-- Step 3 must focus on Non-Linear Edge Cases, Optimization & Debugging.
-- Step 4 (and 5) must focus on Advanced System Synthesis & Apex Mastery.
-- No two steps may share identical or repetitive titles.
-
-STRICT OUTPUT RULES:
-- Output ONLY a raw, valid JSON object conforming exactly to the schema below.
-- Each step must have 2 to 3 granular Assessable Competency Units (ACUs) detailing what specific skill is assessed.
+- Each milestone MUST contain 2 to 3 granular Assessable Competency Units (ACUs).
 
 JSON SCHEMA:
 {
@@ -256,13 +257,6 @@ JSON SCHEMA:
         { "title": "Competency Unit Name", "description": "Specific measurable skill tested" },
         { "title": "Competency Unit Name", "description": "Specific measurable skill tested" }
       ]
-    },
-    {
-      "stepIndex": 2,
-      "title": "Unique Applied Mechanics Module Name",
-      "acus": [
-        { "title": "Competency Unit Name", "description": "Specific measurable skill tested" }
-      ]
     }
   ]
 }`;
@@ -270,7 +264,10 @@ JSON SCHEMA:
       let generatedData: any = null;
       try {
         const aiRes = await callGroqWithFallback(
-          [{ role: "system", content: systemPrompt }, { role: "user", content: `Generate curriculum for ${cleanTitle}` }],
+          [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: `Generate dynamic 3-8 step curriculum for "${cleanTitle}" ${cleanSubGenre ? `(${cleanSubGenre})` : ''}` }
+          ],
           { apiKey: apiKeys.groqApiKey, jsonMode: true, model: "llama-3.3-70b-versatile" }
         );
         const cleaned = aiRes.content.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '');
@@ -279,7 +276,7 @@ JSON SCHEMA:
         fastify.log.warn(`[POST /api/workspaces] Groq fallback used: ${(aiErr as Error).message}`);
         generatedData = {
           title: cleanTitle,
-          subTitle: `${cleanDomain} Mastery Track`,
+          subTitle: `${cleanSubGenre ? `${cleanSubGenre} ` : ''}${cleanDomain} Mastery Track`,
           steps: [
             {
               stepIndex: 1,
@@ -314,19 +311,34 @@ JSON SCHEMA:
         };
       }
 
+      // Clamp steps between 3 and 8
+      const rawSteps = Array.isArray(generatedData.steps) ? generatedData.steps : [];
+      const clampedSteps = rawSteps.slice(0, 8);
+      if (clampedSteps.length < 3) {
+        while (clampedSteps.length < 3) {
+          const idx = clampedSteps.length + 1;
+          clampedSteps.push({
+            stepIndex: idx,
+            title: `Milestone ${idx}: Applied Synthesis`,
+            acus: [{ title: 'Applied Verification', description: 'Practical execution under scenario constraints' }]
+          });
+        }
+      }
+
       // Create Workspace + Steps in Prisma transaction
       const newWorkspace = await prisma.workspace.create({
         data: {
           title: generatedData.title || cleanTitle,
           domainCategory: cleanDomain,
+          subGenre: cleanSubGenre,
           targetGoal: body.targetGoal || "Full Mastery",
           level: body.level || "Beginner",
           aiEngine: "llama-3.3-70b-versatile",
           userProfileId: profileId,
-          totalPlannedSteps: (generatedData.steps || []).length || 4,
+          totalPlannedSteps: clampedSteps.length,
           steps: {
-            create: (generatedData.steps || []).map((s: any, idx: number) => ({
-              stepIndex: s.stepIndex || (idx + 1),
+            create: clampedSteps.map((s: any, idx: number) => ({
+              stepIndex: idx + 1,
               title: s.title || `Step ${idx + 1}`,
               description: `Mastery gate for step ${idx + 1}`,
               status: idx === 0 ? "STUDY_UNGENERATED" : "LOCKED",
