@@ -25,13 +25,15 @@ model AdminConfig {
 model UserProfile {
   id                 String             @id @default(cuid())
   name               String             @default("Explorer")
+  email              String?            @unique
+  gender             String?            @default("Prefer not to say")
   age                Int?               @default(18)
   profession         String             @default("Class 12 Student")
   educationBoard     String             @default("GSEB")
   grade              String             @default("Class 12")
   activeMonths       Int                @default(1)
   streakDays         Int                @default(1)
-  freezeShields      Int                @default(3)
+  freezeShields      Int                @default(0)
   targetHours        Int                @default(1)
   targetMinutes      Int                @default(50)
   alertNotification  String             @default("20:30")
@@ -39,9 +41,10 @@ model UserProfile {
   targetDailyHours   Int                @default(1)
   targetDailyMinutes Int                @default(50)
   reminderTime       String?            @default("20:30")
+  remindersEnabled   Boolean            @default(true)
   currentStreak      Int                @default(1)
   longestStreak      Int                @default(1)
-  streakFreezes      Int                @default(3)
+  streakFreezes      Int                @default(0)
   lastActiveDate     String?
   createdAt          DateTime           @default(now())
   updatedAt          DateTime           @updatedAt
@@ -49,6 +52,7 @@ model UserProfile {
   activityLogs       DailyActivityLog[]
   studySessions      StudySession[]
   badges             BadgeEarned[]
+  reviews            Review[]
 }
 
 model SystemConfig {
@@ -61,13 +65,15 @@ model SystemConfig {
 model Profile {
   id                String         @id @default(cuid())
   name              String         @default("Explorer")
+  email             String?
+  gender            String?        @default("Prefer not to say")
   profession        String         @default("Student")
   educationBoard    String?        @default("GSEB")
   grade             String?        @default("Class 12")
   age               Int            @default(18)
   activeMonths      Int            @default(1)
   streakDays        Int            @default(1)
-  freezeShields     Int            @default(3)
+  freezeShields     Int            @default(0)
   targetHours       Int            @default(1)
   targetMinutes     Int            @default(50)
   alertNotification String         @default("20:30")
@@ -192,4 +198,19 @@ model AdminSecurity {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
+
+model Review {
+  id          String       @id @default(cuid())
+  profileId   String?
+  userName    String       @default("Skillprax Learner")
+  avatarUrl   String?
+  rating      Int          @default(5)
+  reviewText  String
+  skillTag    String?
+  isVerified  Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  userProfile UserProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+}
+
 

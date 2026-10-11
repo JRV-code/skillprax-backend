@@ -15,7 +15,24 @@ function maskKey(key?: string | null): string | null {
   return `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
 
+const activeAdminTokens = new Set<string>();
+
 export async function adminRoutes(fastify: FastifyInstance) {
+  // GET /api/admin/auth-status - Direct alias for setup / status determination
+  fastify.get('/api/admin/auth-status', async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const security = await (prisma as any).adminSecurity.findUnique({
+        where: { id: 'admin-master' },
+      });
+      return reply.status(200).send({
+        initialized: Boolean(security?.passcodeHash && security?.salt),
+      });
+    } catch (err) {
+      fastify.log.error(err, '[Admin] Auth status check failed');
+      return reply.status(500).send({ error: 'Failed to verify admin status' });
+    }
+  });
+
   // GET /api/admin/status - Check if master passcode is configured
   fastify.get('/api/admin/status', async (req: FastifyRequest, reply: FastifyReply) => {
     try {
@@ -24,6 +41,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
       });
       return reply.status(200).send({
         isConfigured: Boolean(security?.passcodeHash && security?.salt),
+        initialized: Boolean(security?.passcodeHash && security?.salt),
       });
     } catch (err) {
       fastify.log.error(err, '[Admin] Status check failed');
@@ -31,12 +49,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // POST /api/admin/setup - Initial password setup (only allowed once)
+  // POST /api/admin/setup - Initial password setup (only allowed once, min 8 chars)
   fastify.post('/api/admin/setup', async (req: FastifyRequest, reply: FastifyReply) => {
     try {
       const { passcode } = (req.body || {}) as { passcode?: string };
-      if (!passcode || passcode.trim().length < 4) {
-        return reply.status(400).send({ error: 'Passcode must be at least 4 characters long.' });
+      if (!passcode || passcode.trim().length < 8) {
+        return reply.status(400).send({ error: 'Master password must be at least 8 characters long.' });
       }
 
       const existing = await (prisma as any).adminSecurity.findUnique({
@@ -57,9 +75,11 @@ export async function adminRoutes(fastify: FastifyInstance) {
       });
 
       const sessionToken = crypto.randomBytes(32).toString('hex');
+      activeAdminTokens.add(sessionToken);
+
       return reply.status(200).send({
         success: true,
-        message: 'Master passcode created successfully',
+        message: 'Master password established successfully',
         token: sessionToken,
       });
     } catch (err) {
@@ -91,10 +111,12 @@ export async function adminRoutes(fastify: FastifyInstance) {
       );
 
       if (!isMatch) {
-        return reply.status(403).send({ error: 'Incorrect master passcode.' });
+        return reply.status(403).send({ error: 'Incorrect master password.' });
       }
 
       const sessionToken = crypto.randomBytes(32).toString('hex');
+      activeAdminTokens.add(sessionToken);
+
       return reply.status(200).send({
         success: true,
         token: sessionToken,
@@ -105,22 +127,30 @@ export async function adminRoutes(fastify: FastifyInstance) {
     }
   });
 
-  // Helper to verify admin secret header
-  const verifyAdminSecret = async (request: FastifyRequest, reply: FastifyReply) => {
+  // Helper to verify admin session token or admin secret header
+  const verifyAdminTokenOrSecret = async (request: FastifyRequest, reply: FastifyReply): Promise<boolean> => {
+    const authHeader = request.headers['authorization'];
+    const tokenHeader = (request.headers['x-admin-token'] as string) || (authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null);
     const adminSecretHeader = request.headers['x-admin-secret'];
+
+    if (tokenHeader && activeAdminTokens.has(tokenHeader)) {
+      return true;
+    }
+
     const config = await prisma.adminConfig.findUnique({ where: { id: 'global_config' } });
     const expectedSecret = config?.adminSecret || 'skillprax_admin_2026';
 
-    if (!adminSecretHeader || adminSecretHeader !== expectedSecret) {
-      reply.status(401).send({ error: 'Unauthorized: Invalid x-admin-secret header.' });
-      return false;
+    if (adminSecretHeader && adminSecretHeader === expectedSecret) {
+      return true;
     }
-    return true;
+
+    reply.status(401).send({ error: 'Unauthorized: Valid Admin Session Token or Secret is required.' });
+    return false;
   };
 
   // GET /api/admin/keys
   fastify.get('/api/admin/keys', async (request: FastifyRequest, reply: FastifyReply) => {
-    const isAuth = await verifyAdminSecret(request, reply);
+    const isAuth = await verifyAdminTokenOrSecret(request, reply);
     if (!isAuth) return;
 
     let config = await prisma.adminConfig.findUnique({ where: { id: 'global_config' } });
@@ -157,7 +187,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   // POST /api/admin/keys
   fastify.post('/api/admin/keys', async (request: FastifyRequest, reply: FastifyReply) => {
-    const isAuth = await verifyAdminSecret(request, reply);
+    const isAuth = await verifyAdminTokenOrSecret(request, reply);
     if (!isAuth) return;
 
     const body = request.body as {
@@ -176,7 +206,6 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (body.openaiKey !== undefined) updateData.openaiKey = body.openaiKey;
     if (body.anthropicKey !== undefined) updateData.anthropicKey = body.anthropicKey;
     if (body.geminiKey !== undefined) updateData.geminiKey = body.geminiKey;
-    if (body.openrouterKey !== undefined) updateData.openrouterKey = body.openrouterKey;
     if (body.openrouterKey !== undefined) updateData.openrouterKey = body.openrouterKey;
     if (body.tavilyKey !== undefined) updateData.tavilyKey = body.tavilyKey;
     if (body.defaultProvider !== undefined) updateData.defaultProvider = body.defaultProvider;
@@ -212,6 +241,8 @@ export async function adminRoutes(fastify: FastifyInstance) {
 
   // POST /api/admin/config — save keys
   fastify.post('/api/admin/config', async (request: FastifyRequest, reply: FastifyReply) => {
+    const isAuth = await verifyAdminTokenOrSecret(request, reply);
+    if (!isAuth) return;
     const body = (request.body || {}) as any;
     const groqApiKey = body.groqApiKey || body.groqKey || '';
     const tavilyApiKey = body.tavilyApiKey || body.tavilyKey || '';

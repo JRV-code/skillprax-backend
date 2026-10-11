@@ -8,6 +8,9 @@ import stepRoutes from './routes/steps';
 import quizRoutes from './routes/quizzes';
 import profileRoutes from './routes/profile';
 import telemetryRoutes from './routes/telemetry';
+import reviewRoutes from './routes/reviews';
+import contentRoutes from './routes/content';
+import { startReminderScheduler, sendDailyReminderEmail } from './services/reminderCron';
 
 const server = Fastify({
   logger: {
@@ -37,7 +40,7 @@ const start = async () => {
         }
       },
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-secret'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-secret', 'x-admin-token'],
       credentials: true
     });
 
@@ -51,6 +54,18 @@ const start = async () => {
     await server.register(quizRoutes);
     await server.register(profileRoutes);
     await server.register(telemetryRoutes);
+    await server.register(reviewRoutes);
+    await server.register(contentRoutes);
+
+    // Test reminder email endpoint
+    server.post('/api/reminders/send-test/:profileId', async (req, reply) => {
+      const { profileId } = req.params as { profileId: string };
+      const res = await sendDailyReminderEmail(profileId);
+      return reply.send(res);
+    });
+
+    // Start background reminder scheduler
+    startReminderScheduler();
 
     // Health check endpoint (mandatory for Render cloud service health checks)
     server.get('/health', async () => {
