@@ -10,6 +10,10 @@ import profileRoutes from './routes/profile';
 import telemetryRoutes from './routes/telemetry';
 import reviewRoutes from './routes/reviews';
 import contentRoutes from './routes/content';
+import milestoneRoutes from './routes/milestones';
+import sportsRoutes from './routes/sports';
+import recommendationRoutes from './routes/recommendations';
+import { ensureDatabaseSchema } from './lib/ensureSchema';
 import { initializeReminderCron } from './jobs/reminderCron';
 import { sendDailyPracticeReminderEmail } from './services/emailService';
 
@@ -24,6 +28,9 @@ const server = Fastify({
 
 const start = async () => {
   try {
+    // Initialize Module 7 Database Schema
+    await ensureDatabaseSchema();
+
     const allowedOrigins = [
       'http://localhost:3000',
       'http://127.0.0.1:3000',
@@ -57,6 +64,9 @@ const start = async () => {
     await server.register(telemetryRoutes);
     await server.register(reviewRoutes);
     await server.register(contentRoutes);
+    await server.register(milestoneRoutes);
+    await server.register(sportsRoutes);
+    await server.register(recommendationRoutes);
 
     // Test reminder email endpoint (Module 3)
     server.post('/api/reminders/send-test/:profileId', async (req, reply) => {

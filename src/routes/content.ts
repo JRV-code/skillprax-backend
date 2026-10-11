@@ -11,7 +11,152 @@ const LANGUAGE_MAP: Record<string, string> = {
 };
 
 export const contentRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
-  // 1. POST /api/translate — Translate learning text / milestone guide into target language
+  // 1. POST /api/content/translate — Dual-view (quadrants + fullContentMarkdown) with content_translations cache
+  fastify.post('/api/content/translate', async (req, reply) => {
+    try {
+      const {
+        contentId = 'doc-default',
+        targetLanguage = 'en',
+        quadrants,
+        fullContentMarkdown = '',
+      } = (req.body || {}) as {
+        contentId?: string;
+        targetLanguage: string;
+        quadrants?: {
+          corePrinciple?: string;
+          mechanics?: string[];
+          commonTraps?: string[];
+          takeaway?: string;
+        };
+        fullContentMarkdown?: string;
+      };
+
+      const langCode = targetLanguage.toLowerCase().slice(0, 2);
+      const langName = LANGUAGE_MAP[langCode] || LANGUAGE_MAP[targetLanguage] || targetLanguage;
+
+      if (langCode === 'en') {
+        return reply.status(200).send({
+          success: true,
+          targetLanguage: 'en',
+          translatedQuadrants: quadrants,
+          translatedMarkdown: fullContentMarkdown,
+          cached: true,
+        });
+      }
+
+      // Check content_translations cache
+      const prismaModule = await import('../lib/prisma');
+      const prisma = prismaModule.default;
+
+      try {
+        const cached = await prisma.contentTranslation.findUnique({
+          where: {
+            contentId_languageCode: {
+              contentId,
+              languageCode: langCode,
+            },
+          },
+        });
+
+        if (cached) {
+          return reply.status(200).send({
+            success: true,
+            targetLanguage: langCode,
+            translatedQuadrants: cached.translatedQuadrants,
+            translatedMarkdown: cached.translatedMarkdown,
+            cached: true,
+          });
+        }
+      } catch (cacheErr) {
+        fastify.log.warn(cacheErr, '[content_translations] Cache lookup warning');
+      }
+
+      // Translate using Groq LLM
+      const { groqKey } = await getEffectiveKeys();
+      const apiKey = groqKey || process.env.GROQ_API_KEY || '';
+
+      const promptPayload = {
+        quadrants: quadrants || {},
+        markdown: fullContentMarkdown || '',
+      };
+
+      const systemPrompt = `You are an expert pedagogical translation engine. Translate the following educational material accurately into ${langName}.
+Preserve all formatting, markdown headers (#, ##, ###), code blocks, bullet points, mathematical formulas, and technical terminology.
+Respond ONLY with a valid JSON object matching this schema:
+{
+  "translatedQuadrants": {
+    "corePrinciple": "translated 2-3 sentences",
+    "mechanics": ["translated step 1", "translated step 2", ...],
+    "commonTraps": ["translated trap 1", "translated trap 2", ...],
+    "takeaway": "translated takeaway"
+  },
+  "translatedMarkdown": "full translated markdown with all headers, bullet points, and code blocks preserved"
+}`;
+
+      const aiResponse = await callGroqWithFallback([
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: JSON.stringify(promptPayload) },
+      ], { apiKey, model: 'llama-3.3-70b-versatile', temperature: 0.2 });
+
+      let translatedData: any = null;
+      try {
+        const cleaned = (aiResponse.content || '')
+          .replace(/```json/g, '')
+          .replace(/```/g, '')
+          .trim();
+        translatedData = JSON.parse(cleaned);
+      } catch (_) {
+        translatedData = {
+          translatedQuadrants: quadrants,
+          translatedMarkdown: fullContentMarkdown,
+        };
+      }
+
+      const finalQuadrants = translatedData.translatedQuadrants || quadrants;
+      const finalMarkdown = translatedData.translatedMarkdown || fullContentMarkdown;
+
+      // Save into cache
+      try {
+        await prisma.contentTranslation.upsert({
+          where: {
+            contentId_languageCode: {
+              contentId,
+              languageCode: langCode,
+            },
+          },
+          create: {
+            contentId,
+            languageCode: langCode,
+            translatedQuadrants: finalQuadrants,
+            translatedMarkdown: finalMarkdown,
+          },
+          update: {
+            translatedQuadrants: finalQuadrants,
+            translatedMarkdown: finalMarkdown,
+          },
+        });
+      } catch (saveErr) {
+        fastify.log.warn(saveErr, '[content_translations] Cache persist warning');
+      }
+
+      return reply.status(200).send({
+        success: true,
+        targetLanguage: langCode,
+        translatedQuadrants: finalQuadrants,
+        translatedMarkdown: finalMarkdown,
+        cached: false,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, '[POST /api/content/translate] Failed');
+      return reply.status(500).send({
+        error: 'Translation failed',
+        translatedQuadrants: (req.body as any)?.quadrants,
+        translatedMarkdown: (req.body as any)?.fullContentMarkdown,
+      });
+    }
+  });
+
+  // 1b. Legacy POST /api/translate — Translate plain text
   fastify.post('/api/translate', async (req, reply) => {
     try {
       const { text, targetLanguage = 'en', context = '' } = (req.body || {}) as {

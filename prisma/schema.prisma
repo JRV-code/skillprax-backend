@@ -236,10 +236,67 @@ model User {
   timezone              String    @default("UTC")
   lastReminderSentAt    DateTime? @map("last_reminder_sent_at")
   lastPracticeDate      String?   @map("last_practice_date")
+  xp                    Int       @default(0)
   createdAt             DateTime  @default(now()) @map("created_at")
   updatedAt             DateTime  @updatedAt @map("updated_at")
 
   @@map("users")
+}
+
+model UserSportsProfile {
+  id                   String            @id @default(uuid())
+  userId               String?           @map("user_id")
+  sportName            String            @map("sport_name")
+  subGenre             String            @map("sub_genre")
+  dietaryPreference    String            @default("Vegetarian") @map("dietary_preference")
+  medicalConditions    String            @default("None") @map("medical_conditions")
+  trainingGoal         String            @default("Agility & Reflexes") @map("training_goal")
+  dailyPracticeMinutes Int               @default(45) @map("daily_practice_minutes")
+  createdAt            DateTime          @default(now()) @map("created_at")
+  updatedAt            DateTime          @updatedAt @map("updated_at")
+  dailyPlans           SportsDailyPlan[]
+
+  @@map("user_sports_profiles")
+}
+
+model SportsDailyPlan {
+  id            String            @id @default(uuid())
+  userSportsId  String            @map("user_sports_id")
+  dayNumber     Int               @map("day_number")
+  drills        Json
+  nutritionPlan Json              @map("nutrition_plan")
+  isCompleted   Boolean           @default(false) @map("is_completed")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  sportsProfile UserSportsProfile @relation(fields: [userSportsId], references: [id], onDelete: Cascade)
+
+  @@map("sports_daily_plans")
+}
+
+model UserMilestone {
+  id             String    @id @default(uuid())
+  userId         String    @map("user_id")
+  skillId        String    @map("skill_id")
+  milestoneOrder Int       @map("milestone_order")
+  title          String
+  status         String    @default("locked")
+  quizScore      Int?      @map("quiz_score")
+  unlockedAt     DateTime? @map("unlocked_at")
+  completedAt    DateTime? @map("completed_at")
+
+  @@unique([userId, skillId, milestoneOrder])
+  @@map("user_milestones")
+}
+
+model ContentTranslation {
+  id                  String   @id @default(uuid())
+  contentId           String   @map("content_id")
+  languageCode        String   @map("language_code")
+  translatedQuadrants Json     @map("translated_quadrants")
+  translatedMarkdown  String   @map("translated_markdown")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@unique([contentId, languageCode])
+  @@map("content_translations")
 }
 
 
