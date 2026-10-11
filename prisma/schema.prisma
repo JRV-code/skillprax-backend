@@ -23,36 +23,44 @@ model AdminConfig {
 }
 
 model UserProfile {
-  id                 String             @id @default(cuid())
-  name               String             @default("Explorer")
-  email              String?            @unique
-  gender             String?            @default("Prefer not to say")
-  age                Int?               @default(18)
-  profession         String             @default("Class 12 Student")
-  educationBoard     String             @default("GSEB")
-  grade              String             @default("Class 12")
-  activeMonths       Int                @default(1)
-  streakDays         Int                @default(1)
-  freezeShields      Int                @default(0)
-  targetHours        Int                @default(1)
-  targetMinutes      Int                @default(50)
-  alertNotification  String             @default("20:30")
-  totalXp            Int                @default(0)
-  targetDailyHours   Int                @default(1)
-  targetDailyMinutes Int                @default(50)
-  reminderTime       String?            @default("20:30")
-  remindersEnabled   Boolean            @default(true)
-  currentStreak      Int                @default(1)
-  longestStreak      Int                @default(1)
-  streakFreezes      Int                @default(0)
-  lastActiveDate     String?
-  createdAt          DateTime           @default(now())
-  updatedAt          DateTime           @updatedAt
-  workspaces         Workspace[]
-  activityLogs       DailyActivityLog[]
-  studySessions      StudySession[]
-  badges             BadgeEarned[]
-  reviews            Review[]
+  id                    String             @id @default(cuid())
+  name                  String             @default("Explorer")
+  email                 String?            @unique
+  avatarUrl             String?
+  googleId              String?
+  isEmailVerified       Boolean            @default(false)
+  gender                String?            @default("Prefer not to say")
+  age                   Int?               @default(18)
+  profession            String             @default("Class 12 Student")
+  educationBoard        String             @default("GSEB")
+  grade                 String             @default("Class 12")
+  activeMonths          Int                @default(1)
+  streakDays            Int                @default(1)
+  freezeShields         Int                @default(0)
+  targetHours           Int                @default(1)
+  targetMinutes         Int                @default(50)
+  alertNotification     String             @default("20:30")
+  totalXp               Int                @default(0)
+  targetDailyHours      Int                @default(1)
+  targetDailyMinutes    Int                @default(50)
+  reminderTime          String?            @default("20:30")
+  remindersEnabled      Boolean            @default(true)
+  dailyReminderEnabled  Boolean            @default(true)
+  preferredReminderTime String             @default("19:00")
+  timezone              String             @default("UTC")
+  lastReminderSentAt    DateTime?
+  lastPracticeDate      String?
+  currentStreak         Int                @default(1)
+  longestStreak         Int                @default(1)
+  streakFreezes         Int                @default(0)
+  lastActiveDate        String?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  workspaces            Workspace[]
+  activityLogs          DailyActivityLog[]
+  studySessions         StudySession[]
+  badges                BadgeEarned[]
+  reviews               Review[]
 }
 
 model SystemConfig {
@@ -207,10 +215,32 @@ model Review {
   rating      Int          @default(5)
   reviewText  String
   skillTag    String?
+  status      String       @default("published")
   isVerified  Boolean      @default(true)
   createdAt   DateTime     @default(now())
   updatedAt   DateTime     @updatedAt
   userProfile UserProfile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
 }
+
+model User {
+  id                    String    @id @default(cuid())
+  email                 String    @unique
+  name                  String
+  avatarUrl             String?   @map("avatar_url")
+  googleId              String?   @map("google_id")
+  isEmailVerified       Boolean   @default(true) @map("is_email_verified")
+  gender                String?
+  profession            String?
+  dailyReminderEnabled  Boolean   @default(true) @map("daily_reminder_enabled")
+  preferredReminderTime String    @default("19:00") @map("preferred_reminder_time")
+  timezone              String    @default("UTC")
+  lastReminderSentAt    DateTime? @map("last_reminder_sent_at")
+  lastPracticeDate      String?   @map("last_practice_date")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
 
 

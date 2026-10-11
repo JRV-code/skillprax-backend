@@ -1,62 +1,22 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import prisma from '../lib/prisma';
 
-const SEED_REVIEWS = [
-  {
-    userName: 'Aarav Mehta',
-    avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-    rating: 5,
-    reviewText: 'The Socratic evaluation gates completely eliminated my conceptual confusion in Organic Reaction Mechanisms. Best mastery architecture I have ever seen.',
-    skillTag: 'Haloalkanes & Haloarenes',
-    isVerified: true,
-  },
-  {
-    userName: 'Elena Rostova',
-    avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
-    rating: 5,
-    reviewText: 'Practicing sprint bio-mechanics with the dedicated Sports Hub timer and drill recommendations increased my stride power within 14 days.',
-    skillTag: 'Sprint Acceleration Biomechanics',
-    isVerified: true,
-  },
-  {
-    userName: 'Kavita Sharma',
-    avatarUrl: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&auto=format&fit=crop&q=80',
-    rating: 5,
-    reviewText: 'The in-app multi-language document reader translated complex quantum physics papers into Hindi seamlessly without losing mathematical rigor.',
-    skillTag: 'Quantum Foundations',
-    isVerified: true,
-  },
-  {
-    userName: 'Marcus Sterling',
-    avatarUrl: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
-    rating: 5,
-    reviewText: 'The streak freezes can actually only be earned by maintaining unbroken consistency, which finally built a genuine daily discipline habit for me.',
-    skillTag: 'Distributed Systems Consensus',
-    isVerified: true,
-  },
-];
-
 export const reviewRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
-  // 1. GET /api/reviews/public — Public reviews for landing page wall of love
+  // 1. GET /api/reviews/public — Authentic-only public reviews (no mock/seed reviews)
   fastify.get('/api/reviews/public', async (req, reply) => {
     try {
-      let reviews = await prisma.review.findMany({
+      // Query only genuine user reviews with verified status and published status
+      const reviews = await prisma.review.findMany({
+        where: {
+          isVerified: true,
+          status: 'published',
+        },
         orderBy: { createdAt: 'desc' },
-        take: 20,
+        take: 30,
       });
 
-      if (reviews.length === 0) {
-        // Seed default high-quality reviews
-        for (const seed of SEED_REVIEWS) {
-          await prisma.review.create({ data: seed });
-        }
-        reviews = await prisma.review.findMany({
-          orderBy: { createdAt: 'desc' },
-          take: 20,
-        });
-      }
-
-      return reply.status(200).send({ reviews });
+      // Returns authentic reviews or an empty array if none have been submitted yet
+      return reply.status(200).send({ reviews: reviews || [] });
     } catch (err: any) {
       fastify.log.error(err, '[GET /api/reviews/public] Failed');
       return reply.status(500).send({ error: 'Failed to retrieve public reviews' });
@@ -104,6 +64,7 @@ export const reviewRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
           rating,
           reviewText: body.reviewText.trim(),
           skillTag: body.skillTag?.trim() || 'General Pedagogy',
+          status: 'published',
           isVerified: true,
         },
       });

@@ -10,7 +10,8 @@ import profileRoutes from './routes/profile';
 import telemetryRoutes from './routes/telemetry';
 import reviewRoutes from './routes/reviews';
 import contentRoutes from './routes/content';
-import { startReminderScheduler, sendDailyReminderEmail } from './services/reminderCron';
+import { initializeReminderCron } from './jobs/reminderCron';
+import { sendDailyPracticeReminderEmail } from './services/emailService';
 
 const server = Fastify({
   logger: {
@@ -57,15 +58,38 @@ const start = async () => {
     await server.register(reviewRoutes);
     await server.register(contentRoutes);
 
-    // Test reminder email endpoint
+    // Test reminder email endpoint (Module 3)
     server.post('/api/reminders/send-test/:profileId', async (req, reply) => {
       const { profileId } = req.params as { profileId: string };
-      const res = await sendDailyReminderEmail(profileId);
+      const profile = await (server as any).prisma?.userProfile.findUnique({
+        where: { id: profileId },
+        include: { workspaces: { orderBy: { updatedAt: 'desc' }, take: 1 } },
+      }) || await import('./lib/prisma').then(m => m.default.userProfile.findUnique({
+        where: { id: profileId },
+        include: { workspaces: { orderBy: { updatedAt: 'desc' }, take: 1 } },
+      }));
+
+      if (!profile || !profile.email) {
+        return reply.status(404).send({ error: 'User profile with valid email not found.' });
+      }
+
+      const activeTrack = profile.workspaces[0]?.title || 'Daily Mastery Track';
+      const hours = profile.targetDailyHours || 1;
+      const minutes = profile.targetDailyMinutes || 30;
+
+      const res = await sendDailyPracticeReminderEmail({
+        to: profile.email,
+        userName: profile.name || 'Learner',
+        skillOrSportName: activeTrack,
+        streakDays: profile.currentStreak || 1,
+        targetDailyTime: `${hours}h ${minutes}m`,
+      });
+
       return reply.send(res);
     });
 
-    // Start background reminder scheduler
-    startReminderScheduler();
+    // Start automated 15-minute reminder cron scheduler (Module 3)
+    initializeReminderCron();
 
     // Health check endpoint (mandatory for Render cloud service health checks)
     server.get('/health', async () => {
