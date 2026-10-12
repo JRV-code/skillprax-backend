@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import prisma from '../lib/prisma';
 import { callGroqWithFallback } from '../lib/ai/pipeline';
 import { getEffectiveKeys } from '../lib/keyManager';
+import { fetchRealClubs, fetchLocalShops } from '../services/realPlacesService';
 
 export const sportsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
   // 1. POST /api/sports/profile — Save or update Physical Assessment Sheet
@@ -567,6 +568,63 @@ Output ONLY a JSON array of 7 objects (Day 1 through Day 7) matching this schema
     } catch (err: any) {
       fastify.log.error(err, '[GET /api/sports/athlete/history] Failed');
       return reply.status(500).send({ error: 'Failed to fetch player history' });
+    }
+  });
+
+  // =========================================================================
+  // MODULE 4: REAL CLUBS & LOCAL SPORTS SHOPS (GOOGLE MAPS & TAVILY PIPELINE)
+  // =========================================================================
+
+  // 1. GET /api/sports/real-clubs — Discover authentic clubs & academies via Tavily + Groq
+  fastify.get('/api/sports/real-clubs', async (req, reply) => {
+    try {
+      const {
+        sport = 'Football',
+        city = 'Ahmedabad',
+        state = 'Gujarat',
+      } = req.query as {
+        sport?: string;
+        city?: string;
+        state?: string;
+      };
+
+      const clubs = await fetchRealClubs(sport, city, state);
+      return reply.status(200).send({
+        success: true,
+        city,
+        state,
+        sport,
+        clubs,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, '[GET /api/sports/real-clubs] Failed');
+      return reply.status(500).send({ error: 'Failed to retrieve real sports clubs.' });
+    }
+  });
+
+  // 2. GET /api/sports/local-shops — Discover brick-and-mortar sports equipment stores
+  fastify.get('/api/sports/local-shops', async (req, reply) => {
+    try {
+      const {
+        city = 'Ahmedabad',
+        state = 'Gujarat',
+        sport = '',
+      } = req.query as {
+        city?: string;
+        state?: string;
+        sport?: string;
+      };
+
+      const shops = await fetchLocalShops(city, state, sport);
+      return reply.status(200).send({
+        success: true,
+        city,
+        state,
+        shops,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, '[GET /api/sports/local-shops] Failed');
+      return reply.status(500).send({ error: 'Failed to retrieve local sports shops.' });
     }
   });
 

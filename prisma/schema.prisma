@@ -34,6 +34,8 @@ model UserProfile {
   profession            String             @default("Class 12 Student")
   educationBoard        String             @default("GSEB")
   grade                 String             @default("Class 12")
+  city                  String?            @default("Ahmedabad")
+  state                 String?            @default("Gujarat")
   activeMonths          Int                @default(1)
   streakDays            Int                @default(1)
   freezeShields         Int                @default(0)

@@ -2,6 +2,7 @@ import { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { OAuth2Client } from "google-auth-library";
 import jwt from "jsonwebtoken";
 import prisma from "../lib/prisma";
+import { hashPassword, verifyPassword } from "../lib/authCrypto";
 
 const googleClientId = process.env.GOOGLE_CLIENT_ID;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
@@ -31,6 +32,8 @@ function formatProfilePayload(profile: any, userRecord?: any) {
     profession: profile.profession || userRecord?.profession || "Student",
     educationBoard: profile.educationBoard || "CBSE",
     grade: profile.grade || "Class 12",
+    city: userRecord?.city || profile.city || "Ahmedabad",
+    state: userRecord?.state || profile.state || "Gujarat",
     dietaryPreference: userRecord?.dietary_preference || profile.dietaryPreference || "Vegetarian",
     medicalConditions: userRecord?.medical_conditions || profile.medicalConditions || "None",
     preferredLanguage: userRecord?.preferred_language || profile.preferredLanguage || "en",
@@ -114,6 +117,162 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
     } catch (err: any) {
       fastify.log.error(err, "[GET /api/profiles/lookup] Failed");
       return reply.status(500).send({ error: "Profile lookup failed." });
+    }
+  });
+
+  // 1b. POST /api/auth/universal — Frictionless Unified Authentication (Auto Login / Signup)
+  fastify.post("/api/auth/universal", async (req, reply) => {
+    try {
+      const { email, password, name } = (req.body || {}) as {
+        email?: string;
+        password?: string;
+        name?: string;
+      };
+
+      if (!email || !email.trim()) {
+        return reply.status(400).send({ error: "Email address is required." });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanPassword = (password || "").trim();
+
+      // Check if user exists in users table
+      let dbUser: any = null;
+      try {
+        const rows: any[] = await prisma.$queryRawUnsafe(`
+          SELECT * FROM users WHERE LOWER(email) = $1 LIMIT 1;
+        `, cleanEmail);
+        if (rows && rows.length > 0) {
+          dbUser = rows[0];
+        }
+      } catch (sqlErr) {
+        fastify.log.warn({ err: sqlErr }, "[UniversalAuth] Error querying users table");
+      }
+
+      // Case A: User already exists
+      if (dbUser) {
+        if (dbUser.password_hash) {
+          if (!cleanPassword) {
+            return reply.status(400).send({ error: "Password is required for this account." });
+          }
+          const isValid = verifyPassword(cleanPassword, dbUser.password_hash);
+          if (!isValid) {
+            return reply.status(401).send({
+              error: "Incorrect password for this email. [Reset Password]",
+              code: "INCORRECT_PASSWORD",
+            });
+          }
+        } else if (cleanPassword) {
+          // User exists without password (e.g., initial Google login) -> attach password
+          try {
+            const hashed = hashPassword(cleanPassword);
+            await prisma.$executeRawUnsafe(`
+              UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2;
+            `, hashed, dbUser.id);
+            dbUser.password_hash = hashed;
+          } catch (_) {}
+        }
+
+        // Fetch or sync UserProfile
+        let profile = await prisma.userProfile.findFirst({
+          where: { email: { equals: cleanEmail, mode: "insensitive" } },
+        });
+
+        if (!profile) {
+          profile = await prisma.userProfile.create({
+            data: {
+              name: dbUser.name || cleanEmail.split("@")[0],
+              email: cleanEmail,
+              gender: dbUser.gender || "Prefer not to say",
+              profession: dbUser.profession || "Student",
+              city: dbUser.city || "Ahmedabad",
+              state: dbUser.state || "Gujarat",
+              currentStreak: dbUser.current_streak || 1,
+              longestStreak: dbUser.longest_streak || 1,
+            },
+          });
+        }
+
+        const sessionToken = jwt.sign(
+          {
+            userId: dbUser.id || profile.id,
+            id: profile.id,
+            email: cleanEmail,
+            name: profile.name,
+          },
+          JWT_SECRET,
+          { expiresIn: "30d" }
+        );
+
+        const formatted = formatProfilePayload(profile, dbUser);
+        return reply.status(200).send({
+          success: true,
+          user: formatted,
+          profile: formatted,
+          token: sessionToken,
+          isNewUser: false,
+        });
+      }
+
+      // Case B: User does NOT exist -> Automatically create new user record & UserProfile
+      const userName = name && name.trim() ? name.trim() : cleanEmail.split("@")[0];
+      const passwordHash = cleanPassword ? hashPassword(cleanPassword) : null;
+
+      try {
+        const rows: any[] = await prisma.$queryRawUnsafe(`
+          INSERT INTO users (
+            email, name, password_hash, is_email_verified,
+            gender, profession, city, state, dietary_preference,
+            medical_conditions, preferred_language, daily_reminder_enabled,
+            preferred_reminder_time, last_active_date, created_at, updated_at
+          ) VALUES (
+            $1, $2, $3, TRUE,
+            'Prefer not to say', 'Student', 'Ahmedabad', 'Gujarat', 'Vegetarian',
+            'None', 'en', TRUE,
+            '19:00', CURRENT_DATE, NOW(), NOW()
+          )
+          RETURNING *;
+        `, cleanEmail, userName, passwordHash);
+        dbUser = rows && rows.length > 0 ? rows[0] : null;
+      } catch (insertErr) {
+        fastify.log.warn({ err: insertErr }, "[UniversalAuth] Raw insert warning");
+      }
+
+      let profile = await prisma.userProfile.create({
+        data: {
+          name: userName,
+          email: cleanEmail,
+          gender: "Prefer not to say",
+          profession: "Student",
+          city: "Ahmedabad",
+          state: "Gujarat",
+          currentStreak: 1,
+          longestStreak: 1,
+        },
+      });
+
+      const sessionToken = jwt.sign(
+        {
+          userId: dbUser?.id || profile.id,
+          id: profile.id,
+          email: cleanEmail,
+          name: userName,
+        },
+        JWT_SECRET,
+        { expiresIn: "30d" }
+      );
+
+      const formatted = formatProfilePayload(profile, dbUser);
+      return reply.status(201).send({
+        success: true,
+        user: formatted,
+        profile: formatted,
+        token: sessionToken,
+        isNewUser: true,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, "[POST /api/auth/universal] Failed");
+      return reply.status(500).send({ error: "Authentication failed. Please try again." });
     }
   });
 
@@ -364,6 +523,8 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         guardianName?: string;
         guardianPhone?: string;
         guardianEmail?: string;
+        city?: string;
+        state?: string;
         age?: number;
       };
 
@@ -396,8 +557,10 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
               guardian_name = COALESCE($8, guardian_name),
               guardian_phone = COALESCE($9, guardian_phone),
               guardian_email = COALESCE($10, guardian_email),
+              city = COALESCE($11, city),
+              state = COALESCE($12, state),
               updated_at = NOW()
-          WHERE LOWER(email) = $11
+          WHERE LOWER(email) = $13
           RETURNING *;
         `, 
           body.name || null, 
@@ -410,6 +573,8 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
           body.guardianName || null,
           body.guardianPhone || null,
           body.guardianEmail || null,
+          body.city || null,
+          body.state || null,
           targetEmail
         );
         dbUser = rows && rows.length > 0 ? rows[0] : null;
@@ -427,6 +592,8 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
             name: body.name || profile.name,
             gender: body.gender || profile.gender,
             profession: body.profession || profile.profession,
+            city: body.city || (profile as any).city,
+            state: body.state || (profile as any).state,
             age: computedAge !== undefined ? computedAge : profile.age,
           },
         });

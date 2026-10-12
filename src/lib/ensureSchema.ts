@@ -62,7 +62,45 @@ export async function ensureDatabaseSchema() {
       );
     `);
 
-    // 5. XP & User Identity/Demographic columns
+    // 0. Ensure users table exists with identity and geolocation columns
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS users (
+          id VARCHAR(255) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+          email VARCHAR(255) UNIQUE NOT NULL,
+          name VARCHAR(255) NOT NULL,
+          password_hash VARCHAR(255),
+          avatar_url TEXT,
+          google_id VARCHAR(255),
+          is_email_verified BOOLEAN DEFAULT TRUE,
+          gender VARCHAR(50) DEFAULT 'Prefer not to say',
+          profession VARCHAR(255) DEFAULT 'Student',
+          city VARCHAR(100) DEFAULT 'Ahmedabad',
+          state VARCHAR(100) DEFAULT 'Gujarat',
+          daily_reminder_enabled BOOLEAN DEFAULT TRUE,
+          preferred_reminder_time VARCHAR(20) DEFAULT '19:00',
+          timezone VARCHAR(50) DEFAULT 'UTC',
+          xp INT DEFAULT 0,
+          date_of_birth DATE,
+          guardian_name VARCHAR(150),
+          guardian_phone VARCHAR(30),
+          guardian_email VARCHAR(150),
+          dietary_preference VARCHAR(50) DEFAULT 'Vegetarian',
+          medical_conditions TEXT DEFAULT 'None',
+          preferred_language VARCHAR(20) DEFAULT 'en',
+          total_skills_completed INT DEFAULT 0,
+          current_streak INT DEFAULT 0,
+          longest_streak INT DEFAULT 0,
+          last_active_date DATE DEFAULT CURRENT_DATE,
+          created_at TIMESTAMP DEFAULT NOW(),
+          updated_at TIMESTAMP DEFAULT NOW()
+        );
+      `);
+    } catch (err) {
+      console.warn('[Schema] Users table creation notice:', err);
+    }
+
+    // 5. XP & User Identity/Demographic/Geolocation columns
     try {
       await prisma.$executeRawUnsafe(`
         ALTER TABLE users 
@@ -77,11 +115,22 @@ export async function ensureDatabaseSchema() {
         ADD COLUMN IF NOT EXISTS total_skills_completed INT DEFAULT 0,
         ADD COLUMN IF NOT EXISTS current_streak INT DEFAULT 0,
         ADD COLUMN IF NOT EXISTS longest_streak INT DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS last_active_date DATE DEFAULT CURRENT_DATE;
+        ADD COLUMN IF NOT EXISTS last_active_date DATE DEFAULT CURRENT_DATE,
+        ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT 'Ahmedabad',
+        ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat',
+        ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
       `);
     } catch (err) {
       console.warn('[Schema] Users table alter warning:', err);
     }
+
+    try {
+      await prisma.$executeRawUnsafe(`
+        ALTER TABLE user_profiles
+        ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT 'Ahmedabad',
+        ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat';
+      `);
+    } catch (_) {}
 
     // 6. user_skills (Master Blueprint Section 1)
     await prisma.$executeRawUnsafe(`
