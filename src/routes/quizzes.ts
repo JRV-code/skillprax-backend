@@ -270,8 +270,8 @@ Output strictly valid JSON with no markdown formatting:
       const total = Math.max(blueprint.length, 1);
       const score = Math.round((correctCount / total) * 100);
 
-      // 70% MASTERY THRESHOLD: missing a single question on an 8-12 pool does not unfairly fail
-      const passed = score >= 70;
+      // 75% STRICT SOCRATIC MASTERY THRESHOLD
+      const passed = score >= 75;
 
       if (targetAttemptId) {
         await prisma.$transaction([
@@ -403,7 +403,7 @@ Output strictly valid JSON with no markdown formatting:
         score,
         scorePercentage: score,
         passed,
-        passingThreshold: 70,
+        passingThreshold: 75,
         totalQuestions: total,
         correctCount,
         results,

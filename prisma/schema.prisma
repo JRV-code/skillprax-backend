@@ -237,10 +237,69 @@ model User {
   lastReminderSentAt    DateTime? @map("last_reminder_sent_at")
   lastPracticeDate      String?   @map("last_practice_date")
   xp                    Int       @default(0)
+  dietaryPreference     String?   @default("Vegetarian") @map("dietary_preference")
+  medicalConditions     String?   @default("None") @map("medical_conditions")
+  preferredLanguage     String?   @default("en") @map("preferred_language")
+  totalSkillsCompleted  Int       @default(0) @map("total_skills_completed")
+  currentStreak         Int       @default(0) @map("current_streak")
+  longestStreak         Int       @default(0) @map("longest_streak")
+  lastActiveDate        DateTime? @map("last_active_date")
   createdAt             DateTime  @default(now()) @map("created_at")
   updatedAt             DateTime  @updatedAt @map("updated_at")
 
   @@map("users")
+}
+
+model UserSkill {
+  id                 String              @id @default(uuid())
+  userId             String?             @map("user_id")
+  skillName          String              @map("skill_name")
+  skillCategory      String              @map("skill_category")
+  subGenre           String              @map("sub_genre")
+  targetMasteryLevel String              @map("target_mastery_level")
+  totalSteps         Int                 @default(5) @map("total_steps")
+  currentStep        Int                 @default(1) @map("current_step")
+  isCompleted        Boolean             @default(false) @map("is_completed")
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
+  steps              BlueprintSkillStep[]
+
+  @@map("user_skills")
+}
+
+model BlueprintSkillStep {
+  id                     String    @id @default(uuid())
+  skillId                String    @map("skill_id")
+  stepNumber             Int       @map("step_number")
+  title                  String
+  description            String
+  requiredPracticeDays   Int       @default(1) @map("required_practice_days")
+  practiceDaysCompleted  Int       @default(0) @map("practice_days_completed")
+  quizPassed             Boolean   @default(false) @map("quiz_passed")
+  quizScore              Int?      @map("quiz_score")
+  videoUrl               String    @map("video_url")
+  videoId                String    @map("video_id")
+  documentationMarkdown  String    @map("documentation_markdown")
+  documentationSourceUrl String?   @map("documentation_source_url")
+  documentationQuadrants Json      @map("documentation_quadrants")
+  dailyDietPlan          Json?     @map("daily_diet_plan")
+  isUnlocked             Boolean   @default(false) @map("is_unlocked")
+  isCompleted            Boolean   @default(false) @map("is_completed")
+  userSkill              UserSkill @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([skillId, stepNumber])
+  @@map("skill_steps")
+}
+
+model UserResourceHistory {
+  id                 String   @id @default(uuid())
+  userId             String?  @map("user_id")
+  resourceType       String   @map("resource_type")
+  resourceIdentifier String   @map("resource_identifier")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, resourceType, resourceIdentifier])
+  @@map("user_resource_history")
 }
 
 model UserSportsProfile {

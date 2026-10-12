@@ -62,14 +62,77 @@ export async function ensureDatabaseSchema() {
       );
     `);
 
-    // 5. XP columns
+    // 5. XP & User Identity/Demographic columns
     try {
       await prisma.$executeRawUnsafe(`
-        ALTER TABLE users ADD COLUMN IF NOT EXISTS xp INT DEFAULT 0;
+        ALTER TABLE users 
+        ADD COLUMN IF NOT EXISTS xp INT DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS dietary_preference VARCHAR(50) DEFAULT 'Vegetarian',
+        ADD COLUMN IF NOT EXISTS medical_conditions TEXT DEFAULT 'None',
+        ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(20) DEFAULT 'en',
+        ADD COLUMN IF NOT EXISTS total_skills_completed INT DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS current_streak INT DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS longest_streak INT DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS last_active_date DATE DEFAULT CURRENT_DATE;
       `);
-    } catch {}
+    } catch (err) {
+      console.warn('[Schema] Users table alter warning:', err);
+    }
 
-    console.log('[Schema] Module 7 database schema verified successfully.');
+    // 6. user_skills (Master Blueprint Section 1)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS user_skills (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id VARCHAR(255),
+        skill_name VARCHAR(150) NOT NULL,
+        skill_category VARCHAR(50) NOT NULL,
+        sub_genre VARCHAR(150) NOT NULL,
+        target_mastery_level VARCHAR(50) NOT NULL,
+        total_steps INT NOT NULL DEFAULT 5,
+        current_step INT NOT NULL DEFAULT 1,
+        is_completed BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    // 7. skill_steps (Master Blueprint Section 1)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS skill_steps (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        skill_id UUID REFERENCES user_skills(id) ON DELETE CASCADE,
+        step_number INT NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        description TEXT NOT NULL,
+        required_practice_days INT DEFAULT 1,
+        practice_days_completed INT DEFAULT 0,
+        quiz_passed BOOLEAN DEFAULT FALSE,
+        quiz_score INT DEFAULT NULL,
+        video_url TEXT NOT NULL,
+        video_id VARCHAR(100) NOT NULL,
+        documentation_markdown TEXT NOT NULL,
+        documentation_source_url TEXT,
+        documentation_quadrants JSONB NOT NULL,
+        daily_diet_plan JSONB DEFAULT NULL,
+        is_unlocked BOOLEAN DEFAULT FALSE,
+        is_completed BOOLEAN DEFAULT FALSE,
+        UNIQUE(skill_id, step_number)
+      );
+    `);
+
+    // 8. user_resource_history (Global Anti-Duplication Vault)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS user_resource_history (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id VARCHAR(255),
+        resource_type VARCHAR(50) NOT NULL,
+        resource_identifier TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, resource_type, resource_identifier)
+      );
+    `);
+
+    console.log('[Schema] All Master Blueprint schemas verified successfully.');
   } catch (err) {
     console.warn('[Schema] Schema initialization warning (remote DB may differ):', err);
   }

@@ -12,7 +12,7 @@ function getTodayString(): string {
   return new Date().toISOString().split("T")[0];
 }
 
-function formatProfilePayload(profile: any) {
+function formatProfilePayload(profile: any, userRecord?: any) {
   const now = new Date();
   const joinedDate = new Date(profile.createdAt || now);
   const diffDays = Math.max(1, Math.floor((now.getTime() - joinedDate.getTime()) / (1000 * 60 * 60 * 24)));
@@ -20,26 +20,35 @@ function formatProfilePayload(profile: any) {
 
   return {
     id: profile.id,
-    name: profile.name || "Explorer",
-    email: profile.email || null,
-    avatarUrl: profile.avatarUrl || null,
-    googleId: profile.googleId || null,
+    userId: userRecord?.id || profile.id,
+    name: profile.name || userRecord?.name || "Explorer",
+    email: profile.email || userRecord?.email || null,
+    avatarUrl: profile.avatarUrl || userRecord?.avatar_url || null,
+    googleId: profile.googleId || userRecord?.google_id || null,
     isEmailVerified: profile.isEmailVerified ?? Boolean(profile.email),
-    gender: profile.gender || "Prefer not to say",
+    gender: profile.gender || userRecord?.gender || "Prefer not to say",
     age: profile.age || 18,
-    profession: profile.profession || "Student",
+    profession: profile.profession || userRecord?.profession || "Student",
     educationBoard: profile.educationBoard || "CBSE",
     grade: profile.grade || "Class 12",
+    dietaryPreference: userRecord?.dietary_preference || profile.dietaryPreference || "Vegetarian",
+    medicalConditions: userRecord?.medical_conditions || profile.medicalConditions || "None",
+    preferredLanguage: userRecord?.preferred_language || profile.preferredLanguage || "en",
+    totalSkillsCompleted: userRecord?.total_skills_completed || profile.totalSkillsCompleted || 0,
+    currentStreak: userRecord?.current_streak ?? profile.currentStreak ?? profile.streakDays ?? 1,
+    longestStreak: userRecord?.longest_streak ?? profile.longestStreak ?? profile.streakDays ?? 1,
+    lastActiveDate: userRecord?.last_active_date ? new Date(userRecord.last_active_date).toISOString().split('T')[0] : getTodayString(),
     activeMonths,
-    streakDays: profile.currentStreak || profile.streakDays || 0,
+    streakDays: userRecord?.current_streak ?? profile.currentStreak ?? profile.streakDays ?? 1,
     freezeShields: profile.streakFreezes ?? profile.freezeShields ?? 0,
     targetHours: profile.targetDailyHours || profile.targetHours || 1,
-    targetMinutes: profile.targetDailyMinutes || profile.targetMinutes || 0,
+    targetMinutes: profile.targetDailyMinutes || profile.targetMinutes || 50,
     alertNotification: profile.preferredReminderTime || profile.reminderTime || "19:00",
     dailyReminderEnabled: profile.dailyReminderEnabled ?? profile.remindersEnabled ?? true,
     remindersEnabled: profile.dailyReminderEnabled ?? profile.remindersEnabled ?? true,
     preferredReminderTime: profile.preferredReminderTime || profile.reminderTime || "19:00",
     timezone: profile.timezone || "UTC",
+    xp: userRecord?.xp || profile.totalXp || 0,
     createdAt: profile.createdAt ? profile.createdAt.toISOString() : new Date().toISOString(),
     updatedAt: profile.updatedAt ? profile.updatedAt.toISOString() : new Date().toISOString(),
   };
@@ -157,10 +166,14 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       const profession = body.profession || "Student";
       const educationBoard = body.studentDetails?.educationBoard || "CBSE";
       const grade = body.studentDetails?.grade || "Class 12";
+      const dietaryPreference = (body as any).dietaryPreference || "Vegetarian";
+      const medicalConditions = (body as any).medicalConditions || "None";
+      const preferredLanguage = (body as any).preferredLanguage || "en";
 
-      // Module 2: Neon PostgreSQL User Record Sync (Raw SQL upsert on users table)
+      // Module 1 & 2: Neon PostgreSQL User Record Sync (Raw SQL upsert on users table)
+      let dbUser: any = null;
       try {
-        await prisma.$executeRawUnsafe(`
+        const rows: any[] = await prisma.$queryRawUnsafe(`
           INSERT INTO users (
             email, 
             name, 
@@ -169,23 +182,33 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
             is_email_verified, 
             gender, 
             profession, 
+            dietary_preference,
+            medical_conditions,
+            preferred_language,
             daily_reminder_enabled,
             preferred_reminder_time,
+            last_active_date,
             created_at, 
             updated_at
           )
-          VALUES ($1, $2, $3, $4, TRUE, $5, $6, TRUE, '19:00', NOW(), NOW())
+          VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, TRUE, '19:00', CURRENT_DATE, NOW(), NOW())
           ON CONFLICT (email) DO UPDATE SET 
             name = EXCLUDED.name,
             avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
             is_email_verified = TRUE,
             gender = COALESCE(EXCLUDED.gender, users.gender),
             profession = COALESCE(EXCLUDED.profession, users.profession),
-            updated_at = NOW();
-        `, verifiedEmail, verifiedName || verifiedEmail.split('@')[0], verifiedPicture || null, googleId || null, gender, profession);
+            dietary_preference = COALESCE(EXCLUDED.dietary_preference, users.dietary_preference),
+            medical_conditions = COALESCE(EXCLUDED.medical_conditions, users.medical_conditions),
+            preferred_language = COALESCE(EXCLUDED.preferred_language, users.preferred_language),
+            last_active_date = CURRENT_DATE,
+            updated_at = NOW()
+          RETURNING *;
+        `, verifiedEmail, verifiedName || verifiedEmail.split('@')[0], verifiedPicture || null, googleId || null, gender, profession, dietaryPreference, medicalConditions, preferredLanguage);
+
+        dbUser = rows && rows.length > 0 ? rows[0] : null;
       } catch (rawSqlErr) {
-        // Log non-blocking warning if users table not yet created
-        fastify.log.warn({ err: rawSqlErr }, "[GoogleAuth] Raw users table sync notice; upserting UserProfile record.");
+        fastify.log.warn({ err: rawSqlErr }, "[GoogleAuth] Raw users table sync notice; falling back to prisma UserProfile.");
       }
 
       // Upsert UserProfile record (keeps all roadmap, telemetry & quiz relations linked)
@@ -232,9 +255,10 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         });
       }
 
-      // Generate secure session JWT
+      // Generate cryptographically signed JWT containing { userId, email }
       const sessionToken = jwt.sign(
         {
+          userId: dbUser?.id || profile.id,
           id: profile.id,
           email: verifiedEmail,
           name: profile.name,
@@ -243,14 +267,145 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         { expiresIn: "30d" }
       );
 
+      const formatted = formatProfilePayload(profile, dbUser);
+
       return reply.status(200).send({
-        profile: formatProfilePayload(profile),
-        user: formatProfilePayload(profile),
+        profile: formatted,
+        user: formatted,
         token: sessionToken,
       });
     } catch (err: any) {
       fastify.log.error(err, "[POST /api/auth/google] Failed");
       return reply.status(500).send({ error: "Google authentication failed" });
+    }
+  });
+
+  // 2b. GET /api/user/me — Hydrate user state from JWT on page load or refresh
+  fastify.get("/api/user/me", async (req, reply) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return reply.status(401).send({ error: "Missing or invalid authorization token" });
+      }
+
+      const token = authHeader.split(" ")[1];
+      let decoded: any;
+      try {
+        decoded = jwt.verify(token, JWT_SECRET);
+      } catch (jwtErr) {
+        return reply.status(401).send({ error: "Expired or invalid session token" });
+      }
+
+      const email = decoded.email ? String(decoded.email).toLowerCase() : "";
+      if (!email) {
+        return reply.status(400).send({ error: "Invalid token payload; email missing." });
+      }
+
+      // Fetch from users table
+      let dbUser: any = null;
+      try {
+        const rows: any[] = await prisma.$queryRawUnsafe(`
+          SELECT * FROM users WHERE LOWER(email) = $1 LIMIT 1
+        `, email);
+        if (rows && rows.length > 0) {
+          dbUser = rows[0];
+        }
+      } catch (_) {}
+
+      // Fetch or sync UserProfile
+      let profile = await prisma.userProfile.findFirst({
+        where: { email: { equals: email, mode: "insensitive" } },
+      });
+
+      if (!profile) {
+        profile = await prisma.userProfile.create({
+          data: {
+            name: dbUser?.name || decoded.name || email.split("@")[0] || "Explorer",
+            email,
+            avatarUrl: dbUser?.avatar_url || null,
+            gender: dbUser?.gender || "Prefer not to say",
+            profession: dbUser?.profession || "Student",
+            currentStreak: dbUser?.current_streak || 1,
+            longestStreak: dbUser?.longest_streak || 1,
+          },
+        });
+      }
+
+      const formatted = formatProfilePayload(profile, dbUser);
+      return reply.status(200).send({ user: formatted, profile: formatted });
+    } catch (err: any) {
+      fastify.log.error(err, "[GET /api/user/me] Failed");
+      return reply.status(500).send({ error: "Failed to authenticate and hydrate user state." });
+    }
+  });
+
+  // 2c. PATCH /api/user/profile — Update user demographics, diet, and medical condition
+  fastify.patch("/api/user/profile", async (req, reply) => {
+    try {
+      const authHeader = req.headers.authorization;
+      let email = "";
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        try {
+          const decoded: any = jwt.verify(authHeader.split(" ")[1], JWT_SECRET);
+          email = decoded.email?.toLowerCase();
+        } catch (_) {}
+      }
+
+      const body = (req.body || {}) as {
+        profileId?: string;
+        email?: string;
+        name?: string;
+        gender?: string;
+        profession?: string;
+        dietaryPreference?: string;
+        medicalConditions?: string;
+        preferredLanguage?: string;
+      };
+
+      const targetEmail = (body.email || email).toLowerCase().trim();
+      if (!targetEmail) {
+        return reply.status(400).send({ error: "User email or authentication token is required." });
+      }
+
+      // Update users table
+      let dbUser: any = null;
+      try {
+        const rows: any[] = await prisma.$queryRawUnsafe(`
+          UPDATE users 
+          SET name = COALESCE($1, name),
+              gender = COALESCE($2, gender),
+              profession = COALESCE($3, profession),
+              dietary_preference = COALESCE($4, dietary_preference),
+              medical_conditions = COALESCE($5, medical_conditions),
+              preferred_language = COALESCE($6, preferred_language),
+              updated_at = NOW()
+          WHERE LOWER(email) = $7
+          RETURNING *;
+        `, body.name || null, body.gender || null, body.profession || null, body.dietaryPreference || null, body.medicalConditions || null, body.preferredLanguage || null, targetEmail);
+        dbUser = rows && rows.length > 0 ? rows[0] : null;
+      } catch (_) {}
+
+      // Update UserProfile
+      let profile = await prisma.userProfile.findFirst({
+        where: { email: { equals: targetEmail, mode: "insensitive" } },
+      });
+
+      if (profile) {
+        profile = await prisma.userProfile.update({
+          where: { id: profile.id },
+          data: {
+            name: body.name || profile.name,
+            gender: body.gender || profile.gender,
+            profession: body.profession || profile.profession,
+          },
+        });
+      }
+
+      const formatted = formatProfilePayload(profile || { email: targetEmail }, dbUser);
+      return reply.status(200).send({ success: true, profile: formatted, user: formatted });
+    } catch (err: any) {
+      fastify.log.error(err, "[PATCH /api/user/profile] Failed");
+      return reply.status(500).send({ error: "Failed to update user profile" });
     }
   });
 
