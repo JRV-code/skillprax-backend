@@ -391,6 +391,11 @@ Output strictly valid JSON with this schema:
       ],
     });
   });
+
+  // Heartbeat endpoint for active session telemetry
+  fastify.post('/api/activity/heartbeat', async (_request, reply) => {
+    return reply.status(200).send({ status: 'ok', timestamp: Date.now() });
+  });
 }
 
 export default telemetryRoutes;
