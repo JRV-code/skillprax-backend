@@ -232,6 +232,8 @@ export async function telemetryRoutes(fastify: FastifyInstance) {
           id: w.id,
           title: w.title,
           subTitle: w.subTitle || `${w.domainCategory || 'General Knowledge'} Track`,
+          domainCategory: w.domainCategory || 'General Knowledge',
+          subGenre: w.subGenre || '',
           progress,
           stepsCount: steps.length,
           passedStepsCount,

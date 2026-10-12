@@ -294,6 +294,8 @@ model BlueprintSkillStep {
 model UserResourceHistory {
   id                 String   @id @default(uuid())
   userId             String?  @map("user_id")
+  skillId            String?  @map("skill_id")
+  stepNumber         Int?     @map("step_number")
   resourceType       String   @map("resource_type")
   resourceIdentifier String   @map("resource_identifier")
   createdAt          DateTime @default(now()) @map("created_at")

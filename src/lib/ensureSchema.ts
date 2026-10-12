@@ -125,10 +125,34 @@ export async function ensureDatabaseSchema() {
       CREATE TABLE IF NOT EXISTS user_resource_history (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_id VARCHAR(255),
+        skill_id VARCHAR(255),
+        step_number INT,
         resource_type VARCHAR(50) NOT NULL,
         resource_identifier TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT NOW(),
         UNIQUE(user_id, resource_type, resource_identifier)
+      );
+      ALTER TABLE user_resource_history
+      ADD COLUMN IF NOT EXISTS skill_id VARCHAR(255),
+      ADD COLUMN IF NOT EXISTS step_number INT;
+    `);
+
+    // 9. reviews (Authentic-Only Reviews Table)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS reviews (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id VARCHAR(255),
+        profile_id VARCHAR(255),
+        user_name VARCHAR(150) NOT NULL,
+        user_avatar TEXT,
+        skill_tag VARCHAR(100),
+        rating INT CHECK (rating >= 1 AND rating <= 5),
+        comment TEXT,
+        review_text TEXT,
+        status VARCHAR(50) DEFAULT 'published',
+        is_verified BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
       );
     `);
 

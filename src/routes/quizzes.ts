@@ -209,6 +209,131 @@ Output strictly valid JSON with no markdown formatting:
   // POST /api/steps/:stepId/level-up-quiz
   fastify.post('/api/steps/:stepId/level-up-quiz', generateStepQuizHandler);
 
+  // POST /api/quiz/evaluate — Strict Socratic Quiz Grading Endpoint (>= 75% threshold)
+  const evaluateQuizHandler = async (req: any, reply: any) => {
+    const { questions, answers, stepId, userId } = (req.body || {}) as {
+      questions?: Array<{
+        id?: string;
+        question: string;
+        options: string[] | Array<{ id: string; text: string }>;
+        correctOptionIndex?: number;
+        correctOptionId?: string;
+        explanation?: string;
+      }>;
+      answers?: any;
+      stepId?: string;
+      userId?: string;
+    };
+
+    let targetQuestions = questions || [];
+
+    if ((!targetQuestions || targetQuestions.length === 0) && stepId) {
+      const step = await prisma.skillStep.findUnique({
+        where: { id: stepId },
+        include: { workspace: true },
+      });
+      if (step) {
+        const raw = step.quizBlueprint;
+        targetQuestions = Array.isArray(raw) ? raw : JSON.parse((raw as string) || '[]');
+      }
+    }
+
+    if (!targetQuestions || targetQuestions.length === 0) {
+      return reply.status(400).send({ error: 'No questions provided for evaluation.' });
+    }
+
+    let correctCount = 0;
+    const questionBreakdown = targetQuestions.map((q: any, idx: number) => {
+      let userSelected: any = undefined;
+      if (Array.isArray(answers)) {
+        userSelected = answers[idx];
+      } else if (typeof answers === 'object' && answers !== null) {
+        userSelected = answers[idx] ?? (q.id ? answers[q.id] : undefined);
+      }
+
+      const correctIdx: number = typeof q.correctOptionIndex === 'number'
+        ? q.correctOptionIndex
+        : (q.correctOptionId ? ['A', 'B', 'C', 'D'].indexOf(String(q.correctOptionId).toUpperCase()) : 0);
+
+      const optionLabels = ['A', 'B', 'C', 'D'];
+      const correctLabel = optionLabels[correctIdx] || q.correctOptionId || 'A';
+
+      let isCorrect = false;
+      let userIdx: number = -1;
+      if (typeof userSelected === 'number') {
+        userIdx = userSelected;
+        isCorrect = userSelected === correctIdx;
+      } else if (typeof userSelected === 'string') {
+        const normalized = userSelected.toUpperCase();
+        userIdx = optionLabels.indexOf(normalized);
+        isCorrect = normalized === correctLabel || userIdx === correctIdx;
+      }
+
+      if (isCorrect) correctCount++;
+
+      const optionsList = Array.isArray(q.options)
+        ? q.options.map((opt: any) => typeof opt === 'string' ? opt : opt.text)
+        : [];
+
+      return {
+        questionIndex: idx,
+        question: q.question || q.scenario,
+        options: optionsList,
+        userSelected: userSelected !== undefined ? userSelected : null,
+        userSelectedIndex: userIdx >= 0 ? userIdx : null,
+        correctOptionIndex: correctIdx,
+        correctOptionLabel: correctLabel,
+        isCorrect,
+        explanation: q.explanation || (q.distractorExplanations ? q.distractorExplanations[correctLabel] : 'Validated comprehension.'),
+      };
+    });
+
+    const totalQuestions = targetQuestions.length;
+    const score = Math.round((correctCount / totalQuestions) * 100);
+    const passed = score >= 75;
+
+    if (stepId) {
+      try {
+        await prisma.skillStep.update({
+          where: { id: stepId },
+          data: { status: passed ? 'PASSED' : 'FAILED_REMEDIATION' },
+        });
+
+        if (passed) {
+          const step = await prisma.skillStep.findUnique({
+            where: { id: stepId },
+            include: { workspace: true },
+          });
+          if (step?.workspaceId) {
+            const allSteps = await prisma.skillStep.findMany({
+              where: { workspaceId: step.workspaceId },
+              orderBy: { stepIndex: 'asc' },
+            });
+            const next = allSteps.find(s => s.stepIndex === step.stepIndex + 1);
+            if (next && (next.status === 'LOCKED' || next.status === 'IN_PROGRESS')) {
+              await prisma.skillStep.update({
+                where: { id: next.id },
+                data: { status: 'STUDY_UNGENERATED' },
+              });
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    return reply.send({
+      score,
+      passed,
+      passingThreshold: 75,
+      correctCount,
+      totalQuestions,
+      questionBreakdown,
+    });
+  };
+
+  fastify.post('/api/quiz/evaluate', evaluateQuizHandler);
+  fastify.post('/api/quizzes/evaluate', evaluateQuizHandler);
+
   // POST /api/steps/:stepId/submit-quiz (Evaluation route - 70% Mastery Gate)
   fastify.post('/api/steps/:stepId/submit-quiz', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
