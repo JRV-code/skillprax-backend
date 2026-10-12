@@ -1144,6 +1144,184 @@ Output ONLY a JSON array of 7 objects (Day 1 through Day 7) matching this schema
       return reply.status(500).send({ error: 'Failed to fetch transactions' });
     }
   });
+
+  // POST /api/sports/drills/generate — Dynamic Sport Drill Generation via Groq
+  fastify.post('/api/sports/drills/generate', async (req, reply) => {
+    try {
+      const {
+        sportName = 'Football',
+        subGenre = 'Dribbling & Ball Mastery',
+        stepNumber = 1,
+        stepTitle = 'Foundations & Balance',
+        preferredLanguage = 'en',
+      } = (req.body || {}) as {
+        sportName?: string;
+        subGenre?: string;
+        stepNumber?: number;
+        stepTitle?: string;
+        preferredLanguage?: string;
+      };
+
+      const { groqKey } = await getEffectiveKeys();
+      const apiKey = groqKey || process.env.GROQ_API_KEY || '';
+
+      const langMap: Record<string, string> = {
+        en: 'English',
+        hi: 'Hindi',
+        gu: 'Gujarati',
+        mr: 'Marathi',
+        kn: 'Kannada',
+        ta: 'Tamil',
+        te: 'Telugu',
+        fr: 'French',
+        es: 'Spanish',
+        de: 'German',
+      };
+      const langName = langMap[preferredLanguage] || 'English';
+
+      if (apiKey) {
+        try {
+          const systemPrompt = `You are an Olympic-tier Sports Performance Director and Biomechanical Coach.
+Generate exactly 3 progressive physical drills strictly calibrated for:
+- Sport: "${sportName}"
+- Specialty / Sub-Genre: "${subGenre}"
+- Step Level: Step ${stepNumber} — "${stepTitle}"
+- Target Language: ${langName}
+
+STRICT DRILL MANDATE:
+1. Every drill must be a pure physical execution exercise with biomechanical focus.
+2. DO NOT include any multiple-choice questions, quizzes, or text exams.
+3. Include explicit duration (between 10 and 20 minutes) and intensity level ("Low", "Medium", or "High").
+4. Output strictly a JSON array of 3 drill objects:
+[
+  {
+    "id": "drill-1",
+    "title": "Drill Title (e.g. In-Step Low Drive Technique)",
+    "objective": "Clear mechanical objective",
+    "biomechanicalFocus": "Exact posture, joint angle, and kinetic sequence cues",
+    "instructions": [
+      "Step 1 cue",
+      "Step 2 cue",
+      "Step 3 cue",
+      "Step 4 cue"
+    ],
+    "recommendedSets": "e.g. 4 Sets x 10 Reps (12 Mins)",
+    "durationMinutes": 12,
+    "intensityLevel": "High"
+  }
+]`;
+
+          const aiRes = await callGroqWithFallback(
+            [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: `Generate the 3 calibrated drills in ${langName} now.` },
+            ],
+            { apiKey, model: 'llama-3.3-70b-versatile', temperature: 0.25, jsonMode: true }
+          );
+
+          let parsed = JSON.parse(aiRes.content);
+          if (parsed && !Array.isArray(parsed) && Array.isArray(parsed.drills)) {
+            parsed = parsed.drills;
+          }
+
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const formatted = parsed.slice(0, 3).map((d: any, idx: number) => {
+              const dur = Math.max(5, Math.min(30, Number(d.durationMinutes) || 12));
+              return {
+                id: d.id || `drill-${sportName.toLowerCase().replace(/\s+/g, '-')}-${stepNumber}-${idx + 1}`,
+                title: d.title || `${sportName} Step ${stepNumber} Drill ${idx + 1}`,
+                objective: d.objective || `Refine core kinetic alignment for ${stepTitle}`,
+                biomechanicalFocus: d.biomechanicalFocus || `Maintain neutral spine and explosive ground reaction force`,
+                instructions: Array.isArray(d.instructions) && d.instructions.length > 0
+                  ? d.instructions
+                  : [
+                      'Establish balanced foundational stance with center of gravity lowered.',
+                      'Initiate dynamic kinetic drive through targeted muscle groups.',
+                      'Hold decisive deceleration form at full extension.',
+                      'Reset to neutral athletic base within 3 seconds.',
+                    ],
+                recommendedSets: d.recommendedSets || `4 Sets x 12 Reps (${dur} Mins)`,
+                durationMinutes: dur,
+                durationSeconds: dur * 60,
+                intensityLevel: ['Low', 'Medium', 'High'].includes(d.intensityLevel) ? d.intensityLevel : 'Medium',
+                focusPoints: Array.isArray(d.instructions) ? d.instructions.slice(0, 3) : ['Kinetic sequencing', 'Dynamic balance', 'Consistent tempo'],
+                completed: false,
+              };
+            });
+
+            return reply.send({ success: true, drills: formatted });
+          }
+        } catch (aiErr) {
+          fastify.log.warn({ err: aiErr }, '[POST /api/sports/drills/generate] AI generation fallback');
+        }
+      }
+
+      // High-quality dynamic fallback calibrated specifically to the requested sport and step level
+      const stepDurations = [12, 15, 18];
+      const intensityLevels: Array<'Low' | 'Medium' | 'High'> = ['Low', 'Medium', 'High'];
+      const defaultDrills = [
+        {
+          id: `drill-${sportName.toLowerCase().replace(/\s+/g, '-')}-${stepNumber}-1`,
+          title: `${sportName} ${stepTitle} — Foundational Form & Alignment`,
+          objective: `Establish repeatable athletic posture and neuromuscular readiness for ${subGenre}.`,
+          biomechanicalFocus: `Even weight distribution, core engagement, and zero joint locking during movement initiation.`,
+          instructions: [
+            `Assume foundational athletic stance with feet shoulder-width apart.`,
+            `Perform 10 controlled repetitions at 60% velocity, feeling ground force connection.`,
+            `Verify mirror alignment or partner checkpoint at peak extension.`,
+            `Recover for 30 seconds between sets with steady nasal breathing.`,
+          ],
+          recommendedSets: `3 Sets x 10 Reps (10 Mins)`,
+          durationMinutes: 10,
+          durationSeconds: 600,
+          intensityLevel: 'Low',
+          focusPoints: ['Neutral posture alignment', 'Ground reaction force', 'Active breathing pacing'],
+          completed: false,
+        },
+        {
+          id: `drill-${sportName.toLowerCase().replace(/\s+/g, '-')}-${stepNumber}-2`,
+          title: `${sportName} ${stepTitle} — Dynamic Kinetic Sequencing`,
+          objective: `Accelerate movement execution to match match-pace tempo in ${sportName}.`,
+          biomechanicalFocus: `Rapid kinetic energy transfer from lower chain through upper levers without energy dissipation.`,
+          instructions: [
+            `Set up active 5-meter practice zone with directional cues.`,
+            `Execute explosive acceleration burst into the core technical movement.`,
+            `Decelerate sharply within 2 paces to train joint stabilization.`,
+            `Repeat across 4 sets with 45-second active recovery walks.`,
+          ],
+          recommendedSets: `4 Sets x 8 Reps (15 Mins)`,
+          durationMinutes: 15,
+          durationSeconds: 900,
+          intensityLevel: 'High',
+          focusPoints: ['Explosive initiation', 'Deceleration brake', 'Energy transfer fluidity'],
+          completed: false,
+        },
+        {
+          id: `drill-${sportName.toLowerCase().replace(/\s+/g, '-')}-${stepNumber}-3`,
+          title: `${sportName} ${stepTitle} — Pressure Integration & Endurance`,
+          objective: `Sustain precise biomechanical mechanics under simulated game fatigue.`,
+          biomechanicalFocus: `Preserve posture consistency and technical crispness despite elevated heart rate.`,
+          instructions: [
+            `Perform continuous cyclical reps for 90-second work intervals.`,
+            `Maintain focus on technical checkpoints rather than rushed reps.`,
+            `Record any early fatigue signs (e.g. rounded shoulders or delayed recovery).`,
+            `Finish with a 3-minute restorative cooldown mobility sequence.`,
+          ],
+          recommendedSets: `3 Sets x 90s Intervals (12 Mins)`,
+          durationMinutes: 12,
+          durationSeconds: 720,
+          intensityLevel: 'Medium',
+          focusPoints: ['Fatigue resistance', 'Technical fidelity under pressure', 'Postural stability'],
+          completed: false,
+        },
+      ];
+
+      return reply.send({ success: true, drills: defaultDrills });
+    } catch (err: any) {
+      fastify.log.error(err, '[POST /api/sports/drills/generate] Fatal error');
+      return reply.status(500).send({ error: 'Failed to generate sport drills' });
+    }
+  });
 };
 
 export default sportsRoutes;

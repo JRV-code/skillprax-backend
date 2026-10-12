@@ -360,11 +360,25 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         dietaryPreference?: string;
         medicalConditions?: string;
         preferredLanguage?: string;
+        dateOfBirth?: string;
+        guardianName?: string;
+        guardianPhone?: string;
+        guardianEmail?: string;
+        age?: number;
       };
 
       const targetEmail = (body.email || email).toLowerCase().trim();
       if (!targetEmail) {
         return reply.status(400).send({ error: "User email or authentication token is required." });
+      }
+
+      // Dynamically compute age from dateOfBirth if provided
+      let computedAge: number | undefined = body.age;
+      if (body.dateOfBirth) {
+        const birthDate = new Date(body.dateOfBirth);
+        if (!isNaN(birthDate.getTime())) {
+          computedAge = Math.floor((Date.now() - birthDate.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+        }
       }
 
       // Update users table
@@ -378,10 +392,26 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
               dietary_preference = COALESCE($4, dietary_preference),
               medical_conditions = COALESCE($5, medical_conditions),
               preferred_language = COALESCE($6, preferred_language),
+              date_of_birth = COALESCE($7::date, date_of_birth),
+              guardian_name = COALESCE($8, guardian_name),
+              guardian_phone = COALESCE($9, guardian_phone),
+              guardian_email = COALESCE($10, guardian_email),
               updated_at = NOW()
-          WHERE LOWER(email) = $7
+          WHERE LOWER(email) = $11
           RETURNING *;
-        `, body.name || null, body.gender || null, body.profession || null, body.dietaryPreference || null, body.medicalConditions || null, body.preferredLanguage || null, targetEmail);
+        `, 
+          body.name || null, 
+          body.gender || null, 
+          body.profession || null, 
+          body.dietaryPreference || null, 
+          body.medicalConditions || null, 
+          body.preferredLanguage || null,
+          body.dateOfBirth || null,
+          body.guardianName || null,
+          body.guardianPhone || null,
+          body.guardianEmail || null,
+          targetEmail
+        );
         dbUser = rows && rows.length > 0 ? rows[0] : null;
       } catch (_) {}
 
@@ -397,6 +427,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
             name: body.name || profile.name,
             gender: body.gender || profile.gender,
             profession: body.profession || profile.profession,
+            age: computedAge !== undefined ? computedAge : profile.age,
           },
         });
       }
@@ -559,6 +590,14 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         profession?: string;
         educationBoard?: string;
         grade?: string;
+        dietaryPreference?: string;
+        medicalConditions?: string;
+        preferredLanguage?: string;
+        dateOfBirth?: string;
+        guardianName?: string;
+        guardianPhone?: string;
+        guardianEmail?: string;
+        age?: number;
         targetHours?: number;
         targetMinutes?: number;
         alertNotification?: string;
@@ -570,6 +609,15 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         freezeShields?: number;
       };
 
+      // Compute age dynamically from dateOfBirth if provided
+      let computedAge: number | undefined = body.age;
+      if (body.dateOfBirth) {
+        const birthDate = new Date(body.dateOfBirth);
+        if (!isNaN(birthDate.getTime())) {
+          computedAge = Math.floor((Date.now() - birthDate.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+        }
+      }
+
       const dataToUpdate: any = {};
       if (typeof body.name === "string" && body.name.trim()) dataToUpdate.name = body.name.trim();
       if (typeof body.email === "string" && body.email.trim()) dataToUpdate.email = body.email.trim().toLowerCase();
@@ -577,6 +625,8 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       if (typeof body.profession === "string" && body.profession.trim()) dataToUpdate.profession = body.profession.trim();
       if (typeof body.educationBoard === "string" && body.educationBoard.trim()) dataToUpdate.educationBoard = body.educationBoard.trim();
       if (typeof body.grade === "string" && body.grade.trim()) dataToUpdate.grade = body.grade.trim();
+      if (computedAge !== undefined) dataToUpdate.age = computedAge;
+
       if (body.targetHours !== undefined && !isNaN(Number(body.targetHours))) {
         dataToUpdate.targetDailyHours = Math.max(0, Number(body.targetHours));
       }
@@ -615,7 +665,44 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         data: dataToUpdate,
       });
 
-      return reply.status(200).send({ profile: formatProfilePayload(updated) });
+      // Synchronize users table in Neon PostgreSQL
+      const targetEmail = (updated.email || body.email || "").toLowerCase().trim();
+      let dbUser: any = null;
+      if (targetEmail) {
+        try {
+          const rows: any[] = await prisma.$queryRawUnsafe(`
+            UPDATE users 
+            SET name = COALESCE($1, name),
+                gender = COALESCE($2, gender),
+                profession = COALESCE($3, profession),
+                dietary_preference = COALESCE($4, dietary_preference),
+                medical_conditions = COALESCE($5, medical_conditions),
+                preferred_language = COALESCE($6, preferred_language),
+                date_of_birth = COALESCE($7::date, date_of_birth),
+                guardian_name = COALESCE($8, guardian_name),
+                guardian_phone = COALESCE($9, guardian_phone),
+                guardian_email = COALESCE($10, guardian_email),
+                updated_at = NOW()
+            WHERE LOWER(email) = $11
+            RETURNING *;
+          `,
+            body.name || null,
+            body.gender || null,
+            body.profession || null,
+            body.dietaryPreference || null,
+            body.medicalConditions || null,
+            body.preferredLanguage || null,
+            body.dateOfBirth || null,
+            body.guardianName || null,
+            body.guardianPhone || null,
+            body.guardianEmail || null,
+            targetEmail
+          );
+          dbUser = rows && rows.length > 0 ? rows[0] : null;
+        } catch (_) {}
+      }
+
+      return reply.status(200).send({ profile: formatProfilePayload(updated, dbUser) });
     } catch (err: any) {
       fastify.log.error(err, "[PATCH /api/profiles/:id] Failed");
       return reply.status(500).send({ error: "Failed to update profile" });

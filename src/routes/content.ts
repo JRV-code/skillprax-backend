@@ -5,6 +5,11 @@ import { getEffectiveKeys } from '../lib/keyManager';
 const LANGUAGE_MAP: Record<string, string> = {
   en: 'English',
   hi: 'Hindi (हिन्दी)',
+  gu: 'Gujarati (ગુજરાતી)',
+  mr: 'Marathi (मराठी)',
+  kn: 'Kannada (ಕನ್ನಡ)',
+  ta: 'Tamil (தமிழ்)',
+  te: 'Telugu (తెలుగు)',
   fr: 'French (Français)',
   es: 'Spanish (Español)',
   de: 'German (Deutsch)',

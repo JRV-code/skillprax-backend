@@ -67,6 +67,10 @@ export async function ensureDatabaseSchema() {
       await prisma.$executeRawUnsafe(`
         ALTER TABLE users 
         ADD COLUMN IF NOT EXISTS xp INT DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS date_of_birth DATE,
+        ADD COLUMN IF NOT EXISTS guardian_name VARCHAR(150),
+        ADD COLUMN IF NOT EXISTS guardian_phone VARCHAR(30),
+        ADD COLUMN IF NOT EXISTS guardian_email VARCHAR(150),
         ADD COLUMN IF NOT EXISTS dietary_preference VARCHAR(50) DEFAULT 'Vegetarian',
         ADD COLUMN IF NOT EXISTS medical_conditions TEXT DEFAULT 'None',
         ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(20) DEFAULT 'en',

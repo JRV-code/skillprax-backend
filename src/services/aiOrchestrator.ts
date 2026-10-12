@@ -59,11 +59,32 @@ export async function estimateDynamicCurriculum(params: {
   const target = params.targetMastery || 'Intermediate';
   const lang = params.preferredLanguage || 'en';
 
+  const langMap: Record<string, string> = {
+    en: 'English',
+    hi: 'Hindi',
+    gu: 'Gujarati',
+    mr: 'Marathi',
+    kn: 'Kannada',
+    ta: 'Tamil',
+    te: 'Telugu',
+    fr: 'French',
+    es: 'Spanish',
+    de: 'German',
+  };
+  const targetLanguage = langMap[lang] || 'English';
+
   const systemPrompt = `You are a Principal Curriculum Architect and Pedagogical Engineer.
 Analyze this skill: "${params.skillName}", Sub-Genre: "${params.subGenre || 'General'}", Category: "${category}", Target Mastery: "${target}".
-Determine the exact number of progressive steps (between 4 and 8) needed to reach mastery.
+Determine the exact number of progressive steps (between 4 and 8) needed to reach true mastery.
+
+STRICT PROGRESSIVE CURRICULUM LEVELING MANDATE:
+- Step 1: Core fundamentals, stance, grip/base, primary rules, and safety protocols.
+- Step 2: Intermediate dynamic execution, kinetic flow, and common error identification.
+- Step 3: Advanced match-pace scenarios, edge cases, pressure testing, and tactical integration.
+- Step 4+: Peak mastery drills, high-speed execution, autonomous flow, and competitive readiness.
+
 For physical skills, assign realistic "requiredPracticeDays" (between 2 and 7 days per step). For cognitive skills, assign 1 to 2 days.
-Language: Provide titles and descriptions in ${lang === 'hi' ? 'Hindi' : lang === 'fr' ? 'French' : lang === 'es' ? 'Spanish' : lang === 'de' ? 'German' : 'English'}.
+Language: Provide all roadmap overviews, titles, and descriptions strictly in ${targetLanguage}.
 
 Return strictly JSON:
 {
