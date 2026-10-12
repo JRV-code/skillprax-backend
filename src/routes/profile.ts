@@ -158,19 +158,17 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
           const isValid = verifyPassword(cleanPassword, dbUser.password_hash);
           if (!isValid) {
             return reply.status(401).send({
-              error: "Incorrect password for this email. [Reset Password]",
+              error: "Incorrect password for this account. Please try again or sign in with Google.",
               code: "INCORRECT_PASSWORD",
             });
           }
-        } else if (cleanPassword) {
-          // User exists without password (e.g., initial Google login) -> attach password
-          try {
-            const hashed = hashPassword(cleanPassword);
-            await prisma.$executeRawUnsafe(`
-              UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2;
-            `, hashed, dbUser.id);
-            dbUser.password_hash = hashed;
-          } catch (_) {}
+        } else {
+          // User exists but password_hash is NULL (signed up via Google previously but hasn't set password)
+          return reply.status(400).send({
+            needsPasswordSetup: true,
+            error: "Account created via Google. Please sign in with Google once to set your password.",
+            message: "Account created via Google. Please sign in with Google once to set your password.",
+          });
         }
 
         // Fetch or sync UserProfile
@@ -205,18 +203,27 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         );
 
         const formatted = formatProfilePayload(profile, dbUser);
+        const hasPassword = Boolean(dbUser?.password_hash);
         return reply.status(200).send({
           success: true,
-          user: formatted,
+          user: {
+            ...formatted,
+            hasPassword,
+          },
           profile: formatted,
           token: sessionToken,
           isNewUser: false,
+          needsPasswordSetup: !hasPassword,
         });
       }
 
       // Case B: User does NOT exist -> Automatically create new user record & UserProfile
+      if (!cleanPassword || cleanPassword.length < 6) {
+        return reply.status(400).send({ error: "Password must be at least 6 characters long." });
+      }
+
       const userName = name && name.trim() ? name.trim() : cleanEmail.split("@")[0];
-      const passwordHash = cleanPassword ? hashPassword(cleanPassword) : null;
+      const passwordHash = hashPassword(cleanPassword);
 
       try {
         const rows: any[] = await prisma.$queryRawUnsafe(`
@@ -265,10 +272,14 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       const formatted = formatProfilePayload(profile, dbUser);
       return reply.status(201).send({
         success: true,
-        user: formatted,
+        user: {
+          ...formatted,
+          hasPassword: true,
+        },
         profile: formatted,
         token: sessionToken,
         isNewUser: true,
+        needsPasswordSetup: false,
       });
     } catch (err: any) {
       fastify.log.error(err, "[POST /api/auth/universal] Failed");
@@ -280,6 +291,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
   fastify.post("/api/auth/google", async (req, reply) => {
     try {
       const body = (req.body || {}) as {
+        credential?: string;
         idToken?: string;
         googleToken?: string;
         email?: string;
@@ -296,24 +308,46 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       let googleId: string | null = null;
       let emailVerified = true;
 
-      // Verify Google ID Token if present and GOOGLE_CLIENT_ID is configured
-      const tokenToVerify = body.idToken || (body.googleToken && body.googleToken.length > 100 ? body.googleToken : null);
-      if (tokenToVerify && googleClientId) {
-        try {
-          const ticket = await oauth2Client.verifyIdToken({
-            idToken: tokenToVerify,
-            audience: googleClientId,
-          });
-          const payload = ticket.getPayload();
-          if (payload?.email) {
-            verifiedEmail = payload.email.toLowerCase();
-            verifiedName = payload.name || verifiedName;
-            verifiedPicture = payload.picture || verifiedPicture;
-            googleId = payload.sub || null;
-            emailVerified = payload.email_verified ?? true;
+      // Verify Google ID Token / credential
+      const tokenToVerify = body.credential || body.idToken || (body.googleToken && body.googleToken.length > 100 ? body.googleToken : null);
+      if (tokenToVerify) {
+        let verifiedSuccessfully = false;
+        if (googleClientId) {
+          try {
+            const ticket = await oauth2Client.verifyIdToken({
+              idToken: tokenToVerify,
+              audience: googleClientId,
+            });
+            const payload = ticket.getPayload();
+            if (payload?.email) {
+              verifiedEmail = payload.email.toLowerCase();
+              verifiedName = payload.name || verifiedName;
+              verifiedPicture = payload.picture || verifiedPicture;
+              googleId = payload.sub || null;
+              emailVerified = payload.email_verified ?? true;
+              verifiedSuccessfully = true;
+            }
+          } catch (tokenErr) {
+            fastify.log.warn({ err: tokenErr }, "[GoogleAuth] verifyIdToken failed, attempting tokeninfo fallback.");
           }
-        } catch (tokenErr) {
-          fastify.log.warn({ err: tokenErr }, "[GoogleAuth] Token verify skipped or failed; proceeding with payload data.");
+        }
+
+        if (!verifiedSuccessfully) {
+          try {
+            const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${tokenToVerify}`);
+            if (res.ok) {
+              const payload: any = await res.json();
+              if (payload?.email) {
+                verifiedEmail = payload.email.toLowerCase();
+                verifiedName = payload.name || verifiedName;
+                verifiedPicture = payload.picture || verifiedPicture;
+                googleId = payload.sub || null;
+                emailVerified = payload.email_verified === "true" || payload.email_verified === true;
+              }
+            }
+          } catch (fetchErr) {
+            fastify.log.warn({ err: fetchErr }, "[GoogleAuth] tokeninfo fallback failed.");
+          }
         }
       }
 
@@ -352,8 +386,9 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
           )
           VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, TRUE, '19:00', CURRENT_DATE, NOW(), NOW())
           ON CONFLICT (email) DO UPDATE SET 
-            name = EXCLUDED.name,
+            name = COALESCE(NULLIF(EXCLUDED.name, ''), users.name),
             avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
+            google_id = COALESCE(EXCLUDED.google_id, users.google_id),
             is_email_verified = TRUE,
             gender = COALESCE(EXCLUDED.gender, users.gender),
             profession = COALESCE(EXCLUDED.profession, users.profession),
@@ -387,6 +422,8 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
             profession,
             educationBoard,
             grade,
+            city: dbUser?.city || "Ahmedabad",
+            state: dbUser?.state || "Gujarat",
             targetDailyHours: 1,
             targetDailyMinutes: 50,
             reminderTime: "19:00",
@@ -426,16 +463,63 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         { expiresIn: "30d" }
       );
 
+      const hasPassword = Boolean(dbUser?.password_hash);
       const formatted = formatProfilePayload(profile, dbUser);
 
       return reply.status(200).send({
-        profile: formatted,
-        user: formatted,
         token: sessionToken,
+        user: {
+          ...formatted,
+          hasPassword,
+        },
+        profile: formatted,
+        needsPasswordSetup: !hasPassword,
       });
     } catch (err: any) {
       fastify.log.error(err, "[POST /api/auth/google] Failed");
       return reply.status(500).send({ error: "Google authentication failed" });
+    }
+  });
+
+  // 2b. POST /api/auth/set-password — Set Account Password (Authenticated via Bearer JWT)
+  fastify.post("/api/auth/set-password", async (req, reply) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith("Bearer ")) {
+        return reply.status(401).send({ error: "Missing or invalid authorization token." });
+      }
+
+      const token = authHeader.split(" ")[1];
+      let decoded: any;
+      try {
+        decoded = jwt.verify(token, JWT_SECRET);
+      } catch (jwtErr) {
+        return reply.status(401).send({ error: "Expired or invalid session token." });
+      }
+
+      const { password } = (req.body || {}) as { password?: string };
+      if (!password || password.trim().length < 6) {
+        return reply.status(400).send({ error: "Password must be at least 6 characters long." });
+      }
+
+      const cleanPassword = password.trim();
+      const hashedPassword = hashPassword(cleanPassword);
+      const userId = decoded.userId || decoded.id;
+      const email = decoded.email ? String(decoded.email).toLowerCase() : "";
+
+      await prisma.$executeRawUnsafe(`
+        UPDATE users 
+        SET password_hash = $1, updated_at = NOW() 
+        WHERE id = $2 OR LOWER(email) = $3;
+      `, hashedPassword, String(userId), email);
+
+      return reply.status(200).send({
+        success: true,
+        message: "Account password established successfully",
+      });
+    } catch (err: any) {
+      fastify.log.error(err, "[POST /api/auth/set-password] Failed");
+      return reply.status(500).send({ error: "Failed to establish account password." });
     }
   });
 

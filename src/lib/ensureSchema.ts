@@ -118,6 +118,7 @@ export async function ensureDatabaseSchema() {
         ADD COLUMN IF NOT EXISTS last_active_date DATE DEFAULT CURRENT_DATE,
         ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT 'Ahmedabad',
         ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat',
+        ADD COLUMN IF NOT EXISTS google_id VARCHAR(255),
         ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
       `);
     } catch (err) {
