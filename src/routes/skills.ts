@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
+import jwt from 'jsonwebtoken';
 import prisma from '../lib/prisma';
 import { getEffectiveKeys } from '../lib/keyManager';
 import { callGroqWithFallback } from '../lib/ai/pipeline';
@@ -200,6 +201,39 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
     } catch (err: any) {
       fastify.log.error(err, '[GET /api/skills/user/:userId] Failed');
       return reply.status(500).send({ error: 'Failed to load user skills' });
+    }
+  });
+
+  // 3b. GET /api/skills/enrolled — List active cognitive enrolled skills
+  fastify.get('/api/skills/enrolled', async (req, reply) => {
+    try {
+      let userId: string | null = null;
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        try {
+          const decoded: any = jwt.verify(
+            authHeader.split(' ')[1],
+            process.env.JWT_SECRET || 'skilltrack_enterprise_jwt_secret_2026'
+          );
+          userId = decoded.userId || decoded.id;
+        } catch (_) {}
+      }
+
+      let skills: any[] = [];
+      if (userId) {
+        skills = await prisma.$queryRawUnsafe(`
+          SELECT * FROM user_skills WHERE user_id = $1 ORDER BY updated_at DESC;
+        `, userId);
+      } else {
+        skills = await prisma.$queryRawUnsafe(`
+          SELECT * FROM user_skills ORDER BY updated_at DESC LIMIT 10;
+        `);
+      }
+
+      return reply.status(200).send({ skills: skills || [] });
+    } catch (err: any) {
+      fastify.log.error(err, '[GET /api/skills/enrolled] Failed');
+      return reply.status(200).send({ skills: [] });
     }
   });
 
