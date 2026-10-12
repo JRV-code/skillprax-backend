@@ -109,3 +109,118 @@ CREATE TABLE IF NOT EXISTS reviews (
   created_at TIMESTAMP DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW()
 );
+
+-- 6. MAIDAN INTEGRATION: Sports Player Biometrics & Guardian Linking
+CREATE TABLE IF NOT EXISTS sports_player_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id VARCHAR(255),
+  sport VARCHAR(100) NOT NULL,
+  secondary_sports TEXT[] DEFAULT '{}',
+  playing_position VARCHAR(100) NOT NULL,
+  height_cm NUMERIC(5,2),
+  weight_kg NUMERIC(5,2),
+  achievements TEXT,
+  certificates JSONB DEFAULT '[]',
+  date_of_birth DATE NOT NULL DEFAULT '2008-01-01',
+  is_minor BOOLEAN DEFAULT FALSE,
+  guardian_name VARCHAR(150),
+  guardian_phone VARCHAR(30),
+  guardian_email VARCHAR(150),
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE(user_id, sport)
+);
+
+-- 7. MAIDAN INTEGRATION: Sports Clubs & Academies
+CREATE TABLE IF NOT EXISTS sports_clubs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  club_name VARCHAR(200) NOT NULL,
+  sports_offered TEXT[] NOT NULL,
+  city VARCHAR(100) NOT NULL,
+  address TEXT NOT NULL,
+  latitude NUMERIC(10, 7) NOT NULL,
+  longitude NUMERIC(10, 7) NOT NULL,
+  timings VARCHAR(100) NOT NULL,
+  competition_level VARCHAR(50) NOT NULL,
+  monthly_fee NUMERIC(10, 2) NOT NULL,
+  discounted_fee NUMERIC(10, 2) DEFAULT NULL,
+  discount_label VARCHAR(100) DEFAULT NULL,
+  facilities TEXT[] DEFAULT '{}',
+  coaching_staff JSONB DEFAULT '[]',
+  website_url TEXT,
+  contact_phone VARCHAR(30),
+  is_verified BOOLEAN DEFAULT FALSE,
+  verification_docs JSONB DEFAULT '[]',
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 8. MAIDAN INTEGRATION: Scouting Requests & Privacy Unlock Matrix
+CREATE TABLE IF NOT EXISTS sports_scouting_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  club_id UUID REFERENCES sports_clubs(id) ON DELETE CASCADE,
+  player_id VARCHAR(255) NOT NULL,
+  status VARCHAR(30) DEFAULT 'pending',
+  guardian_approved BOOLEAN DEFAULT FALSE,
+  message TEXT,
+  trial_date TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE(club_id, player_id)
+);
+
+-- 9. MAIDAN INTEGRATION: Player Ratings & History
+CREATE TABLE IF NOT EXISTS sports_player_ratings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  player_id VARCHAR(255) NOT NULL,
+  club_id UUID REFERENCES sports_clubs(id) ON DELETE CASCADE,
+  overall_rating NUMERIC(3, 1) CHECK (overall_rating >= 1.0 AND overall_rating <= 5.0),
+  technical_score INT,
+  agility_score INT,
+  notes TEXT,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 10. MAIDAN INTEGRATION: Sports Shop Catalog & Orders
+CREATE TABLE IF NOT EXISTS sports_shop_products (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  title VARCHAR(200) NOT NULL,
+  sport VARCHAR(100) NOT NULL,
+  category VARCHAR(100) NOT NULL,
+  price NUMERIC(10, 2) NOT NULL,
+  image_url TEXT NOT NULL,
+  seller_type VARCHAR(50) DEFAULT 'official',
+  vendor_name VARCHAR(150),
+  in_stock BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 11. MAIDAN INTEGRATION: Managed Travel Vans & Bookings
+CREATE TABLE IF NOT EXISTS sports_travel_vans (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  registration_number VARCHAR(50) NOT NULL,
+  driver_name VARCHAR(150) NOT NULL,
+  driver_phone VARCHAR(30) NOT NULL,
+  license_last_four VARCHAR(4) NOT NULL,
+  is_driver_verified BOOLEAN DEFAULT FALSE,
+  route_title VARCHAR(255) NOT NULL,
+  stops TEXT[] NOT NULL,
+  total_seats INT NOT NULL DEFAULT 14,
+  available_seats INT NOT NULL DEFAULT 14,
+  monthly_fare NUMERIC(10, 2) NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 12. MAIDAN INTEGRATION: Escrow Transactions
+CREATE TABLE IF NOT EXISTS sports_escrow_transactions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id VARCHAR(255) NOT NULL,
+  transaction_type VARCHAR(50) NOT NULL,
+  reference_id VARCHAR(255) NOT NULL,
+  amount NUMERIC(10, 2) NOT NULL,
+  razorpay_payment_id VARCHAR(150),
+  escrow_status VARCHAR(30) DEFAULT 'held',
+  payout_released_at TIMESTAMP,
+  refunded_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+

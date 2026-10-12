@@ -337,6 +337,131 @@ export async function adminRoutes(fastify: FastifyInstance) {
       return reply.status(500).send({ success: false, error: err.message || 'Tavily connection failed' });
     }
   });
+
+  // =========================================================================
+  // MODULE 7: ADMIN CONTROL CENTER EXTENSIONS FOR MAIDAN ATHLETICS
+  // =========================================================================
+
+  // 1. Club Verification Queue
+  fastify.get('/api/admin/sports/clubs/pending', async (req, reply) => {
+    try {
+      const clubs: any[] = await prisma.$queryRawUnsafe(`
+        SELECT * FROM sports_clubs WHERE is_verified = FALSE ORDER BY created_at DESC;
+      `);
+      return reply.send({ success: true, clubs });
+    } catch (err: any) {
+      return reply.status(500).send({ error: 'Failed to fetch pending clubs' });
+    }
+  });
+
+  fastify.post('/api/admin/sports/clubs/:id/verify', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const { action = 'approve' } = (req.body || {}) as { action: 'approve' | 'reject' };
+
+      if (action === 'approve') {
+        await prisma.$executeRawUnsafe(`
+          UPDATE sports_clubs SET is_verified = TRUE WHERE id::text = $1;
+        `, id);
+        return reply.send({ success: true, message: 'Club accredited and published to public discovery' });
+      } else {
+        await prisma.$executeRawUnsafe(`
+          DELETE FROM sports_clubs WHERE id::text = $1;
+        `, id);
+        return reply.send({ success: true, message: 'Club application rejected and removed' });
+      }
+    } catch (err: any) {
+      return reply.status(500).send({ error: 'Failed to verify club' });
+    }
+  });
+
+  // 2. Driver & Vendor Approvals
+  fastify.get('/api/admin/sports/drivers/pending', async (req, reply) => {
+    try {
+      const drivers: any[] = await prisma.$queryRawUnsafe(`
+        SELECT * FROM sports_travel_vans WHERE is_driver_verified = FALSE ORDER BY created_at DESC;
+      `);
+      return reply.send({ success: true, drivers });
+    } catch (err: any) {
+      return reply.status(500).send({ error: 'Failed to fetch pending drivers' });
+    }
+  });
+
+  fastify.post('/api/admin/sports/drivers/:id/verify', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const { action = 'approve' } = (req.body || {}) as { action: 'approve' | 'reject' };
+
+      if (action === 'approve') {
+        await prisma.$executeRawUnsafe(`
+          UPDATE sports_travel_vans SET is_driver_verified = TRUE WHERE id::text = $1;
+        `, id);
+        return reply.send({ success: true, message: 'Driver commercial license verified and route unlocked' });
+      } else {
+        await prisma.$executeRawUnsafe(`
+          DELETE FROM sports_travel_vans WHERE id::text = $1;
+        `, id);
+        return reply.send({ success: true, message: 'Driver application rejected' });
+      }
+    } catch (err: any) {
+      return reply.status(500).send({ error: 'Failed to verify driver' });
+    }
+  });
+
+  // 3. High-Fee Discount Manager
+  fastify.post('/api/admin/sports/clubs/:id/discount', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const { discountedFee, discountLabel = '15% Negotiated Academy Concession' } = (req.body || {}) as any;
+
+      await prisma.$executeRawUnsafe(`
+        UPDATE sports_clubs
+        SET discounted_fee = $1, discount_label = $2
+        WHERE id::text = $3;
+      `, discountedFee ? Number(discountedFee) : null, discountLabel, id);
+
+      return reply.send({ success: true, message: 'Academy discount promotion updated successfully' });
+    } catch (err: any) {
+      return reply.status(500).send({ error: 'Failed to update discount' });
+    }
+  });
+
+  // 4. Escrow Payout Queue
+  fastify.get('/api/admin/sports/escrow/held', async (req, reply) => {
+    try {
+      const txns: any[] = await prisma.$queryRawUnsafe(`
+        SELECT * FROM sports_escrow_transactions WHERE escrow_status = 'held' ORDER BY created_at DESC;
+      `);
+      return reply.send({ success: true, transactions: txns });
+    } catch (err: any) {
+      return reply.status(500).send({ error: 'Failed to fetch held escrow funds' });
+    }
+  });
+
+  fastify.post('/api/admin/sports/escrow/:id/release', async (req, reply) => {
+    try {
+      const { id } = req.params as { id: string };
+      const { action = 'release' } = (req.body || {}) as { action: 'release' | 'refund' };
+
+      if (action === 'release') {
+        await prisma.$executeRawUnsafe(`
+          UPDATE sports_escrow_transactions
+          SET escrow_status = 'released', payout_released_at = NOW()
+          WHERE id::text = $1;
+        `, id);
+        return reply.send({ success: true, message: 'Escrow payment released to service provider' });
+      } else {
+        await prisma.$executeRawUnsafe(`
+          UPDATE sports_escrow_transactions
+          SET escrow_status = 'refunded', refunded_at = NOW()
+          WHERE id::text = $1;
+        `, id);
+        return reply.send({ success: true, message: 'Escrow payment refunded to athlete via Razorpay' });
+      }
+    } catch (err: any) {
+      return reply.status(500).send({ error: 'Failed to release escrow funds' });
+    }
+  });
 }
 
 export default adminRoutes;
