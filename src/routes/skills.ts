@@ -398,8 +398,8 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
     }
   });
 
-  // 6. POST /api/quiz/evaluate — Strict Socratic Evaluator (Groq)
-  fastify.post('/api/quiz/evaluate', async (req, reply) => {
+  // 6. POST /api/skills/quiz/evaluate — Strict Socratic Evaluator (Groq)
+  fastify.post('/api/skills/quiz/evaluate', async (req, reply) => {
     try {
       const {
         skillName,

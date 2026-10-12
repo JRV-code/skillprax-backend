@@ -136,10 +136,14 @@ export async function ensureDatabaseSchema() {
         created_at TIMESTAMP DEFAULT NOW(),
         UNIQUE(user_id, resource_type, resource_identifier)
       );
-      ALTER TABLE user_resource_history
-      ADD COLUMN IF NOT EXISTS skill_id VARCHAR(255),
-      ADD COLUMN IF NOT EXISTS step_number INT;
     `);
+    try {
+      await prisma.$executeRawUnsafe(`
+        ALTER TABLE user_resource_history
+        ADD COLUMN IF NOT EXISTS skill_id VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS step_number INT;
+      `);
+    } catch (_) {}
 
     // 9. reviews (Authentic-Only Reviews Table)
     await prisma.$executeRawUnsafe(`
