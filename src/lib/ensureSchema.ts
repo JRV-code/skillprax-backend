@@ -603,10 +603,30 @@ export async function ensureDatabaseSchema() {
       );
     `);
 
-    await prisma.$executeRawUnsafe(`ALTER TABLE content_translations ADD COLUMN IF NOT EXISTS content_document_id UUID;`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE content_translations ADD COLUMN IF NOT EXISTS content_document_id TEXT;`);
     await prisma.$executeRawUnsafe(`ALTER TABLE content_translations ADD COLUMN IF NOT EXISTS topic_map JSONB;`);
     await prisma.$executeRawUnsafe(`ALTER TABLE content_translations ADD COLUMN IF NOT EXISTS approach_brief JSONB;`);
     await prisma.$executeRawUnsafe(`ALTER TABLE content_translations ALTER COLUMN content_id DROP NOT NULL;`);
+
+    // Defensive self-healing: purge orphaned content_translations referencing nonexistent documents
+    await prisma.$executeRawUnsafe(`
+      DELETE FROM content_translations
+      WHERE content_document_id IS NOT NULL
+        AND content_document_id::text NOT IN (SELECT id::text FROM content_documents);
+    `);
+
+    // Ensure foreign key constraint exists safely
+    await prisma.$executeRawUnsafe(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'content_translations_content_document_id_fkey') THEN
+          ALTER TABLE content_translations
+          ADD CONSTRAINT content_translations_content_document_id_fkey
+          FOREIGN KEY (content_document_id)
+          REFERENCES content_documents(id)
+          ON DELETE CASCADE ON UPDATE CASCADE;
+        END IF;
+      END $$;
+    `);
 
     await prisma.$executeRawUnsafe(`
       CREATE TABLE IF NOT EXISTS ui_translations (

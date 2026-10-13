@@ -16,8 +16,8 @@ npm ci || npm install
 echo "==> Generating Prisma client"
 npx prisma generate
 
-echo "==> Applying database migrations with prisma migrate deploy"
-npx prisma migrate deploy
+echo "==> Synchronizing database schema"
+npx prisma db push --skip-generate
 
 echo "==> Building application"
 npm run build
