@@ -112,6 +112,11 @@ const REGIONAL_LANGUAGE_MAP: Record<string, string> = {
   de: 'German (Deutsch)',
 };
 
+export function isVideoUrl(url: string): boolean {
+  if (!url) return false;
+  return /youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|tiktok\.com/i.test(url);
+}
+
 /**
  * MODULE 3: REAL-WEB CONTENT EXTRACTION ENGINE (TAVILY + WIKIPEDIA + GROQ)
  * Scrapes authentic web pages via Tavily, with dynamic failover to live Wikipedia API.
@@ -158,21 +163,35 @@ export async function fetchAndSynthesizeStepDocumentation(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           api_key: tavilyKey,
-          query,
+          query: `${query} -youtube -video`,
           search_depth: 'advanced',
-          max_results: 5,
+          max_results: 8,
           include_raw_content: true,
-          exclude_domains: ['youtube.com', 'youtu.be'],
+          exclude_domains: [
+            'youtube.com',
+            'youtu.be',
+            'm.youtube.com',
+            'vimeo.com',
+            'dailymotion.com',
+            'facebook.com',
+            'instagram.com',
+            'twitter.com',
+            'x.com',
+            'tiktok.com',
+          ],
         }),
       });
 
       if (res.ok) {
         const tavilyResponse: any = await res.json();
-        if (tavilyResponse.results && tavilyResponse.results.length > 0) {
-          rawWebContext = tavilyResponse.results
+        const validResults = (tavilyResponse.results || []).filter(
+          (r: any) => r.url && !isVideoUrl(r.url)
+        );
+        if (validResults.length > 0) {
+          rawWebContext = validResults
             .map((r: any) => `Source: ${r.url}\nTitle: ${r.title}\nContent:\n${r.raw_content || r.content}`)
             .join('\n\n---\n\n');
-          sourceUrl = tavilyResponse.results[0].url;
+          sourceUrl = validResults[0].url;
         }
       }
     } catch (err: any) {

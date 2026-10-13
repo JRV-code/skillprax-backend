@@ -22,6 +22,11 @@ export interface EnrichedTopic {
   pedagogicalGuide: PedagogicalGuide;
 }
 
+export function isVideoUrl(url: string): boolean {
+  if (!url) return false;
+  return /youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|tiktok\.com/i.test(url);
+}
+
 export interface SourcedStepResult {
   videoId: string;
   videoTitle: string;
@@ -209,36 +214,50 @@ export async function sourceStepContent(
   const enrichedTopics: EnrichedTopic[] = [];
 
   for (const topic of rawTopics) {
-    const searchQuery = `${skillName} "${topic.title}" technical documentation reference manual guide`;
+    const searchQuery = `${skillName} "${topic.title}" official documentation guide manual reference -youtube -video`;
     const tavilyResponse = await tavilyClient.search(searchQuery, {
       search_depth: 'advanced',
-      max_results: 6,
+      max_results: 8,
       include_raw_content: true,
-      exclude_domains: ['youtube.com', 'youtu.be', 'facebook.com', 'twitter.com', 'pinterest.com', 'instagram.com'],
+      exclude_domains: [
+        'youtube.com',
+        'youtu.be',
+        'm.youtube.com',
+        'vimeo.com',
+        'dailymotion.com',
+        'facebook.com',
+        'instagram.com',
+        'twitter.com',
+        'x.com',
+        'tiktok.com',
+      ],
     });
 
-    // Pick first fresh URL never seen by user in any step
-    const freshUrlCandidate =
-      tavilyResponse.results.find((r: any) => !seenResources.has(r.url)) || tavilyResponse.results[0];
-    const chosenUrl =
-      freshUrlCandidate?.url || `https://en.wikipedia.org/wiki/${encodeURIComponent(skillName)}`;
-    const contextContent = freshUrlCandidate?.raw_content || freshUrlCandidate?.content || '';
+    // Filter results to guarantee NO video URLs are classified as documents
+    const validTextDocs = (tavilyResponse.results || []).filter((r: any) =>
+      r.url &&
+      !isVideoUrl(r.url) &&
+      !seenResources.has(r.url)
+    );
 
-    seenResources.add(chosenUrl);
+    const chosenDoc = validTextDocs[0] || (tavilyResponse.results || []).find((r: any) => r.url && !isVideoUrl(r.url));
+    const finalDocUrl = chosenDoc?.url || `https://en.wikipedia.org/wiki/${encodeURIComponent(skillName)}`;
+    let sourceDomain = 'Official Documentation';
+    try {
+      sourceDomain = new URL(finalDocUrl).hostname.replace(/^(www\.)/, '');
+    } catch (_) {}
+
+    const contextContent = chosenDoc?.raw_content || chosenDoc?.content || '';
+
+    seenResources.add(finalDocUrl);
 
     // Register documentation URL immediately in history
     await db.query(
       `INSERT INTO user_resource_history (user_id, skill_id, step_number, resource_type, resource_identifier)
        VALUES ($1, $2, $3, 'external_doc_url', $4)
        ON CONFLICT (user_id, resource_identifier) DO NOTHING`,
-      [userId, skillId, stepNumber, chosenUrl]
+      [userId, skillId, stepNumber, finalDocUrl]
     );
-
-    // Extract domain name cleanly
-    let sourceDomain = 'Official Documentation';
-    try {
-      sourceDomain = new URL(chosenUrl).hostname.replace(/^(www\.)/, '');
-    } catch (_) {}
 
     // Groq generates targeted Pedagogical Study Guide
     let pedagogicalGuide: PedagogicalGuide = {
@@ -308,10 +327,10 @@ Return strictly JSON:
     enrichedTopics.push({
       topicId: topic.topicId || `t-${Math.random().toString(36).substring(2, 7)}`,
       title: topic.title,
-      externalUrl: chosenUrl,
-      sourceTitle: freshUrlCandidate?.title || 'Authoritative Technical Resource',
+      externalUrl: finalDocUrl,
+      sourceTitle: chosenDoc?.title || topic.title,
       sourceDomain,
-      coreObjective: topic.coreObjective || `Master the mechanical principles of ${topic.title}`,
+      coreObjective: topic.coreObjective || `Read official documentation on ${topic.title}`,
       pedagogicalGuide,
     });
   }
