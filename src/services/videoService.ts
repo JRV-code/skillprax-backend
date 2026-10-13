@@ -1,5 +1,7 @@
 import { getEffectiveKeys } from '../lib/keyManager';
 import prisma from '../lib/prisma';
+import { db } from '../lib/db';
+import { tavilyClient } from '../lib/tavilyClient';
 import { extractYouTubeVideoId } from './search';
 import { getDifficultyTier } from './documentationService';
 
@@ -187,6 +189,104 @@ export async function fetchVerifiedStepVideo(params: {
     videoUrl: primary.url,
     videos,
   };
+}
+
+/**
+ * MODULE 1: DYNAMIC VERIFIED VIDEO SOURCING PIPELINE
+ * Queries Tavily specifically for authentic YouTube educational lectures.
+ * Enforces zero-repetition against user_resource_history and eliminates placeholder mock IDs.
+ */
+export async function fetchUniqueStepVideo(
+  userId: string,
+  skillId: string,
+  stepNumber: number,
+  skillName: string,
+  stepTitle: string,
+  difficultyTier: string
+): Promise<{ videoId: string; videoTitle: string }> {
+  // 1. Fetch previously seen video IDs for this user
+  const historyRes = await db.query(
+    `SELECT resource_identifier FROM user_resource_history 
+     WHERE user_id = $1 AND (resource_type = 'youtube_video' OR resource_type = 'video_id')`,
+    [userId]
+  );
+  const seenVideoIds = new Set(historyRes.rows.map((r: any) => String(r.resource_identifier).trim()));
+
+  // 2. Query Tavily for authentic YouTube lecture tutorials
+  const query = `site:youtube.com/watch "${skillName}" "${stepTitle}" ${difficultyTier} full lecture tutorial`;
+  const searchRes = await tavilyClient.search(query, {
+    search_depth: 'advanced',
+    max_results: 8,
+  });
+
+  // 3. Extract YouTube ID using regex
+  const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+
+  let matchedVideo: { videoId: string; videoTitle: string } | null = null;
+
+  for (const result of searchRes.results || []) {
+    if (!result.url) continue;
+    const match = result.url.match(ytRegex);
+    if (match && match[1]) {
+      const id = match[1];
+      // Ensure not seen previously and not a blacklisted test ID
+      if (!seenVideoIds.has(id) && id !== 'dQw4w9WgXcQ') {
+        matchedVideo = {
+          videoId: id,
+          videoTitle: result.title || `${skillName} - ${stepTitle} Lecture`,
+        };
+        break;
+      }
+    }
+  }
+
+  // 4. Fallback search query if first attempt returned all seen videos
+  if (!matchedVideo) {
+    const broadQuery = `site:youtube.com/watch "${skillName}" ${stepTitle} walkthrough`;
+    const broadRes = await tavilyClient.search(broadQuery, { max_results: 6 });
+    for (const result of broadRes.results || []) {
+      if (!result.url) continue;
+      const match = result.url.match(ytRegex);
+      if (match && match[1] && !seenVideoIds.has(match[1]) && match[1] !== 'dQw4w9WgXcQ') {
+        matchedVideo = {
+          videoId: match[1],
+          videoTitle: result.title || `${skillName} Step ${stepNumber} Deep Dive`,
+        };
+        break;
+      }
+    }
+  }
+
+  // 4b. Final broader educational search
+  if (!matchedVideo) {
+    const tutQuery = `"${skillName}" "${stepTitle}" tutorial lecture video`;
+    const tutRes = await tavilyClient.search(tutQuery, { max_results: 6 });
+    for (const result of tutRes.results || []) {
+      if (!result.url) continue;
+      const match = result.url.match(ytRegex);
+      if (match && match[1] && !seenVideoIds.has(match[1]) && match[1] !== 'dQw4w9WgXcQ') {
+        matchedVideo = {
+          videoId: match[1],
+          videoTitle: result.title || `${skillName} Step ${stepNumber} Deep Dive`,
+        };
+        break;
+      }
+    }
+  }
+
+  if (!matchedVideo) {
+    throw new Error(`Unable to find a fresh, verified video lecture for ${skillName} - ${stepTitle}`);
+  }
+
+  // 5. Store in Anti-Repetition Vault
+  await db.query(
+    `INSERT INTO user_resource_history (user_id, skill_id, step_number, resource_type, resource_identifier)
+     VALUES ($1, $2, $3, 'youtube_video', $4)
+     ON CONFLICT (user_id, resource_identifier) DO NOTHING`,
+    [userId, skillId, stepNumber, matchedVideo.videoId]
+  );
+
+  return matchedVideo;
 }
 
 export default fetchVerifiedStepVideo;

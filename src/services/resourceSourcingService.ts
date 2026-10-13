@@ -3,6 +3,7 @@ import { groq } from '../lib/groqClient';
 import { db } from '../lib/db';
 import { extractYouTubeId } from '../lib/foundation';
 import { getDifficultyTier } from './documentationService';
+import { fetchUniqueStepVideo } from './videoService';
 
 export interface PedagogicalGuide {
   sectionsToRead: string[];
@@ -17,6 +18,7 @@ export interface EnrichedTopic {
   externalUrl: string;
   sourceTitle: string;
   sourceDomain: string;
+  coreObjective?: string;
   pedagogicalGuide: PedagogicalGuide;
 }
 
@@ -47,7 +49,7 @@ export async function searchYouTubeCandidates(
     for (const r of searchResult.results || []) {
       if (!r.url) continue;
       const vId = extractYouTubeId(r.url);
-      if (vId && !seenIds.has(vId)) {
+      if (vId && vId !== 'dQw4w9WgXcQ' && !seenIds.has(vId)) {
         seenIds.add(vId);
         candidates.push({
           id: vId,
@@ -58,24 +60,29 @@ export async function searchYouTubeCandidates(
     }
 
     if (candidates.length === 0) {
-      // Reliable fallback tutorial video IDs
-      candidates.push({
-        id: 'dQw4w9WgXcQ',
-        title: 'Foundational Video Guide',
-        url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+      // Broad secondary search without site filter
+      const broad = await tavilyClient.search(`${query} full lecture tutorial video`, {
+        search_depth: 'basic',
+        max_results: 8,
       });
+      for (const r of broad.results || []) {
+        if (!r.url) continue;
+        const vId = extractYouTubeId(r.url);
+        if (vId && vId !== 'dQw4w9WgXcQ' && !seenIds.has(vId)) {
+          seenIds.add(vId);
+          candidates.push({
+            id: vId,
+            title: r.title || 'Technical Lecture & Code Walkthrough',
+            url: `https://www.youtube.com/watch?v=${vId}`,
+          });
+        }
+      }
     }
 
-    return candidates;
+    return candidates.filter((c) => c.id !== 'dQw4w9WgXcQ');
   } catch (err) {
     console.warn('[resourceSourcingService] Error searching YouTube candidates:', err);
-    return [
-      {
-        id: 'dQw4w9WgXcQ',
-        title: 'Mastery Video Guide',
-        url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-      },
-    ];
+    return [];
   }
 }
 
@@ -141,19 +148,44 @@ export async function sourceStepContent(
   );
   const seenResources = new Set(historyRes.rows.map((r: any) => String(r.resource_identifier).trim()));
 
-  // 3. YouTube Video Deduplication Check
-  const videoSearchQuery = `${skillName} ${subGenre} "${stepTitle}" ${difficultyTier}`;
-  const candidateVideos = await searchYouTubeCandidates(videoSearchQuery);
-  const selectedVideo = candidateVideos.find((v) => !seenResources.has(v.id)) || candidateVideos[0];
+  // 3. YouTube Video Deduplication Check (Dynamic Verified Sourcing)
+  let selectedVideo: { id: string; title: string; url: string };
+  try {
+    const verifiedVideo = await fetchUniqueStepVideo(
+      userId,
+      skillId,
+      stepNumber,
+      skillName,
+      stepTitle,
+      difficultyTier
+    );
+    selectedVideo = {
+      id: verifiedVideo.videoId,
+      title: verifiedVideo.videoTitle,
+      url: `https://www.youtube.com/watch?v=${verifiedVideo.videoId}`,
+    };
+  } catch (uniqueErr) {
+    console.warn('[resourceSourcingService] fetchUniqueStepVideo fallback notice:', uniqueErr);
+    const videoSearchQuery = `${skillName} ${subGenre} "${stepTitle}" ${difficultyTier}`;
+    const candidateVideos = await searchYouTubeCandidates(videoSearchQuery);
+    const validCandidate =
+      candidateVideos.find((v) => !seenResources.has(v.id) && v.id !== 'dQw4w9WgXcQ') ||
+      candidateVideos.find((v) => v.id !== 'dQw4w9WgXcQ');
 
-  // Register video immediately in history
-  seenResources.add(selectedVideo.id);
-  await db.query(
-    `INSERT INTO user_resource_history (user_id, skill_id, step_number, resource_type, resource_identifier)
-     VALUES ($1, $2, $3, 'youtube_video', $4)
-     ON CONFLICT (user_id, resource_identifier) DO NOTHING`,
-    [userId, skillId, stepNumber, selectedVideo.id]
-  );
+    if (!validCandidate) {
+      throw new Error(`Unable to source verified educational video for ${skillName} - ${stepTitle}`);
+    }
+
+    selectedVideo = validCandidate;
+    seenResources.add(selectedVideo.id);
+
+    await db.query(
+      `INSERT INTO user_resource_history (user_id, skill_id, step_number, resource_type, resource_identifier)
+       VALUES ($1, $2, $3, 'youtube_video', $4)
+       ON CONFLICT (user_id, resource_identifier) DO NOTHING`,
+      [userId, skillId, stepNumber, selectedVideo.id]
+    );
+  }
 
   // 4. Sub-Topics Resolution
   let rawTopics: any[] = [];
@@ -279,6 +311,7 @@ Return strictly JSON:
       externalUrl: chosenUrl,
       sourceTitle: freshUrlCandidate?.title || 'Authoritative Technical Resource',
       sourceDomain,
+      coreObjective: topic.coreObjective || `Master the mechanical principles of ${topic.title}`,
       pedagogicalGuide,
     });
   }
