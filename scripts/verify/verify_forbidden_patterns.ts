@@ -46,9 +46,9 @@ const checks = [
     path: 'src/',
   },
   {
-    name: '8. --accept-data-loss in backend/frontend',
+    name: '8. Prisma accept data loss flag in backend/frontend',
     cwd: 'D:/JRMC/skillprax-backend',
-    pattern: '--accept-data-loss',
+    pattern: ['--', 'accept', '-data-loss'].join(''),
     path: '.',
   },
   {
