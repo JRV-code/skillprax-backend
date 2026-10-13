@@ -86,39 +86,53 @@ export function buildBalancedQuestions(raw: QuizQuestionRaw[]): StoredQuizQuesti
   });
 }
 
+// 12.1 ONE PURE SCORING FUNCTION (INTEGER MATH & FLOORED PERCENT)
+export function scoreAttempt(
+  questions: { id: string; correctOptionId: string; topicKey?: string | null; chapterKey?: string | null; acuId?: string | null }[],
+  answers: Record<string, string | undefined>,
+  passPercent: number = LEARNING_CONFIG.PASS_THRESHOLD_PERCENT
+) {
+  const totalCount = questions.length;
+  const results = questions.map((q) => ({
+    id: q.id,
+    topicKey: q.topicKey ?? q.chapterKey ?? null,
+    acuId: q.acuId ?? null,
+    correct: answers[q.id] === q.correctOptionId,
+  }));
+  const correctCount = results.filter((r) => r.correct).length;
+  const percent = totalCount === 0 ? 0 : Math.floor((correctCount * 100) / totalCount);
+  const passed = totalCount > 0 && correctCount * 100 >= passPercent * totalCount;
+  const byTopic = [...new Set(results.map((r) => r.topicKey ?? 'general'))].map((topicKey) => {
+    const rs = results.filter((r) => (r.topicKey ?? 'general') === topicKey);
+    const correct = rs.filter((r) => r.correct).length;
+    return { topicKey, correct, total: rs.length, percent: Math.floor((correct * 100) / rs.length) };
+  });
+  return { totalCount, correctCount, percent, passed, results, byTopic };
+}
+
 // 14.5 DETERMINISTIC GRADING
 export function gradeAttempt(
-  questions: { id: string; chapterKey: string; correctOptionId: string }[],
+  questions: { id: string; chapterKey: string; correctOptionId: string; topicKey?: string }[],
   answers: Record<string, string>,
   thresholdPercent: number = LEARNING_CONFIG.PASS_THRESHOLD_PERCENT
 ) {
   const total = questions.length; // from the DB, never from the request
   if (total === 0) throw new Error('Cannot grade an empty evaluation');
 
-  let correct = 0;
-  const per = new Map<string, { correct: number; total: number }>();
-
-  for (const q of questions) {
-    const ok = answers[q.id] === q.correctOptionId; // unanswered = wrong; unknown ids ignored
-    if (ok) correct++;
-    const c = per.get(q.chapterKey) ?? { correct: 0, total: 0 };
-    c.total++;
-    if (ok) c.correct++;
-    per.set(q.chapterKey, c);
-  }
-
-  const requiredCorrect = Math.floor((thresholdPercent * total + 99) / 100); // integer ceil, no float error
+  const scored = scoreAttempt(questions, answers, thresholdPercent);
+  const requiredCorrect = Math.ceil((thresholdPercent * total) / 100);
 
   return {
-    total,
-    correct,
-    percent: Math.round((correct * 100) / total),
+    total: scored.totalCount,
+    correct: scored.correctCount,
+    percent: scored.percent,
     requiredCorrect,
-    passed: correct >= requiredCorrect, // compares counts, never a rounded percent
-    chapters: [...per].map(([chapterKey, v]) => ({
-      chapterKey,
-      ...v,
-      percent: Math.round((v.correct * 100) / v.total),
+    passed: scored.passed,
+    chapters: scored.byTopic.map((t) => ({
+      chapterKey: t.topicKey,
+      correct: t.correct,
+      total: t.total,
+      percent: t.percent,
     })),
   };
 }

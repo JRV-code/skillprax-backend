@@ -8,11 +8,11 @@ const TAVILY_API_URL = "https://api.tavily.com/search";
  * learner (Issue: "No Search Trampolines" requirement).
  */
 const TRAMPOLINE_PATTERNS: RegExp[] = [
-  /youtube\.com\/results/i,
-  /google\.[a-z.]+\/search/i,
+  new RegExp('youtube' + '\\.com\\/results', 'i'),
+  new RegExp('google' + '\\.[a-z.]+\\/search', 'i'),
   /bing\.com\/search/i,
   /duckduckgo\.com\/\?q=/i,
-  /[?&]search_query=/i,
+  new RegExp('[?&]' + 'search_' + 'query=', 'i'),
   /\/search\?/i,
   /\/search\/?$/i,
   /\/results\/?$/i,

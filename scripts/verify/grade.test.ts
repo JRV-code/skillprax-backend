@@ -135,19 +135,57 @@ console.log(`\nSpecific Verification:`);
 console.log(`7/10: score=${check7of10.percent}%, passed=${check7of10.passed} (expected: true)`);
 console.log(`6/10: score=${check6of10.percent}%, passed=${check6of10.passed} (expected: false)`);
 
-// 8/11 passes (73%), 7/11 fails (64%)
-const questions11 = Array.from({ length: 11 }, (_, i) => ({
+// T7 Unit Table for scoreAttempt
+console.log('\n--- T7 scoreAttempt Canonical Unit Verification ---');
+import { scoreAttempt } from '../../src/services/learning/quiz';
+
+const q23 = Array.from({ length: 23 }, (_, i) => ({
   id: `q-${i + 1}`,
-  chapterKey: 'c1',
-  correctOptionId: `c-${i}`,
+  correctOptionId: `c-${i + 1}`,
+  topicKey: `t${(i % 3) + 1}`,
+  acuId: `acu-${i + 1}`,
 }));
-const check8of11 = gradeAttempt(questions11, Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`q-${i + 1}`, `c-${i}`])), 70);
-const check7of11 = gradeAttempt(questions11, Object.fromEntries(Array.from({ length: 7 }, (_, i) => [`q-${i + 1}`, `c-${i}`])), 70);
+const answers16of23 = Object.fromEntries(
+  Array.from({ length: 16 }, (_, i) => [`q-${i + 1}`, `c-${i + 1}`])
+);
+const scored16of23 = scoreAttempt(q23, answers16of23, 70);
+console.log(`16/23: score=${scored16of23.percent}%, passed=${scored16of23.passed} (expected: 69%, false)`);
 
-console.log(`8/11: score=${check8of11.percent}%, passed=${check8of11.passed} (expected: true)`);
-console.log(`7/11: score=${check7of11.percent}%, passed=${check7of11.passed} (expected: false)`);
+const q10 = Array.from({ length: 10 }, (_, i) => ({
+  id: `q-${i + 1}`,
+  correctOptionId: `c-${i + 1}`,
+  topicKey: `t1`,
+  acuId: `acu-1`,
+}));
+const scored7of10 = scoreAttempt(q10, Object.fromEntries(Array.from({ length: 7 }, (_, i) => [`q-${i + 1}`, `c-${i + 1}`])), 70);
+const scored6of10 = scoreAttempt(q10, Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`q-${i + 1}`, `c-${i + 1}`])), 70);
+const scored0of10 = scoreAttempt(q10, {}, 70);
+const scored10of10 = scoreAttempt(q10, Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`q-${i + 1}`, `c-${i + 1}`])), 70);
 
-if (!check7of10.passed || check6of10.passed || !check8of11.passed || check7of11.passed) {
+console.log(`7/10: score=${scored7of10.percent}%, passed=${scored7of10.passed} (expected: 70%, true)`);
+console.log(`6/10: score=${scored6of10.percent}%, passed=${scored6of10.passed} (expected: 60%, false)`);
+console.log(`0/10: score=${scored0of10.percent}%, passed=${scored0of10.passed} (expected: 0%, false)`);
+console.log(`10/10: score=${scored10of10.percent}%, passed=${scored10of10.passed} (expected: 100%, true)`);
+
+// 5-question targeted retest
+const q5 = Array.from({ length: 5 }, (_, i) => ({
+  id: `q-retest-${i + 1}`,
+  correctOptionId: `c-retest-${i + 1}`,
+  topicKey: `t-weak`,
+  acuId: `acu-weak`,
+}));
+const scored4of5 = scoreAttempt(q5, Object.fromEntries(Array.from({ length: 4 }, (_, i) => [`q-retest-${i + 1}`, `c-retest-${i + 1}`])), 70);
+console.log(`4/5 retest: score=${scored4of5.percent}%, passed=${scored4of5.passed}, totalCount=${scored4of5.totalCount} (expected: 80%, true, 5)`);
+
+if (
+  scored16of23.percent !== 69 || scored16of23.passed !== false ||
+  scored7of10.percent !== 70 || scored7of10.passed !== true ||
+  scored6of10.percent !== 60 || scored6of10.passed !== false ||
+  scored0of10.percent !== 0 || scored0of10.passed !== false ||
+  scored10of10.percent !== 100 || scored10of10.passed !== true ||
+  scored4of5.totalCount !== 5 || scored4of5.percent !== 80 || scored4of5.passed !== true
+) {
+  console.error('FAILED T7 scoreAttempt Canonical Unit Verification');
   allPassed = false;
 }
 

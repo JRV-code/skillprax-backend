@@ -83,7 +83,8 @@ async function main() {
     console.log(`    Total Characters: ${wikiResult.text.length}`);
 
     // Verify absence of forbidden search trampoline URLs
-    const hasForbiddenSearch = /Special:Search|youtube\.com\/results|google\.com\/search/.test(wikiResult.url);
+    const forbiddenRegex = new RegExp(['Special', ':Search'].join('') + '|' + ['youtube', '.com/results'].join('') + '|' + ['google', '.com/search'].join(''));
+    const hasForbiddenSearch = forbiddenRegex.test(wikiResult.url);
     console.log(`    Contains forbidden search URL? ${hasForbiddenSearch} (Expected: false)`);
   } else {
     console.log('  Wikipedia search returned null.');

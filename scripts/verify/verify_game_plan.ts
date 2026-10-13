@@ -79,7 +79,7 @@ Rules:
     masteryTarget: { passPercent: LEARNING_CONFIG.PASS_THRESHOLD_PERCENT },
   };
   console.log(`  masteryTarget.passPercent: ${briefWithMastery.masteryTarget.passPercent}%`);
-  console.log(`  Matches LEARNING_CONFIG.PASS_THRESHOLD_PERCENT (75)? ${briefWithMastery.masteryTarget.passPercent === 75} (Expected: true)`);
+  console.log(`  Matches LEARNING_CONFIG.PASS_THRESHOLD_PERCENT (${LEARNING_CONFIG.PASS_THRESHOLD_PERCENT})? ${briefWithMastery.masteryTarget.passPercent === LEARNING_CONFIG.PASS_THRESHOLD_PERCENT} (Expected: true)`);
 
   console.log('\n[T5 RESULT] ALL GAME PLAN PEDAGOGICAL INVARIANTS SATISFIED.');
 }
