@@ -1,488 +1,355 @@
-import { FastifyInstance, FastifyPluginAsync } from "fastify";
-import prisma from "../lib/prisma";
-import { callGroqWithFallback } from "../lib/ai/pipeline";
-import { searchTavilyRemediation, SearchResultItem } from "../services/search";
-import { synthesizeTargetedRemediationWithTavily } from "../services/ai";
+import { FastifyInstance, FastifyPluginAsync } from 'fastify';
+import prisma from '../lib/prisma';
+import { LEARNING_CONFIG } from '../config/learning';
+import {
+  callGroqJson,
+  searchTavily,
+  extractYouTubeId,
+  normalizeUrl,
+  isSafePublicUrl,
+  verifyLink,
+  checkYouTube,
+  assertNoUrls,
+} from '../lib/foundation';
 
-// Fisher-Yates array shuffle helper
-function shuffleArray<T>(array: T[]): T[] {
-  const arr = [...array];
-  for (let i = arr.length - 1; i > 0; i--) {
+function shuffle<T>(a: T[]): T[] {
+  const r = [...a];
+  for (let i = r.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+    [r[i], r[j]] = [r[j], r[i]];
   }
-  return arr;
+  return r;
 }
 
-function safeJsonParse(str: any, fallback: any = []): any {
-  if (typeof str !== "string") return str || fallback;
-  try {
-    return JSON.parse(str);
-  } catch (_) {
-    return fallback;
-  }
+export function buildBalancedQuestions(raw: {
+  acuId: string;
+  question: string;
+  correctAnswer: string;
+  distractors: string[];
+  explanation: string;
+}[]) {
+  const targets = shuffle(raw.map((_, i) => i % 4)); // as even as possible across A-D
+  return raw.map((q, i) => {
+    const options = shuffle(q.distractors).slice(0, 3).map((text) => ({ text, isCorrect: false }));
+    options.splice(targets[i], 0, { text: q.correctAnswer, isCorrect: true });
+    return {
+      ...q,
+      options: options.map((o, position) => ({
+        id: ['A', 'B', 'C', 'D'][position],
+        text: o.text,
+        isCorrect: o.isCorrect,
+        position,
+      })),
+      correctOptionId: ['A', 'B', 'C', 'D'][targets[i]],
+    };
+  });
+}
+
+function wordsCount(str: string): number {
+  return str.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function validateOptionLengths(options: string[]): boolean {
+  if (options.length !== 4) return false;
+  const counts = options.map(wordsCount);
+  const avg = counts.reduce((a, b) => a + b, 0) / 4;
+  return counts.every((c) => Math.abs(c - avg) <= Math.max(1, avg * 0.15));
 }
 
 const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
-  // Common handler for quiz generation
+  // POST /api/steps/:stepId/level-up-quiz — Grounded Socratic Quiz Generation
   const generateStepQuizHandler = async (req: any, reply: any) => {
     const { stepId } = req.params as { stepId: string };
-    const { aiEngine, retestMode, focusAcus, priorityAcus, perfectionMode, failedQuestionIds } = (req.body || {}) as {
-      aiEngine?: string;
-      retestMode?: boolean;
-      focusAcus?: string[];
-      priorityAcus?: string[];
+    const { perfectionMode, focusAcus } = (req.body || {}) as {
       perfectionMode?: boolean;
-      failedQuestionIds?: string[];
+      focusAcus?: string[];
     };
 
-    const targetFocusAcus = focusAcus || priorityAcus || [];
-    const isPerfection = Boolean(perfectionMode);
-
     try {
-      const step = await prisma.skillStep.findUnique({
+      const step: any = await prisma.skillStep.findUnique({
         where: { id: stepId },
-        include: { workspace: true },
+        include: { workspace: true, contentDocument: true },
       });
 
-      if (!step) return reply.status(404).send({ error: 'Step not found' });
-
-      let config = await prisma.adminConfig.findUnique({ where: { id: "global" } });
-      if (!config) config = await prisma.adminConfig.findFirst();
-      const groqKey = config?.groqApiKey || config?.groqKey || process.env.GROQ_API_KEY;
-
-      if (!groqKey) return reply.status(500).send({ error: 'Inference key missing' });
-
-      const acusRaw = step.assessableUnits;
-      const acus = Array.isArray(acusRaw) ? acusRaw : (typeof acusRaw === 'string' ? JSON.parse(acusRaw || '[]') : []);
-
-      // Dynamic question scaling: 8 to 12 scenario questions in standard mode, 2 to 4 in perfection mode
-      const dynamicQuestionCount = isPerfection
-        ? Math.min(4, Math.max(2, targetFocusAcus.length || 3))
-        : Math.min(12, Math.max(8, Math.round((acus.length * 2.5) || 8)));
-
-      const entropySeed = Math.random().toString(36).substring(7);
-
-      // Mode-specific directives
-      let modeDirective = '';
-      if (isPerfection) {
-        modeDirective = `
-TARGETED PERFECTION DRILL (100% MASTERY TARGET):
-- Generate exactly ${dynamicQuestionCount} high-precision scenario questions.
-- Focus exclusively on the concepts missed in prior attempt: ${JSON.stringify(targetFocusAcus)}.
-- Verify that previous misconception traps have been completely resolved.`;
-      } else if (retestMode && Array.isArray(targetFocusAcus) && targetFocusAcus.length > 0) {
-        const focusCount = Math.max(1, Math.round(dynamicQuestionCount * 0.7));
-        const retentionCount = dynamicQuestionCount - focusCount;
-        modeDirective = `
-ADAPTIVE RETEST MODE ACTIVE:
-- Generate exactly ${focusCount} questions (70%) targeting these DEFICIENT ACU IDs/topics: ${JSON.stringify(targetFocusAcus)}.
-- Generate exactly ${retentionCount} questions (30%) as retention checks on OTHER ACUs not in the focus list.
-- All questions MUST be completely novel — never reuse scenarios or phrasing from prior evaluations.
-- Prioritize testing the specific misconceptions that caused prior failure.`;
+      if (!step) {
+        return reply.status(404).send({ error: 'Step not found' });
       }
 
-      const resourcesRaw = step.resources;
-      const stepResources: any[] = Array.isArray(resourcesRaw) ? resourcesRaw : safeJsonParse(resourcesRaw as string, []);
+      // F1: Grounding Text verification
+      const doc = step.contentDocument;
+      if (!doc) {
+        return reply.status(409).send({ error: 'Build the curriculum first' });
+      }
 
-      // Format the curated curriculum that the student actually studied
-      const resourceContext = stepResources.length > 0
-        ? stepResources.map((r: any) => `• [${r.badge || r.type || 'Resource'}] "${r.title}": ${r.studyGuidance || r.takeaway || r.subtitle || 'Assigned study material'}`).join('\n')
-        : 'Foundational first-principles for this domain.';
+      let groundingText = (doc.markdown || '').trim();
+      if (!groundingText) {
+        const stepResources: any[] = Array.isArray(step.resources) ? step.resources : [];
+        groundingText = stepResources
+          .map((r: any) => `[Topic: ${r.topicKey || 'Core'}] ${r.title}: ${r.snippet || r.focusNote || ''}`)
+          .join('\n\n')
+          .trim();
+      }
 
-      const systemPrompt = `You are the SKILL-TRACK Pedagogy & Curriculum Engine (v2.6) Socratic Evaluation Architect.
-Milestone: "Step ${step.stepIndex} of ${step.workspace?.totalPlannedSteps || 5} - ${step.title}".
-Entropy seed: ${entropySeed}. Ensure questions are 100% unique, scenario-focused, and never repetitive.
+      if (groundingText.length < LEARNING_CONFIG.MIN_GROUNDED_TEXT_CHARS) {
+        return reply.status(409).send({ error: 'Not enough source text — rebuild the curriculum' });
+      }
 
-ASSIGNED STUDY CURRICULUM (Researched via Tavily & Curated for this Step):
-${resourceContext}
+      const acusRaw = step.assessableUnits;
+      const acus: any[] = Array.isArray(acusRaw) ? acusRaw : [];
+      const isPerfection = Boolean(perfectionMode);
 
-ASSESSABLE COMPETENCY UNITS (ACUs to Test):
-${acus.map((a: any) => `- [ID: ${a.id || a.acuId || 'acu-1'}] ${a.label || a.title || 'ACU'}: ${a.description || 'Description'}`).join('\n')}
+      const targetQuestionCount = isPerfection
+        ? Math.min(4, Math.max(2, (focusAcus || []).length || 3))
+        : Math.min(
+            LEARNING_CONFIG.QUIZ_MAX_QUESTIONS,
+            Math.max(LEARNING_CONFIG.QUIZ_MIN_QUESTIONS, Math.round(acus.length * 2.5) || 8)
+          );
 
-${modeDirective}
-
-CRITICAL GROUNDING DIRECTIVES:
-1. Generate EXACTLY ${dynamicQuestionCount} scenario-grounded challenge questions.
-2. Every scenario challenge MUST directly assess concepts, principles, takeaways, or edge cases from the ASSIGNED STUDY CURRICULUM and the ACUs.
-3. EQUAL LENGTH RULE (MANDATORY): All 4 choices (A, B, C, D) for EVERY question MUST have strictly comparable sentence length and character counts (within ±10%). The correct answer must NOT be conspicuously longer or more detailed than the distractors.
-4. Place the correct option at a completely RANDOM position (A, B, C, or D). DO NOT always place the correct answer as option A.
-5. Provide specific diagnostic explanations for EVERY option (A, B, C, D) detailing why that option is correct or what specific misconception trap it represents.
-
-Output strictly valid JSON with no markdown formatting:
+      const quizSystem = `You are a Principal Psychometrician & Socratic Evaluation Architect.
+Generate scenario-grounded challenge questions based EXCLUSIVELY on the provided Grounding Text.
+Every question must test a principle, trap, or edge case present in the text.
+Rules:
+- Generate ${targetQuestionCount} questions.
+- Every question MUST have:
+  * "acuId": The ACU tested.
+  * "question": The scenario challenge prompt.
+  * "correctAnswer": The accurate technical solution.
+  * "distractors": An array of EXACTLY 3 misconceptions discussed in the text.
+  * "explanation": Why correctAnswer is right and why the distractors fail.
+- EQUAL LENGTH RULE (MANDATORY): All 4 choices (correctAnswer + 3 distractors) MUST be comparable in length (within ±10% word count, or differing by at most 1 word).
+- STRICT: NO URLs anywhere in the output.
+Output JSON ONLY:
 {
   "questions": [
     {
-      "id": "q1",
       "acuId": "${acus[0]?.id || 'acu-1'}",
-      "scenario": "A scenario challenge grounded strictly in the assigned study curriculum...",
-      "rawCorrectText": "The exact correct technical explanation",
-      "correctExplanation": "First-principles verification based on assigned resources.",
-      "rawDistractors": [
-        { "text": "Balanced length wrong option 1", "whyWrong": "Specific misconception trap analysis..." },
-        { "text": "Balanced length wrong option 2", "whyWrong": "Specific misconception trap analysis..." },
-        { "text": "Balanced length wrong option 3", "whyWrong": "Specific misconception trap analysis..." }
-      ]
+      "question": "Scenario prompt...",
+      "correctAnswer": "Accurate option text",
+      "distractors": ["Wrong misconception 1", "Wrong misconception 2", "Wrong misconception 3"],
+      "explanation": "Diagnostic reasoning..."
     }
   ]
 }`;
 
-      const aiResponse = await callGroqWithFallback(
-        [{ role: 'system', content: systemPrompt }, { role: 'user', content: `Generate ${dynamicQuestionCount} Socratic questions for ${step.title}` }],
-        { apiKey: groqKey, jsonMode: true, model: aiEngine || step.workspace?.aiEngine || 'llama-3.3-70b-versatile', temperature: 0.85 }
-      );
+      const quizUser = `Milestone: "${step.title}".
+ACUs: ${JSON.stringify(acus)}.
+${isPerfection ? `Focus ACUs Missed in Prior Attempt: ${JSON.stringify(focusAcus)}.` : ''}
 
-      let cleaned = aiResponse.content.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '');
-      const parsed = JSON.parse(cleaned);
+GROUNDING TEXT:
+${groundingText.slice(0, 8000)}`;
 
-      // Randomize option order (A, B, C, D) so correct answer position is completely random
-      const keys = ['A', 'B', 'C', 'D'];
-      const finalizedBlueprint = (parsed.questions || []).map((q: any, qIdx: number) => {
-        const optionPool = [
-          { text: q.rawCorrectText, isCorrect: true, whyWrong: null, explanation: q.correctExplanation || 'Correct technical explanation based on step resources.' },
-          ...(q.rawDistractors || []).map((d: any) => ({ text: d.text || d, isCorrect: false, whyWrong: d.whyWrong || 'Incorrect option', explanation: d.whyWrong || 'Incorrect option' })),
-        ];
-
-        const shuffled = shuffleArray(optionPool);
-        const options: Array<{ id: string; text: string; explanation?: string }> = [];
-        let correctOptionId = 'A';
-        const distractorExplanations: Record<string, string> = {};
-        const optionExplanations: Record<string, string> = {};
-
-        shuffled.forEach((opt, idx) => {
-          const key = keys[idx];
-          options.push({ id: key, text: opt.text });
-          optionExplanations[key] = opt.explanation || (opt.isCorrect ? 'Correct explanation' : 'Incorrect option');
-          if (opt.isCorrect) {
-            correctOptionId = key;
-          } else if (opt.whyWrong) {
-            distractorExplanations[key] = opt.whyWrong;
-          }
-        });
-
-        return {
-          id: `q_${qIdx + 1}_${entropySeed}`,
-          acuId: q.acuId || null,
-          scenario: q.scenario || q.question || 'Evaluation Scenario',
-          options,
-          correctOptionId,
-          distractorExplanations,
-          optionExplanations,
-        };
+      const generated = await callGroqJson<{ questions: any[] }>(quizSystem, quizUser, {
+        validate: (v: any) =>
+          Array.isArray(v?.questions) &&
+          v.questions.length >= (isPerfection ? 2 : LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) &&
+          v.questions.every(
+            (q: any) =>
+              typeof q.question === 'string' &&
+              typeof q.correctAnswer === 'string' &&
+              Array.isArray(q.distractors) &&
+              q.distractors.length === 3
+          ),
+        maxTokens: 3500,
+        temperature: 0.4,
       });
+      assertNoUrls(generated, 'QuizGeneration');
+
+      // Filter and validate length
+      const validQuestions = (generated.questions || []).filter((q: any) => {
+        const allOpts = [q.correctAnswer, ...q.distractors];
+        const uniqueOpts = new Set(allOpts.map((s: string) => s.trim().toLowerCase()));
+        return uniqueOpts.size === 4;
+      });
+
+      if (!isPerfection && validQuestions.length < LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) {
+        return reply.status(500).send({ error: 'Quiz generation failed strict question count standards' });
+      }
+
+      // F4: Server-side balanced placement across A-D
+      const balancedQuestions = buildBalancedQuestions(validQuestions);
 
       await prisma.skillStep.update({
         where: { id: step.id },
         data: {
-          quizBlueprint: finalizedBlueprint as any,
-          questionCount: finalizedBlueprint.length,
+          quizBlueprint: balancedQuestions as any,
+          questionCount: balancedQuestions.length,
         },
       });
 
       const attempt = await prisma.quizAttempt.create({
-        data: { stepId: step.id, score: 0, passed: false, questionCount: finalizedBlueprint.length, status: "in_progress", questions: finalizedBlueprint as any },
+        data: {
+          stepId: step.id,
+          score: 0,
+          passed: false,
+          questionCount: balancedQuestions.length,
+          status: 'in_progress',
+          questions: balancedQuestions as any,
+        },
       });
 
-      const sanitizedQuestions = finalizedBlueprint.map((q: any) => ({
-        id: q.id,
-        scenario: q.scenario,
-        prompt: q.scenario || q.prompt || q.question || 'Scenario Evaluation',
-        options: q.options,
-        acuId: q.acuId || null,
+      // Sanitized client questions: NEVER expose isCorrect or correctOptionId
+      const sanitizedQuestions = balancedQuestions.map((q) => ({
+        id: q.question, // question prompt
+        prompt: q.question,
+        acuId: q.acuId,
+        options: q.options.map((o) => ({
+          id: o.id,
+          text: o.text,
+          position: o.position,
+        })),
       }));
 
       return reply.send({
         attemptId: attempt.id,
         questions: sanitizedQuestions,
         questionCount: sanitizedQuestions.length,
-        passingThreshold: 0.70,
+        passingThreshold: LEARNING_CONFIG.PASS_THRESHOLD_PERCENT,
         isPerfectionMode: isPerfection,
       });
-    } catch (err) {
-      fastify.log.error(err, '[QuizGeneration] Failed');
-      return reply.status(500).send({ error: 'Quiz generation failed' });
+    } catch (err: any) {
+      fastify.log.error(err, '[LevelUpQuiz] Failed');
+      return reply.status(500).send({ error: err.message || 'Quiz generation failed' });
     }
   };
 
-  // POST /api/steps/:stepId/prompt-quiz
-  fastify.post('/api/steps/:stepId/prompt-quiz', generateStepQuizHandler);
-  // POST /api/steps/:stepId/level-up-quiz
   fastify.post('/api/steps/:stepId/level-up-quiz', generateStepQuizHandler);
+  fastify.post('/api/steps/:stepId/prompt-quiz', generateStepQuizHandler);
+  fastify.post('/api/quizzes/generate/:stepId', generateStepQuizHandler);
 
-  // POST /api/quiz/evaluate — Strict Socratic Quiz Grading Endpoint (>= 75% threshold)
-  const evaluateQuizHandler = async (req: any, reply: any) => {
-    const { questions, answers, stepId, userId } = (req.body || {}) as {
-      questions?: Array<{
-        id?: string;
-        question: string;
-        options: string[] | Array<{ id: string; text: string }>;
-        correctOptionIndex?: number;
-        correctOptionId?: string;
-        explanation?: string;
-      }>;
-      answers?: any;
-      stepId?: string;
-      userId?: string;
-    };
-
-    let targetQuestions = questions || [];
-
-    if ((!targetQuestions || targetQuestions.length === 0) && stepId) {
-      const step = await prisma.skillStep.findUnique({
-        where: { id: stepId },
-        include: { workspace: true },
-      });
-      if (step) {
-        const raw = step.quizBlueprint;
-        targetQuestions = Array.isArray(raw) ? raw : JSON.parse((raw as string) || '[]');
-      }
-    }
-
-    if (!targetQuestions || targetQuestions.length === 0) {
-      return reply.status(400).send({ error: 'No questions provided for evaluation.' });
-    }
-
-    let correctCount = 0;
-    const questionBreakdown = targetQuestions.map((q: any, idx: number) => {
-      let userSelected: any = undefined;
-      if (Array.isArray(answers)) {
-        userSelected = answers[idx];
-      } else if (typeof answers === 'object' && answers !== null) {
-        userSelected = answers[idx] ?? (q.id ? answers[q.id] : undefined);
-      }
-
-      const correctIdx: number = typeof q.correctOptionIndex === 'number'
-        ? q.correctOptionIndex
-        : (q.correctOptionId ? ['A', 'B', 'C', 'D'].indexOf(String(q.correctOptionId).toUpperCase()) : 0);
-
-      const optionLabels = ['A', 'B', 'C', 'D'];
-      const correctLabel = optionLabels[correctIdx] || q.correctOptionId || 'A';
-
-      let isCorrect = false;
-      let userIdx: number = -1;
-      if (typeof userSelected === 'number') {
-        userIdx = userSelected;
-        isCorrect = userSelected === correctIdx;
-      } else if (typeof userSelected === 'string') {
-        const normalized = userSelected.toUpperCase();
-        userIdx = optionLabels.indexOf(normalized);
-        isCorrect = normalized === correctLabel || userIdx === correctIdx;
-      }
-
-      if (isCorrect) correctCount++;
-
-      const optionsList = Array.isArray(q.options)
-        ? q.options.map((opt: any) => typeof opt === 'string' ? opt : opt.text)
-        : [];
-
-      return {
-        questionIndex: idx,
-        question: q.question || q.scenario,
-        options: optionsList,
-        userSelected: userSelected !== undefined ? userSelected : null,
-        userSelectedIndex: userIdx >= 0 ? userIdx : null,
-        correctOptionIndex: correctIdx,
-        correctOptionLabel: correctLabel,
-        isCorrect,
-        explanation: q.explanation || (q.distractorExplanations ? q.distractorExplanations[correctLabel] : 'Validated comprehension.'),
-      };
-    });
-
-    const totalQuestions = targetQuestions.length;
-    const score = Math.round((correctCount / totalQuestions) * 100);
-    const passed = score >= 75;
-
-    if (stepId) {
-      try {
-        await prisma.skillStep.update({
-          where: { id: stepId },
-          data: { status: passed ? 'PASSED' : 'FAILED_REMEDIATION' },
-        });
-
-        if (passed) {
-          const step = await prisma.skillStep.findUnique({
-            where: { id: stepId },
-            include: { workspace: true },
-          });
-          if (step?.workspaceId) {
-            const allSteps = await prisma.skillStep.findMany({
-              where: { workspaceId: step.workspaceId },
-              orderBy: { stepIndex: 'asc' },
-            });
-            const next = allSteps.find(s => s.stepIndex === step.stepIndex + 1);
-            if (next && (next.status === 'LOCKED' || next.status === 'IN_PROGRESS')) {
-              await prisma.skillStep.update({
-                where: { id: next.id },
-                data: { status: 'STUDY_UNGENERATED' },
-              });
-            }
-          }
-        }
-      } catch (_) {}
-    }
-
-    return reply.send({
-      score,
-      passed,
-      passingThreshold: 75,
-      correctCount,
-      totalQuestions,
-      questionBreakdown,
-    });
-  };
-
-  fastify.post('/api/quiz/evaluate', evaluateQuizHandler);
-  fastify.post('/api/quizzes/evaluate', evaluateQuizHandler);
-
-  // POST /api/steps/:stepId/submit-quiz (Evaluation route - 70% Mastery Gate)
+  // POST /api/steps/:stepId/submit-quiz — Deterministic Server-Side Grading
   fastify.post('/api/steps/:stepId/submit-quiz', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
-    const { attemptId, answers } = (req.body || {}) as { attemptId?: string; answers: any };
+    const { attemptId, answers } = (req.body || {}) as {
+      attemptId?: string;
+      answers: Record<string, string> | Array<{ questionId: string; selectedOptionId: string }>;
+    };
 
     try {
-      const step = await prisma.skillStep.findUnique({
+      const step: any = await prisma.skillStep.findUnique({
         where: { id: stepId },
-        include: { workspace: true },
+        include: { workspace: true, contentDocument: true },
       });
-      if (!step) return reply.status(404).send({ error: 'Step not found' });
 
-      let targetAttemptId = attemptId;
-      if (!targetAttemptId) {
-        const latestAttempt = await prisma.quizAttempt.findFirst({
-          where: { stepId: step.id },
-          orderBy: { createdAt: 'desc' },
-        });
-        targetAttemptId = latestAttempt?.id;
+      if (!step) {
+        return reply.status(404).send({ error: 'Step not found' });
       }
 
       const blueprintRaw = step.quizBlueprint;
-      const blueprint = Array.isArray(blueprintRaw) ? blueprintRaw : JSON.parse((blueprintRaw as string) || '[]');
+      const blueprint: any[] = Array.isArray(blueprintRaw) ? blueprintRaw : [];
 
+      if (blueprint.length === 0) {
+        return reply.status(400).send({ error: 'No active quiz blueprint found for this step.' });
+      }
+
+      // Normalize answers object: { [questionPromptOrId]: chosenOptionId }
+      const answersMap: Record<string, string> = {};
+      if (Array.isArray(answers)) {
+        answers.forEach((a) => {
+          if (a?.questionId) answersMap[a.questionId] = String(a.selectedOptionId).toUpperCase();
+        });
+      } else if (typeof answers === 'object' && answers !== null) {
+        Object.entries(answers).forEach(([k, v]) => {
+          answersMap[k] = String(v).toUpperCase();
+        });
+      }
+
+      // F6: Deterministic grading strictly on the server
       let correctCount = 0;
-      const normalizedAnswers = Array.isArray(answers) ? answers : (
-        typeof answers === 'object' && answers !== null ? Object.entries(answers).map(([questionId, selectedOptionId]) => ({ questionId, selectedOptionId })) : []
-      );
+      const failedAcus = new Set<string>();
+      const breakdown = blueprint.map((q: any) => {
+        const chosenOptionId = answersMap[q.question] || answersMap[q.id] || null;
+        const isCorrect = chosenOptionId === q.correctOptionId;
+        if (isCorrect) {
+          correctCount++;
+        } else if (q.acuId) {
+          failedAcus.add(q.acuId);
+        }
 
-      const results = blueprint.map((q: any) => {
-        const userAns = normalizedAnswers.find((a: any) => String(a.questionId) === String(q.id));
-        const chosenOptionId = userAns ? String(userAns.selectedOptionId || userAns.selectedOption).toUpperCase() : null;
-        const correctOptionId = String(q.correctOptionId).toUpperCase();
-        const isCorrect = chosenOptionId === correctOptionId;
-
-        if (isCorrect) correctCount++;
-
-        // Resolve option text for diagnostic enrichment
-        const chosenOptionText = chosenOptionId && Array.isArray(q.options)
-          ? q.options.find((o: any) => String(o.id).toUpperCase() === chosenOptionId)?.text || `Option ${chosenOptionId}`
-          : null;
-        const correctOptionText = Array.isArray(q.options)
-          ? q.options.find((o: any) => String(o.id).toUpperCase() === correctOptionId)?.text || `Option ${correctOptionId}`
-          : `Option ${correctOptionId}`;
+        const chosenOption = q.options?.find((o: any) => o.id === chosenOptionId);
+        const correctOption = q.options?.find((o: any) => o.id === q.correctOptionId);
 
         return {
-          questionId: q.id,
-          scenario: q.scenario,
+          question: q.question,
+          acuId: q.acuId,
           chosenOptionId,
-          correctOptionId,
-          chosenOptionText,
-          correctOptionText,
+          correctOptionId: q.correctOptionId,
+          chosenOptionText: chosenOption?.text || null,
+          correctOptionText: correctOption?.text || null,
           isCorrect,
-          whyWrong: !isCorrect && chosenOptionId ? q.distractorExplanations?.[chosenOptionId] || 'Fails scenario constraints.' : null,
-          acuId: q.acuId || null,
+          explanation: q.explanation || 'Comprehension analysis.',
         };
       });
 
-      const total = Math.max(blueprint.length, 1);
-      const score = Math.round((correctCount / total) * 100);
+      const total = blueprint.length;
+      const percent = Math.round((correctCount / total) * 100);
+      const passed = percent >= LEARNING_CONFIG.PASS_THRESHOLD_PERCENT;
 
-      // 75% STRICT SOCRATIC MASTERY THRESHOLD
-      const passed = score >= 75;
+      // Check if previously passed to grant XP and advance unlock ONLY ONCE (F7)
+      const priorPassed = await prisma.quizAttempt.findFirst({
+        where: { stepId: step.id, passed: true },
+      });
+      const isFirstTransitionToPassed = passed && !priorPassed;
 
+      // Update attempt in DB
+      let targetAttemptId = attemptId;
       if (targetAttemptId) {
-        await prisma.$transaction([
-          prisma.quizAttempt.update({
-            where: { id: targetAttemptId },
-            data: { score, scorePercent: score, correctCount, passed, status: "completed", results: results as any, userAnswers: normalizedAnswers as any, completedAt: new Date() },
-          }),
-          prisma.skillStep.update({
-            where: { id: step.id },
-            data: { status: passed ? 'PASSED' : 'FAILED_REMEDIATION' },
-          }),
-        ]);
-      } else {
-        await prisma.skillStep.update({
-          where: { id: step.id },
-          data: { status: passed ? 'PASSED' : 'FAILED_REMEDIATION' },
-        });
-      }
-
-      // On failure or score < 100%: isolate weak ACUs for targeted review / perfection mode
-      let diagnosticPrescription = null;
-      if (!passed || score < 100) {
         try {
-          const acusRaw = step.assessableUnits;
-          const acus: any[] = Array.isArray(acusRaw)
-            ? acusRaw
-            : typeof acusRaw === 'string'
-              ? JSON.parse(acusRaw || '[]')
-              : [];
-
-          const failedItems = results
-            .filter((r: any) => !r.isCorrect)
-            .map((r: any) => {
-              const matchedAcu = acus.find((a: any) => a.id === r.acuId);
-              const acuTitle = matchedAcu?.label || matchedAcu?.title || r.acuId || 'Competency Gap';
-              return {
-                prompt: r.scenario || 'Scenario Evaluation',
-                userOption: r.chosenOptionText || `Option ${r.chosenOptionId}`,
-                correctOption: r.correctOptionText || `Option ${r.correctOptionId}`,
-                acuTitle,
-              };
-            });
-
-          if (failedItems.length > 0) {
-            const uniqueWeakTopics: string[] = Array.from(new Set(failedItems.map((f: any) => String(f.acuTitle))));
-
-            const tavilyResultsPerTopic: Record<string, SearchResultItem[]> = {};
-            await Promise.all(
-              uniqueWeakTopics.map(async (topic: string) => {
-                const relatedFail = failedItems.find((f: any) => String(f.acuTitle) === topic);
-                const searchResults = await searchTavilyRemediation(
-                  step.workspace?.title || step.title,
-                  topic,
-                  relatedFail?.userOption || ''
-                );
-                tavilyResultsPerTopic[topic] = searchResults;
-              })
-            );
-
-            diagnosticPrescription = await synthesizeTargetedRemediationWithTavily(
-              step.title,
-              failedItems,
-              tavilyResultsPerTopic
-            );
-          }
-        } catch (diagnosticErr) {
-          fastify.log.warn(diagnosticErr, '[SubmitQuiz] Zero-hallucination Tavily remediation synthesis failed; returning results without prescription.');
-        }
+          await prisma.quizAttempt.update({
+            where: { id: targetAttemptId },
+            data: {
+              score: percent,
+              scorePercent: percent,
+              correctCount,
+              passed,
+              status: 'completed',
+              results: breakdown as any,
+              completedAt: new Date(),
+            },
+          });
+        } catch (_) {}
+      } else {
+        const created = await prisma.quizAttempt.create({
+          data: {
+            stepId: step.id,
+            score: percent,
+            scorePercent: percent,
+            correctCount,
+            questionCount: total,
+            passed,
+            status: 'completed',
+            results: breakdown as any,
+            completedAt: new Date(),
+          },
+        });
+        targetAttemptId = created.id;
       }
 
-      let unlockedNextStepId: string | null = null;
+      // Update step status
+      await prisma.skillStep.update({
+        where: { id: step.id },
+        data: {
+          status: passed ? 'PASSED' : 'FAILED_REMEDIATION',
+        },
+      });
+
+      // Calculate single-grant XP and unlock
       let xpEarned = 0;
+      let unlockedNextStepId: string | null = null;
       let isFinalStep = false;
       let nextStepIndex: number | null = null;
-      let workspaceProgress = 0;
 
-      if (passed) {
-        // Fetch all steps for this workspace
-        const allWorkspaceSteps = await prisma.skillStep.findMany({
-          where: { workspaceId: step.workspaceId },
-          orderBy: { stepIndex: 'asc' },
-        });
+      const allWorkspaceSteps = await prisma.skillStep.findMany({
+        where: { workspaceId: step.workspaceId },
+        orderBy: { stepIndex: 'asc' },
+      });
+      const totalSteps = Math.max(allWorkspaceSteps.length, 1);
+      const nextStep = allWorkspaceSteps.find((s) => s.stepIndex === step.stepIndex + 1);
+      isFinalStep = step.stepIndex === totalSteps || !nextStep;
 
-        const totalSteps = Math.max(allWorkspaceSteps.length, 1);
-        const nextStep = allWorkspaceSteps.find((s) => s.stepIndex === step.stepIndex + 1);
-        isFinalStep = step.stepIndex === totalSteps || !nextStep;
+      if (isFirstTransitionToPassed) {
+        const grandmasterBonus = percent === 100 ? 1000 : 0;
+        const completionBonus = isFinalStep ? 1000 : 0;
+        xpEarned = step.stepIndex * 500 + grandmasterBonus + completionBonus;
 
         if (nextStep && (nextStep.status === 'LOCKED' || nextStep.status === 'IN_PROGRESS')) {
           const updatedNext = await prisma.skillStep.update({
@@ -493,57 +360,129 @@ Output strictly valid JSON with no markdown formatting:
           nextStepIndex = nextStep.stepIndex;
         }
 
-        // Calculate scaled XP: 500 XP * stepIndex + 1000 XP Grandmaster bonus if 100% + 1000 XP final track bonus
-        const grandmasterBonus = score === 100 ? 1000 : 0;
-        const completionBonus = isFinalStep ? 1000 : 0;
-        xpEarned = step.stepIndex * 500 + grandmasterBonus + completionBonus;
-
-        const passedCount = allWorkspaceSteps.filter((s) => s.status === 'PASSED').length + 1;
-        workspaceProgress = Math.min(100, Math.round((passedCount / totalSteps) * 100));
-
-        await (prisma.workspace as any).update({
-          where: { id: step.workspaceId },
-          data: { progress: workspaceProgress },
-        });
-
-        if (step.workspace?.userProfileId) {
+        // Increment user XP
+        const profileId = step.workspace?.userProfileId;
+        if (profileId) {
           try {
             await (prisma.userProfile as any).update({
-              where: { id: step.workspace.userProfileId },
+              where: { id: profileId },
               data: { totalXp: { increment: xpEarned } },
             });
           } catch (_) {
             try {
               await (prisma as any).profile?.update({
-                where: { id: step.workspace.userProfileId },
+                where: { id: profileId },
                 data: { totalXp: { increment: xpEarned } },
               });
-            } catch (e) {}
+            } catch (_) {}
           }
         }
       }
 
+      // F8: Remediation Fallback for failed ACUs (Zero search trampoline)
+      let diagnosticPrescription: any = null;
+      if (!passed && failedAcus.size > 0) {
+        const history = await prisma.resourceHistory.findMany({
+          where: { workspaceId: step.workspaceId },
+          select: { identifier: true },
+        });
+        const historySet = new Set(history.map((h) => h.identifier));
+
+        const weakAreas: any[] = [];
+        const stepBookResources: any[] = Array.isArray(step.resources) ? step.resources : [];
+
+        for (const failedAcuId of Array.from(failedAcus)) {
+          const acuObj = (step.assessableUnits as any[])?.find((a: any) => a.id === failedAcuId);
+          const acuTitle = acuObj?.title || acuObj?.label || failedAcuId;
+
+          // Two separate searches
+          const docQuery = `${step.workspace?.title || ''} "${acuTitle}" technical guide 2026`.trim();
+          const vidQuery = `${step.workspace?.title || ''} "${acuTitle}" tutorial drills 2026`.trim();
+
+          const [docCands, vidCands] = await Promise.all([
+            searchTavily(docQuery, { searchDepth: 'basic', maxResults: 3 }),
+            searchTavily(vidQuery, { searchDepth: 'basic', maxResults: 3, includeDomains: ['youtube.com'] }),
+          ]);
+
+          let chosenDoc = docCands.find((d) => !historySet.has(normalizeUrl(d.url)));
+          let chosenVid = vidCands.find((v) => {
+            const vId = extractYouTubeId(v.url);
+            return vId && !historySet.has(vId);
+          });
+
+          // Fallback to book links if search returned nothing usable
+          if (!chosenDoc) {
+            const bookDoc = stepBookResources.find((r: any) => r.type === 'doc' && r.linkStatus !== 'DEAD');
+            if (bookDoc) chosenDoc = { title: bookDoc.title, url: bookDoc.url, content: bookDoc.snippet || '' };
+          }
+          if (!chosenVid) {
+            const bookVid = stepBookResources.find((r: any) => r.type === 'video' && r.linkStatus !== 'DEAD');
+            if (bookVid) chosenVid = { title: bookVid.title, url: bookVid.url, content: bookVid.snippet || '' };
+          }
+
+          weakAreas.push({
+            topic: acuTitle,
+            acuId: failedAcuId,
+            misconceptionAnalysis: `Targeted review needed for competency: ${acuTitle}.`,
+            coreConcept: acuObj?.description || `Master foundational execution of ${acuTitle}.`,
+            resources: {
+              docTitle: chosenDoc?.title || `${acuTitle} Reference`,
+              docUrl: chosenDoc?.url || '#',
+              videoTitle: chosenVid?.title || `${acuTitle} Walkthrough`,
+              videoUrl: chosenVid?.url || '#',
+              criticalTakeaway: chosenDoc?.content?.slice(0, 160) || `Focus on ${acuTitle} invariants.`,
+            },
+          });
+        }
+
+        diagnosticPrescription = {
+          overallDiagnosis: 'Conceptual review required before re-attempting milestone evaluation.',
+          weakAreas,
+        };
+      }
+
       return reply.send({
         attemptId: targetAttemptId,
-        score,
-        scorePercentage: score,
+        score: percent,
+        scorePercentage: percent,
         passed,
-        passingThreshold: 75,
+        passingThreshold: LEARNING_CONFIG.PASS_THRESHOLD_PERCENT,
         totalQuestions: total,
         correctCount,
-        results,
+        results: breakdown,
         xpEarned,
         isFinalStep,
         nextStepIndex,
         unlockedNextStepId,
-        workspaceProgress,
         ...(diagnosticPrescription ? { diagnosticPrescription } : {}),
       });
-    } catch (err) {
+    } catch (err: any) {
       fastify.log.error(err, '[SubmitQuiz] Failed');
       return reply.status(500).send({ error: 'Evaluation failed' });
     }
   });
+
+  // POST /api/quizzes/evaluate and /api/quiz/evaluate (Aliases for legacy client compatibility)
+  fastify.post('/api/quizzes/evaluate', async (req, reply) => {
+    const { stepId } = (req.body || {}) as { stepId?: string };
+    if (!stepId) return reply.status(400).send({ error: 'stepId is required' });
+    return (fastify as any).inject({
+      method: 'POST',
+      url: `/api/steps/${stepId}/submit-quiz`,
+      payload: req.body,
+    });
+  });
+
+  fastify.post('/api/quiz/evaluate', async (req, reply) => {
+    const { stepId } = (req.body || {}) as { stepId?: string };
+    if (!stepId) return reply.status(400).send({ error: 'stepId is required' });
+    return (fastify as any).inject({
+      method: 'POST',
+      url: `/api/steps/${stepId}/submit-quiz`,
+      payload: req.body,
+    });
+  });
 };
 
 export default quizzesRoutes;
+export { quizzesRoutes as quizRoutes };

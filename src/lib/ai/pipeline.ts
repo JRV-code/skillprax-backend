@@ -542,7 +542,7 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
     resources = [
       {
         title: `Encyclopedia Reference: ${title}`,
-        url: `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(title)}`,
+        url: `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/\s+/g, '_'))}`,
         badge: "Canonical Reference",
         studyGuidance: `Review foundational concepts for ${title}.`,
         sourceOrigin: "fallback",
@@ -842,10 +842,10 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
     const weaknessAreas: WeaknessArea[] = Array.isArray(parsed.weaknessAreas || parsed.weakAreas)
       ? (parsed.weaknessAreas || parsed.weakAreas).map((wa: any) => {
           const docTitle = wa.resources?.docTitle || wa.remediationResources?.document?.title || `${stepTitle} Documentation`;
-          const docUrl = wa.resources?.docUrl || wa.remediationResources?.document?.url || `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(stepTitle)}`;
+          const docUrl = wa.resources?.docUrl || wa.remediationResources?.document?.url || '#';
           const docGuidance = wa.resources?.criticalTakeaway || wa.remediationResources?.document?.studyGuidance || "Review the foundational concepts.";
-          const videoTitle = wa.resources?.videoTitle || wa.remediationResources?.video?.title || `${stepTitle} Explained`;
-          const videoUrl = wa.resources?.videoUrl || wa.remediationResources?.video?.url || `https://www.youtube.com/results?search_query=${encodeURIComponent(stepTitle + " tutorial")}`;
+          const videoTitle = wa.resources?.videoTitle || wa.remediationResources?.video?.title || `${stepTitle} Walkthrough`;
+          const videoUrl = wa.resources?.videoUrl || wa.remediationResources?.video?.url || '#';
           const videoGuidance = wa.resources?.criticalTakeaway || wa.remediationResources?.video?.studyGuidance || "Watch a walkthrough of the core mechanics.";
           const topic = wa.topic || wa.acuLabel || "Unknown Competency";
           const coreConcept = wa.coreConcept || wa.rootCausePattern || "Pattern not identified.";
@@ -895,10 +895,10 @@ OUTPUT STRICT JSON MATCHING THIS SCHEMA:
       const topic = matchedAcu?.label || `Question ${idx + 1} Competency`;
       const coreConcept = matchedAcu?.description || "Conceptual misunderstanding in this area.";
       const docTitle = `${stepTitle} Reference`;
-      const docUrl = `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(stepTitle)}`;
+      const docUrl = '#';
       const docGuidance = "Review the canonical reference for this topic.";
       const videoTitle = `${stepTitle} Video Guide`;
-      const videoUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(stepTitle + " explained")}`;
+      const videoUrl = '#';
       const videoGuidance = "Watch a comprehensive walkthrough.";
 
       return {

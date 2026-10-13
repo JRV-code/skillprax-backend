@@ -175,19 +175,10 @@ export function sanitizeResourceUrl(url?: string, title?: string, type?: string)
     }
   }
 
-  if (resType.includes('video') || resType.includes('youtube')) {
-    return `https://www.youtube.com/results?search_query=${encodeURIComponent(`${t} full tutorial`)}`;
-  }
   if (resType.includes('wiki') || resType.includes('wikipedia')) {
-    return `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(t)}`;
+    return `https://en.wikipedia.org/wiki/${encodeURIComponent(t.replace(/\s+/g, '_'))}`;
   }
-  if (resType.includes('pdf') || resType.includes('paper')) {
-    return `https://www.google.com/search?q=${encodeURIComponent(`${t} filetype:pdf OR open textbook`)}`;
-  }
-  if (resType.includes('interactive') || resType.includes('playground') || resType.includes('repo')) {
-    return `https://github.com/search?q=${encodeURIComponent(t)}`;
-  }
-  return `https://www.google.com/search?q=${encodeURIComponent(`${t} comprehensive guide`)}`;
+  return '#';
 }
 
 export function sanitizeBookUrl(title: string, author?: string): string {
@@ -209,7 +200,7 @@ export function normalizeResources(resources: any[]): any[] {
     let url = String(res.url || '').trim();
     if (isVideo) {
       if (!url || !url.startsWith('http') || isDenylistedSearchUrl(url)) {
-        url = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${title} tutorial`)}`;
+        url = '#';
       }
       videos.push({
         priority: videos.length + 1,
@@ -222,7 +213,7 @@ export function normalizeResources(resources: any[]): any[] {
       });
     } else {
       if (!url || !url.startsWith('http') || isDenylistedSearchUrl(url)) {
-        url = `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(title)}`;
+        url = `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/\s+/g, '_'))}`;
       }
       docs.push({
         priority: docs.length + 1,
@@ -242,8 +233,8 @@ export function normalizeResources(resources: any[]): any[] {
     finalVideos.push({
       priority: 1,
       badge: 'VIDEO',
-      title: 'YouTube Video Tutorial & Lecture',
-      url: `https://www.youtube.com/results?search_query=learning+tutorial`,
+      title: 'Pedagogical Video Walkthrough',
+      url: '#',
       type: 'video',
       studyGuidance: 'Watch this high-yield video tutorial for practical walkthroughs.',
       whyThisFirst: 'Watch this high-yield video tutorial for practical walkthroughs.',
@@ -663,7 +654,7 @@ Output JSON:
   "remedialResources": [
     {
       "title": "...",
-      "url": "https://www.google.com/search?q=...",
+      "url": "https://example.com/canonical-resource",
       "type": "youtube",
       "focusArea": "..."
     }

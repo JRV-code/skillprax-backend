@@ -14,10 +14,81 @@ import {
 import { fetchVerifiedStepVideos } from '../services/videoService';
 import { generateAthleticFuelingPlan } from '../services/nutritionEngine';
 
+import { callGroqJson } from '../lib/foundation';
+
 // Compound in-memory cache: skill:${skillId}:step:${stepNumber}:lang:${language}
 const stepResourceMemoryCache = new Map<string, { data: any; cachedAt: number }>();
 
 export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
+  // POST /api/skills/suggest-subgenres — Dynamic Sub-Genre Engine
+  fastify.post('/api/skills/suggest-subgenres', async (req, reply) => {
+    const { skill } = (req.body || {}) as { skill?: string };
+    if (!skill || typeof skill !== 'string') {
+      return reply.status(400).send({ error: 'skill is required' });
+    }
+
+    const trimmed = skill.trim();
+    if (trimmed.length < 3 || trimmed.length > 80) {
+      return reply.status(400).send({ error: 'Skill name must be between 3 and 80 characters' });
+    }
+
+    const normalized = trimmed.toLowerCase().replace(/\s+/g, ' ');
+
+    try {
+      const cached = await prisma.subgenreCache.findUnique({
+        where: { normalizedSkillName: normalized },
+      });
+
+      if (cached && Array.isArray(cached.subgenres)) {
+        return reply.send({ subgenres: cached.subgenres, cached: true });
+      }
+
+      const prompt = `You are a Principal Curriculum Taxonomist. A user wants to learn the skill: "${trimmed}". Return 4 to 6 specific professional sub-genres or specializations of THIS skill. Do not return levels like Beginner/Advanced/Intermediate. Return JSON: {"subgenres": ["..."]}`;
+
+      const res = await callGroqJson<{ subgenres: string[] }>(
+        'You are a Principal Curriculum Taxonomist. Return strictly JSON.',
+        prompt,
+        {
+          validate: (v: any) => {
+            if (!Array.isArray(v?.subgenres)) return false;
+            if (v.subgenres.length < 4 || v.subgenres.length > 6) return false;
+            const seen = new Set<string>();
+            for (const s of v.subgenres) {
+              if (typeof s !== 'string') return false;
+              const clean = s.trim();
+              if (clean.length < 3 || clean.length > 60) return false;
+              if (/^(beginner|intermediate|advanced|basic|expert)$/i.test(clean)) return false;
+              const lower = clean.toLowerCase();
+              if (seen.has(lower)) return false;
+              seen.add(lower);
+            }
+            return true;
+          },
+          maxTokens: 500,
+          temperature: 0.3,
+        }
+      );
+
+      const cleanedSubgenres = res.subgenres.map((s) => s.trim());
+
+      await prisma.subgenreCache.upsert({
+        where: { normalizedSkillName: normalized },
+        create: {
+          normalizedSkillName: normalized,
+          subgenres: cleanedSubgenres as any,
+        },
+        update: {
+          subgenres: cleanedSubgenres as any,
+        },
+      });
+
+      return reply.send({ subgenres: cleanedSubgenres, cached: false });
+    } catch (err: any) {
+      fastify.log.error(err, '[SuggestSubgenres] Failed');
+      return reply.status(500).send({ error: 'Failed to suggest subgenres' });
+    }
+  });
+
   // 1. POST /api/skills/generate — Create dynamic curriculum using Tavily + Groq
   fastify.post('/api/skills/generate', async (req, reply) => {
     try {

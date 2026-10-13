@@ -150,13 +150,16 @@ model SkillStep {
   title           String
   description     String        @default("")
   status          String        @default("IN_PROGRESS")
-  assessableUnits Json          @default("[]")
-  quizBlueprint   Json          @default("[]")
-  questionCount   Int           @default(0)
-  resources       Json          @default("[]")
-  attempts        QuizAttempt[]
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  difficultyTier   String?
+  approachViewedAt DateTime?
+  assessableUnits  Json             @default("[]")
+  quizBlueprint    Json             @default("[]")
+  questionCount    Int              @default(0)
+  resources        Json             @default("[]")
+  attempts         QuizAttempt[]
+  contentDocument  ContentDocument?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 }
 
 model QuizAttempt {
@@ -350,17 +353,71 @@ model UserMilestone {
   @@map("user_milestones")
 }
 
-model ContentTranslation {
-  id                  String   @id @default(uuid())
-  contentId           String   @map("content_id")
-  languageCode        String   @map("language_code")
-  translatedQuadrants Json     @map("translated_quadrants")
-  translatedMarkdown  String   @map("translated_markdown")
-  createdAt           DateTime @default(now()) @map("created_at")
+model ContentDocument {
+  id            String               @id @default(uuid())
+  stepId        String?              @unique @map("step_id")
+  resourceId    String?              @unique @map("resource_id")
+  sourceType    String               @map("source_type")
+  sourceUrl     String?              @map("source_url")
+  sourceTitle   String?              @map("source_title")
+  markdown      String?
+  quadrants     Json?
+  topicMap      Json                 @map("topic_map")
+  approachBrief Json?                @map("approach_brief")
+  createdAt     DateTime             @default(now()) @map("created_at")
+  step          SkillStep?           @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  translations  ContentTranslation[]
 
-  @@unique([contentId, languageCode])
+  @@map("content_documents")
+}
+
+model ContentTranslation {
+  id                  String           @id @default(uuid())
+  contentDocumentId   String?          @map("content_document_id")
+  contentId           String?          @map("content_id")
+  languageCode        String           @map("language_code")
+  markdown            String?          @map("translated_markdown")
+  quadrants           Json?            @map("translated_quadrants")
+  topicMap            Json?            @map("topic_map")
+  approachBrief       Json?            @map("approach_brief")
+  createdAt           DateTime         @default(now()) @map("created_at")
+  document            ContentDocument? @relation(fields: [contentDocumentId], references: [id], onDelete: Cascade)
+
+  @@unique([contentDocumentId, languageCode])
   @@map("content_translations")
 }
+
+model UiTranslation {
+  languageCode String   @id @map("language_code")
+  strings      Json
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("ui_translations")
+}
+
+model ResourceHistory {
+  id           String   @id @default(uuid())
+  profileId    String   @map("profile_id")
+  workspaceId  String   @map("workspace_id")
+  stepIndex    Int      @map("step_index")
+  resourceType String   @map("resource_type")
+  identifier   String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([workspaceId, identifier])
+  @@index([profileId])
+  @@map("resource_histories")
+}
+
+model SubgenreCache {
+  id                  String   @id @default(uuid())
+  normalizedSkillName String   @unique @map("normalized_skill_name")
+  subgenres           Json
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@map("subgenre_caches")
+}
+
 
 
 

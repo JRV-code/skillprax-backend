@@ -6,10 +6,7 @@
 # @@unique([workspaceId, stepIndex]) to SkillStep while duplicate rows exist).
 #
 # We deliberately use `prisma migrate deploy` for the actual production
-# deploy path (it applies committed, reviewed migrations and never prompts),
-# and keep `db push --accept-data-loss` only as an explicit, opt-in escape
-# hatch for schema-only environments (preview/staging) where losing data is
-# acceptable.
+# deploy path (it applies committed, reviewed migrations and never prompts).
 
 set -euo pipefail
 
@@ -19,13 +16,8 @@ npm ci || npm install
 echo "==> Generating Prisma client"
 npx prisma generate
 
-if [ "${SKILLPRAX_DB_STRATEGY:-migrate}" = "push" ]; then
-  echo "==> SKILLPRAX_DB_STRATEGY=push — running db push with --accept-data-loss (non-production only)"
-  npx prisma db push --accept-data-loss --skip-generate
-else
-  echo "==> Applying database migrations / syncing database"
-  npx prisma db push --accept-data-loss --skip-generate || npx prisma migrate deploy
-fi
+echo "==> Applying database migrations with prisma migrate deploy"
+npx prisma migrate deploy
 
 echo "==> Building application"
 npm run build

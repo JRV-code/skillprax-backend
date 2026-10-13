@@ -276,9 +276,9 @@ Output strictly valid JSON with this schema:
     const docItem = (typeof wa.selectedDocIndex === 'number' && candidates[wa.selectedDocIndex]) || candidates.find(c => !c.videoId && !c.url.includes('youtube.com')) || candidates[0];
     const videoItem = (typeof wa.selectedVideoIndex === 'number' && candidates[wa.selectedVideoIndex]) || candidates.find(c => c.videoId || c.url.includes('youtube.com')) || candidates[1] || candidates[0];
 
-    const docUrl = docItem ? docItem.url : `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(wa.topic)}`;
+    const docUrl = docItem ? docItem.url : '';
     const videoId = videoItem ? (videoItem.videoId || extractYouTubeVideoId(videoItem.url)) : null;
-    const videoUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : (videoItem ? videoItem.url : `https://www.youtube.com/results?search_query=${encodeURIComponent(`${stepTitle} ${wa.topic} tutorial`)}`);
+    const videoUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : (videoItem ? videoItem.url : '');
 
     return {
       topic: wa.topic,
@@ -286,9 +286,9 @@ Output strictly valid JSON with this schema:
       coreConcept: wa.coreConcept || 'Review foundational mechanics.',
       resources: {
         docTitle: docItem ? docItem.title : `${wa.topic} Canonical Guide`,
-        docUrl,
+        docUrl: docUrl || '#',
         videoTitle: videoItem ? videoItem.title : `${wa.topic} Video Breakdown`,
-        videoUrl,
+        videoUrl: videoUrl || '#',
         videoId,
         criticalTakeaway: wa.docTakeaway || 'Targeted study reference.'
       }

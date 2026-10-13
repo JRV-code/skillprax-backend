@@ -583,7 +583,63 @@ export async function ensureDatabaseSchema() {
       `);
     }
 
-    console.log('[Schema] All Master Blueprint & Maidan Sports schemas verified successfully.');
+    // 14. Step Book & History Architecture
+    await prisma.$executeRawUnsafe(`ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS "difficultyTier" TEXT;`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS "approachViewedAt" TIMESTAMP;`);
+
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS content_documents (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        step_id TEXT UNIQUE,
+        resource_id TEXT UNIQUE,
+        source_type TEXT NOT NULL,
+        source_url TEXT,
+        source_title TEXT,
+        markdown TEXT,
+        quadrants JSONB,
+        topic_map JSONB NOT NULL,
+        approach_brief JSONB,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await prisma.$executeRawUnsafe(`ALTER TABLE content_translations ADD COLUMN IF NOT EXISTS content_document_id UUID;`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE content_translations ADD COLUMN IF NOT EXISTS topic_map JSONB;`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE content_translations ADD COLUMN IF NOT EXISTS approach_brief JSONB;`);
+    await prisma.$executeRawUnsafe(`ALTER TABLE content_translations ALTER COLUMN content_id DROP NOT NULL;`);
+
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS ui_translations (
+        language_code TEXT PRIMARY KEY,
+        strings JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS resource_histories (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        profile_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        step_index INT NOT NULL,
+        resource_type TEXT NOT NULL,
+        identifier TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(workspace_id, identifier)
+      );
+    `);
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS idx_resource_histories_profile ON resource_histories(profile_id);`);
+
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS subgenre_caches (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        normalized_skill_name TEXT UNIQUE NOT NULL,
+        subgenres JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    console.log('[Schema] All Master Blueprint, Step Book & Maidan Sports schemas verified successfully.');
   } catch (err) {
     console.warn('[Schema] Schema initialization warning (remote DB may differ):', err);
   }
