@@ -189,6 +189,12 @@ export async function ensureDatabaseSchema() {
     `);
     try {
       await prisma.$executeRawUnsafe(`
+        ALTER TABLE skill_steps
+        ADD COLUMN IF NOT EXISTS topics JSONB DEFAULT '[]'::jsonb,
+        ADD COLUMN IF NOT EXISTS is_sourced BOOLEAN DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS quiz_data JSONB DEFAULT '[]'::jsonb;
+      `);
+      await prisma.$executeRawUnsafe(`
         ALTER TABLE user_resource_history
         ADD COLUMN IF NOT EXISTS skill_id VARCHAR(255),
         ADD COLUMN IF NOT EXISTS step_number INT;
@@ -196,6 +202,10 @@ export async function ensureDatabaseSchema() {
       await prisma.$executeRawUnsafe(`
         CREATE UNIQUE INDEX IF NOT EXISTS idx_user_res_hist_uniq 
         ON user_resource_history(user_id, resource_type, resource_identifier);
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_user_res_hist_user_ident
+        ON user_resource_history(user_id, resource_identifier);
       `);
     } catch (_) {}
 

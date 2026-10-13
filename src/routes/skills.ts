@@ -13,6 +13,7 @@ import {
 } from '../services/documentationService';
 import { fetchVerifiedStepVideos } from '../services/videoService';
 import { generateAthleticFuelingPlan } from '../services/nutritionEngine';
+import { sourceStepContent } from '../services/resourceSourcingService';
 
 import { callGroqJson } from '../lib/foundation';
 import { LEARNING_CONFIG } from '../config/learning';
@@ -444,6 +445,43 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
     } catch (err: any) {
       fastify.log.error(err, '[GET /api/skills/:skillId/step/:stepNumber] Failed');
       return reply.status(500).send({ error: 'Failed to load step resources' });
+    }
+  });
+
+  // 2c. POST /api/skills/:skillId/step/:stepNumber/source — On-Demand Topic Sourcing & Study Guides
+  fastify.post('/api/skills/:skillId/step/:stepNumber/source', async (req, reply) => {
+    try {
+      const { skillId, stepNumber } = req.params as { skillId: string; stepNumber: string };
+      const stepNum = parseInt(stepNumber, 10);
+      const body = (req.body || {}) as { userId?: string };
+
+      if (isNaN(stepNum) || stepNum < 1) {
+        return reply.status(400).send({ error: 'Valid positive stepNumber is required.' });
+      }
+
+      let userId = body.userId;
+      if (!userId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          try {
+            const decoded: any = jwt.verify(
+              authHeader.split(' ')[1],
+              process.env.JWT_SECRET || 'skilltrack_enterprise_jwt_secret_2026'
+            );
+            userId = decoded.userId || decoded.id;
+          } catch (_) {}
+        }
+      }
+
+      if (!userId) {
+        userId = 'default-user';
+      }
+
+      const sourced = await sourceStepContent(userId, skillId, stepNum);
+      return reply.status(200).send(sourced);
+    } catch (err: any) {
+      fastify.log.error(err, '[POST /api/skills/:skillId/step/:stepNumber/source] Failed');
+      return reply.status(500).send({ error: 'Failed to source step content' });
     }
   });
 
