@@ -282,7 +282,7 @@ JSON SCHEMA:
               stepIndex: 1,
               title: `${cleanTitle}: Foundational Principles`,
               acus: [
-                { title: `Axiomatic ${cleanTitle} Baseline`, description: "Verify baseline principles" },
+                { title: `Foundational ${cleanTitle} Baseline`, description: "Verify baseline principles" },
                 { title: "Boundary Conditions", description: "First-principles verification" }
               ]
             },

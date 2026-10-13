@@ -193,6 +193,10 @@ export async function ensureDatabaseSchema() {
         ADD COLUMN IF NOT EXISTS skill_id VARCHAR(255),
         ADD COLUMN IF NOT EXISTS step_number INT;
       `);
+      await prisma.$executeRawUnsafe(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_user_res_hist_uniq 
+        ON user_resource_history(user_id, resource_type, resource_identifier);
+      `);
     } catch (_) {}
 
     // 9. reviews (Authentic-Only Reviews Table)

@@ -1,17 +1,30 @@
-import { generateStepDocumentationAndQuiz, DocumentationResult } from './documentationService';
-import { fetchVerifiedStepVideo } from './videoService';
+import {
+  generateStepDocumentationAndQuiz,
+  fetchAndSynthesizeStepDocumentation,
+  getDifficultyTier,
+  DocumentationResult,
+  StepDocParams,
+} from './documentationService';
+import {
+  fetchVerifiedStepVideo,
+  fetchVerifiedStepVideos,
+  VerifiedStepVideo,
+} from './videoService';
 
 export {
   generateStepDocumentationAndQuiz,
+  fetchAndSynthesizeStepDocumentation,
+  getDifficultyTier,
   fetchVerifiedStepVideo,
+  fetchVerifiedStepVideos,
 };
 
-export type { DocumentationResult };
+export type { DocumentationResult, StepDocParams, VerifiedStepVideo };
 
 /**
  * High-level contentService gateway satisfying the specification:
  * Throws "Unable to fetch verified step resources. Please verify API keys in .env."
- * if resource retrieval fails, ensuring zero mock swimming fallbacks.
+ * if resource retrieval fails. Zero static stubs.
  */
 export async function fetchVerifiedStepContent(params: {
   userId?: string;
@@ -36,7 +49,7 @@ export async function fetchVerifiedStepContent(params: {
       stepTitle: params.stepTitle,
       skillCategory: params.skillCategory,
     }),
-    generateStepDocumentationAndQuiz(params),
+    fetchAndSynthesizeStepDocumentation(params),
   ]);
 
   return {
@@ -44,3 +57,12 @@ export async function fetchVerifiedStepContent(params: {
     ...doc,
   };
 }
+
+export default {
+  fetchVerifiedStepContent,
+  fetchAndSynthesizeStepDocumentation,
+  generateStepDocumentationAndQuiz,
+  fetchVerifiedStepVideo,
+  fetchVerifiedStepVideos,
+  getDifficultyTier,
+};

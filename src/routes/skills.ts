@@ -7,6 +7,15 @@ import {
   estimateDynamicCurriculum,
   researchAndSynthesizeStepContent,
 } from '../services/aiOrchestrator';
+import {
+  fetchAndSynthesizeStepDocumentation,
+  getDifficultyTier,
+} from '../services/documentationService';
+import { fetchVerifiedStepVideos } from '../services/videoService';
+import { generateAthleticFuelingPlan } from '../services/nutritionEngine';
+
+// Compound in-memory cache: skill:${skillId}:step:${stepNumber}:lang:${language}
+const stepResourceMemoryCache = new Map<string, { data: any; cachedAt: number }>();
 
 export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
   // 1. POST /api/skills/generate — Create dynamic curriculum using Tavily + Groq
@@ -186,6 +195,183 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
     } catch (err: any) {
       fastify.log.error(err, '[GET /api/skills/:skillId] Failed');
       return reply.status(500).send({ error: 'Failed to load skill' });
+    }
+  });
+
+  // 2b. GET /api/skills/:skillId/step/:stepNumber — Isolated Step Resource Route (Strict Progressive Difficulty & Zero Repetition)
+  fastify.get('/api/skills/:skillId/step/:stepNumber', async (req, reply) => {
+    try {
+      const { skillId, stepNumber } = req.params as { skillId: string; stepNumber: string };
+      const stepNum = parseInt(stepNumber, 10);
+      const queryParams = (req.query || {}) as { language?: string; userId?: string };
+      const language = (queryParams.language || 'en').toLowerCase().trim();
+
+      if (isNaN(stepNum) || stepNum < 1) {
+        return reply.status(400).send({ error: 'Valid positive stepNumber is required.' });
+      }
+
+      // 1. Compound in-memory cache check (Never share resources between step 1 and step 2)
+      const cacheKey = `skill:${skillId}:step:${stepNum}:lang:${language}`;
+      const cachedEntry = stepResourceMemoryCache.get(cacheKey);
+      if (cachedEntry && Date.now() - cachedEntry.cachedAt < 1000 * 60 * 30) {
+        return reply.status(200).send(cachedEntry.data);
+      }
+
+      // 2. Fetch skill from database
+      const skillRows: any[] = await prisma.$queryRawUnsafe(`
+        SELECT * FROM user_skills WHERE id = $1 LIMIT 1;
+      `, skillId);
+
+      if (!skillRows || skillRows.length === 0) {
+        return reply.status(404).send({ error: 'Skill not found' });
+      }
+
+      const skill = skillRows[0];
+      const userId = queryParams.userId || skill.user_id || undefined;
+
+      // 3. Fetch step row strictly keyed by (skill_id, step_number)
+      let stepRows: any[] = await prisma.$queryRawUnsafe(`
+        SELECT * FROM skill_steps 
+        WHERE skill_id = $1 AND step_number = $2 
+        LIMIT 1;
+      `, skillId, stepNum);
+
+      let step = stepRows && stepRows.length > 0 ? stepRows[0] : null;
+
+      // Initialize step row if missing
+      if (!step) {
+        const diffTier = getDifficultyTier(stepNum);
+        const title = `Step ${stepNum}: ${diffTier.difficultyLevel}`;
+        const desc = diffTier.focus;
+        await prisma.$executeRawUnsafe(`
+          INSERT INTO skill_steps (
+            skill_id, step_number, title, description,
+            required_practice_days, practice_days_completed,
+            quiz_passed, video_url, video_id, documentation_markdown,
+            documentation_source_url, documentation_quadrants, is_unlocked, is_completed
+          )
+          VALUES ($1, $2, $3, $4, 1, 0, FALSE, '', '', '', '', '[]'::jsonb, $5, FALSE)
+          ON CONFLICT (skill_id, step_number) DO NOTHING;
+        `, skillId, stepNum, title, desc, stepNum === 1);
+
+        stepRows = await prisma.$queryRawUnsafe(`
+          SELECT * FROM skill_steps WHERE skill_id = $1 AND step_number = $2 LIMIT 1;
+        `, skillId, stepNum);
+        step = stepRows[0];
+      }
+
+      // 4. Verify whether resources are populated or need real-web synthesis
+      const hasMarkdown = step.documentation_markdown && step.documentation_markdown.trim().length > 60;
+      const hasVideo = step.video_id && step.video_id.trim().length > 0;
+
+      if (!hasMarkdown || !hasVideo) {
+        const diffTier = getDifficultyTier(stepNum);
+
+        // A. Fetch authentic, non-repeating YouTube videos (Anti-Repetition Vault enforced)
+        const verifiedVideos = await fetchVerifiedStepVideos({
+          userId,
+          skillId,
+          skillName: skill.skill_name,
+          subGenre: skill.sub_genre,
+          stepNumber: stepNum,
+          stepTitle: step.title,
+          difficultyLevel: diffTier.difficultyLevel,
+          skillCategory: skill.skill_category,
+          limit: 3,
+        });
+
+        const primaryVideo = verifiedVideos[0];
+
+        // B. Fetch authentic web documentation via Tavily + Wikipedia + Groq
+        const docResult = await fetchAndSynthesizeStepDocumentation({
+          userId,
+          skillId,
+          skillName: skill.skill_name,
+          subGenre: skill.sub_genre,
+          stepNumber: stepNum,
+          totalSteps: skill.total_steps || 5,
+          stepTitle: step.title,
+          stepDescription: step.description,
+          difficultyLevel: diffTier.difficultyLevel,
+          language,
+          skillCategory: skill.skill_category,
+        });
+
+        // C. Generate athletic daily fueling plan if physical
+        let dailyDietPlan = step.daily_diet_plan;
+        if (skill.skill_category === 'physical' && !dailyDietPlan) {
+          dailyDietPlan = await generateAthleticFuelingPlan({
+            sportName: skill.skill_name,
+            subGenre: skill.sub_genre,
+            dietaryPreference: 'Vegetarian',
+            medicalConditions: 'None',
+            preferredLanguage: language,
+          });
+        }
+
+        // D. Update PostgreSQL database keyed by (skill_id, step_number)
+        await prisma.$executeRawUnsafe(`
+          UPDATE skill_steps SET
+            video_url = $1,
+            video_id = $2,
+            documentation_markdown = $3,
+            documentation_source_url = $4,
+            documentation_quadrants = $5::jsonb,
+            daily_diet_plan = $6::jsonb
+          WHERE skill_id = $7 AND step_number = $8;
+        `,
+          primaryVideo.url,
+          primaryVideo.videoId,
+          docResult.documentationMarkdown,
+          docResult.sourceUrl,
+          JSON.stringify(docResult.quadrants),
+          dailyDietPlan ? JSON.stringify(dailyDietPlan) : null,
+          skillId,
+          stepNum
+        );
+
+        // Reload updated step record
+        stepRows = await prisma.$queryRawUnsafe(`
+          SELECT * FROM skill_steps WHERE skill_id = $1 AND step_number = $2 LIMIT 1;
+        `, skillId, stepNum);
+        step = stepRows[0];
+      }
+
+      // 5. Structure payload
+      const responsePayload = {
+        success: true,
+        skillId,
+        stepNumber: stepNum,
+        step,
+        videos: [
+          {
+            id: step.video_id,
+            videoId: step.video_id,
+            url: step.video_url,
+            title: `${step.title} - Video Walkthrough`,
+            subtitle: step.description,
+            type: 'youtube',
+          },
+        ],
+        documentation: {
+          title: `${step.title} - Technical Guide`,
+          markdown: step.documentation_markdown,
+          sourceUrl: step.documentation_source_url,
+          quadrants: step.documentation_quadrants,
+          type: 'doc',
+        },
+      };
+
+      // Cache compound key
+      stepResourceMemoryCache.set(cacheKey, {
+        data: responsePayload,
+        cachedAt: Date.now(),
+      });
+
+      return reply.status(200).send(responsePayload);
+    } catch (err: any) {
+      fastify.log.error(err, '[GET /api/skills/:skillId/step/:stepNumber] Failed');
+      return reply.status(500).send({ error: 'Failed to load step resources' });
     }
   });
 

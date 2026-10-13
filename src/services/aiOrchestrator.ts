@@ -37,7 +37,7 @@ export interface StepSynthesizedContent {
   videoId: string;
   documentationMarkdown: string;
   documentationSourceUrl: string;
-  documentationQuadrants: QuadrantItem[];
+  documentationQuadrants: any;
   dailyDietPlan?: AthleticFuelingPlan | null;
   quizQuestions: any[];
 }
@@ -366,110 +366,4 @@ function getFallbackSteps(skillName: string, subGenre: string | undefined, categ
       },
     ],
   };
-}
-
-function generateFallbackMarkdown(stepTitle: string, skillName: string): string {
-  return `# ${stepTitle} & Architectural Overview
-
-## Core Theoretical Principles
-Mastering **${stepTitle}** forms a foundational pillar in achieving true proficiency within **${skillName}**. By dissecting the underlying physics and conceptual architecture, learners build an intuitive model of execution.
-
-- **First Principles Grounding**: Every high-level technique derives from energy conservation and kinetic alignment.
-- **Cognitive Load Optimization**: Break complex multi-stage tasks into isolated deliberate practice units.
-
-## Step-by-Step Execution Mechanics
-1. **Initial Alignment & Stance**: Ground your base firmly. Ensure balanced weight distribution.
-2. **Kinetic Initiation**: Initiate motion from primary power sources before transferring force outward.
-3. **Controlled Follow-Through**: Complete the full trajectory without premature deceleration.
-
-## Edge Cases, Common Errors & Diagnostic Checkpoints
-- **Trap 1: Rushing the Preparation Phase**: Leads to off-target trajectories and wasted force.
-- **Trap 2: Muscular Tension Overload**: Fluidity generates more velocity and consistency than rigid strain.
-- **Diagnostic Cue**: If fatigue sets in within 10 minutes, verify that your core posture is absorbing the workload.
-
-## Real-World Implementation & Practice Protocols
-- Complete dedicated 15-minute deliberate practice intervals daily.
-- Review progress against verified benchmark recordings after each set.`;
-}
-
-function getFallbackQuadrants(stepTitle: string): QuadrantItem[] {
-  return [
-    {
-      id: 'q1',
-      title: 'Core Principle in 60s',
-      badge: 'First Principles',
-      takeaway: 'Kinetic balance and energy efficiency govern consistent execution.',
-      studyGuidance: 'Focus on balance before accelerating velocity.',
-      detailPoints: ['Balanced center of gravity', 'Zero unnecessary tension', 'Repeatable biomechanical sequence'],
-    },
-    {
-      id: 'q2',
-      title: 'Key Mechanics & Execution',
-      badge: 'Mechanics',
-      takeaway: 'Three-stage kinetic sequence: preparation, release/strike, and deceleration.',
-      studyGuidance: 'Execute each rep at 70% speed before increasing power.',
-      detailPoints: ['Stance alignment', 'Fluid energy transfer', 'Full follow-through path'],
-    },
-    {
-      id: 'q3',
-      title: 'Traps & Misconceptions',
-      badge: 'Diagnostic Warnings',
-      takeaway: 'Over-gripping and jerky acceleration reduce accuracy by over 40%.',
-      studyGuidance: 'Stay loose and breathe rhythmically through the motion.',
-      detailPoints: ['Avoid stiff joints', 'Never compromise posture for power', 'Track consistency metrics'],
-    },
-    {
-      id: 'q4',
-      title: 'Verified Reference Grounding',
-      badge: 'Grounding',
-      takeaway: 'Validated against official coaching handbooks and kinematic studies.',
-      studyGuidance: 'Compare your practice footage against canonical form demonstrations.',
-      detailPoints: ['Biomechanical motion capture evidence', 'Mastery benchmark standards', 'Progressive overload cadence'],
-    },
-  ];
-}
-
-function getFallbackQuizQuestions(stepTitle: string): any[] {
-  return [
-    {
-      id: 'q_1',
-      scenario: 'During deliberate practice, a learner attempts to maximize execution speed but immediately experiences form breakdown.',
-      question: `Which mechanical adjustment best reinforces consistent execution for "${stepTitle}"?`,
-      options: [
-        { id: 'A', text: 'Double velocity while keeping joints locked rigid.' },
-        { id: 'B', text: 'Reduce muscular tension and focus on smooth sequential kinetic alignment.' },
-        { id: 'C', text: 'Eliminate the preparation phase to save execution time.' },
-        { id: 'D', text: 'Skip follow-through deceleration completely.' },
-      ],
-      correctOptionId: 'B',
-      correctOptionIndex: 1,
-      explanation: 'Fluid sequential alignment minimizes strain and establishes repeatable mechanical form.',
-      distractorExplanations: {
-        A: 'Incorrect: Excessive rigidity creates antagonistic resistance.',
-        B: 'Correct: Fluid sequencing generates sustainable control and power.',
-        C: 'Incorrect: Eliminating preparation destroys trajectory consistency.',
-        D: 'Incorrect: Truncated follow-through creates acute joint deceleration strain.',
-      },
-    },
-    {
-      id: 'q_2',
-      scenario: 'When evaluating execution diagnostics, an observer notices early energy dissipation before the primary release or contact.',
-      question: 'Where is the biomechanical/conceptual leak most commonly located?',
-      options: [
-        { id: 'A', text: 'Excessively late follow-through past the target.' },
-        { id: 'B', text: 'Over-stabilization of the foundation.' },
-        { id: 'C', text: 'Premature activation of extremity levers prior to core kinetic transfer.' },
-        { id: 'D', text: 'Maintaining rhythmic nasal breathing.' },
-      ],
-      correctOptionId: 'C',
-      correctOptionIndex: 2,
-      explanation: 'Firing peripheral levers before core kinetic transfer leaks accumulated momentum.',
-      distractorExplanations: {
-        A: 'Incorrect: Full follow-through safely dissipates energy after execution.',
-        B: 'Incorrect: Solid foundational stability preserves energy.',
-        C: 'Correct: Peripheral premature initiation leaks kinetic chain momentum.',
-        D: 'Incorrect: Rhythmic breathing supports neuromuscular composure.',
-      },
-    },
-  ];
 }

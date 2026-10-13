@@ -148,11 +148,11 @@ export const milestoneRoutes: FastifyPluginAsync = async (fastify: FastifyInstan
       // If none exist, seed default 5 milestones (1 unlocked, 2-5 locked)
       if (!Array.isArray(milestones) || milestones.length === 0) {
         const defaultMilestones = [
-          { order: 1, title: 'Milestone 1: Axiomatic Core & Foundations', status: 'unlocked' },
-          { order: 2, title: 'Milestone 2: Procedural Mechanics & Logic', status: 'locked' },
-          { order: 3, title: 'Milestone 3: Edge-Case Handling & Resilience', status: 'locked' },
-          { order: 4, title: 'Milestone 4: Systems Integration & Synthesis', status: 'locked' },
-          { order: 5, title: 'Milestone 5: Production Capstone & Mastery', status: 'locked' },
+          { order: 1, title: 'Milestone 1: Foundational Primer & Core Basics', status: 'unlocked' },
+          { order: 2, title: 'Milestone 2: Elementary Execution & Applied Logic', status: 'locked' },
+          { order: 3, title: 'Milestone 3: Intermediate Dynamic Execution & Fluidity', status: 'locked' },
+          { order: 4, title: 'Milestone 4: Advanced Situational Pressure & Optimization', status: 'locked' },
+          { order: 5, title: 'Milestone 5: Elite Mastery & Capstone Integration', status: 'locked' },
         ];
 
         for (const m of defaultMilestones) {
