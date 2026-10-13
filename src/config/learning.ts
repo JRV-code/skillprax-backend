@@ -1,17 +1,42 @@
 export const LEARNING_CONFIG = {
-  PASS_THRESHOLD_PERCENT: 75,    // the one place to change the pass mark
+  PASS_THRESHOLD_PERCENT: 70,          // THE one place for the pass mark
   QUIZ_MIN_QUESTIONS: 8,
   QUIZ_MAX_QUESTIONS: 12,
-  SOURCE_TEXT_MAX_CHARS: 12000,  // total source text sent to Groq per synthesis
-  MIN_SOURCE_TEXT_CHARS: 800,    // below this a page is not usable as text
-  MIN_GROUNDED_TEXT_CHARS: 1500, // minimum text needed to generate a quiz
-  SUBGENRE_MIN: 4,
-  SUBGENRE_MAX: 6,
+  QUIZ_MAX_OBJECTIVE_RATIO: 0.4,       // max share of questions from CHAPTER_OBJECTIVE anchors
+  CHAPTERS_MIN: 3,
+  CHAPTERS_MAX: 6,
+  ANCHORS_MIN_PER_CHAPTER: 3,
+  ANCHORS_MAX_PER_CHAPTER: 5,
+  SOURCE_CHARS_PER_CHAPTER: 2000,      // transient text sent to Groq per chapter
+  MIN_ANCHOR_SOURCE_CHARS: 400,        // below this a resource gives no source text
+  SNIPPET_MAX_CHARS: 220,              // the only third-party text we persist
+  MAX_SHARED_RUN_WORDS: 8,             // paraphrase guard (section 7.5)
   TOPICS_MIN: 3,
   TOPICS_MAX: 6,
-  MAX_EXTRA_TOPIC_SEARCHES: 3,   // cost cap for per-topic recovery searches
+  MAX_EXTRA_TOPIC_SEARCHES: 2,
+  MIN_SOURCE_TEXT_CHARS: 400,
+  MIN_GROUNDED_TEXT_CHARS: 400,
+  MAX_PER_DOMAIN_PER_STEP: 2,          // non-YouTube
+  MAX_PER_CHANNEL_PER_STEP: 2,         // YouTube
+  TITLE_SIMILARITY_DUP: 0.8,           // Jaccard; mirrors/reposts count as duplicates
+  MAX_REPLACEMENTS_PER_CHAPTER: 3,
+  SEARCH_CONCURRENCY: 3,
   LINK_CHECK_TIMEOUT_MS: 5000,
   LINK_CHECK_CONCURRENCY: 5,
+  SUBGENRE_MIN: 4,
+  SUBGENRE_MAX: 6,
+  LANGUAGES: ['en', 'hi', 'gu', 'mr', 'kn', 'ta', 'te', 'fr', 'es', 'de'],
+  EXCLUDE_DOMAINS: [
+    'pinterest.com',
+    'facebook.com',
+    'instagram.com',
+    'tiktok.com',
+    'quora.com',
+    'scribd.com',
+    'slideshare.net',
+    'coursehero.com',
+    'chegg.com',
+  ],
 } as const;
 
 export const DIFFICULTY_TIERS = [
@@ -23,8 +48,7 @@ export const DIFFICULTY_TIERS = [
 ] as const;
 export type DifficultyTier = (typeof DIFFICULTY_TIERS)[number];
 
-// stepIndex is 1-based. Roadmaps have 3-8 steps, so map position onto the
-// 5-tier curve proportionally instead of assuming exactly 5 steps.
+// stepIndex is 1-based; roadmaps have 3-8 steps, so map proportionally.
 export function tierForStep(stepIndex: number, totalSteps: number): DifficultyTier {
   if (totalSteps <= 1) return DIFFICULTY_TIERS[0];
   const ratio = (stepIndex - 1) / (totalSteps - 1);

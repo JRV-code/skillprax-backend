@@ -1,5 +1,5 @@
 import prisma from '../../src/lib/prisma';
-import { callGroqJson } from '../../src/lib/foundation';
+import { callGroqJson } from '../../src/services/learning/foundation';
 import { ensureDatabaseSchema } from '../../src/lib/ensureSchema';
 
 async function suggestSubgenres(skill: string) {

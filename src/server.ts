@@ -5,7 +5,7 @@ import { env, getAuthRedirectUrl } from './config/env';
 import adminRoutes from './routes/admin';
 import workspaceRoutes from './routes/workspaces';
 import stepRoutes from './routes/steps';
-import quizRoutes from './routes/quizzes';
+import { learningRoutes } from './routes/learning';
 import profileRoutes from './routes/profile';
 import telemetryRoutes from './routes/telemetry';
 import reviewRoutes from './routes/reviews';
@@ -60,7 +60,7 @@ const start = async () => {
     await server.register(adminRoutes);
     await server.register(workspaceRoutes);
     await server.register(stepRoutes);
-    await server.register(quizRoutes);
+    await server.register(learningRoutes);
     await server.register(profileRoutes);
     await server.register(telemetryRoutes);
     await server.register(reviewRoutes);

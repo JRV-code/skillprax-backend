@@ -1,5 +1,5 @@
 import { LEARNING_CONFIG, DIFFICULTY_TIERS, tierForStep } from '../../src/config/learning';
-import { fetchWikipediaExtract, wikipediaSectionLink, normalizeUrl, extractYouTubeId } from '../../src/lib/foundation';
+import { fetchWikipediaExtract, canonicalKey, extractYouTubeId } from '../../src/services/learning/foundation';
 import prisma from '../../src/lib/prisma';
 
 async function main() {
@@ -28,7 +28,7 @@ async function main() {
 
   // Save Step 1 into ResourceHistory
   for (const c of candidatesStep1) {
-    const id = extractYouTubeId(c.url) || normalizeUrl(c.url);
+    const id = canonicalKey(c.url);
     await prisma.resourceHistory.create({
       data: {
         profileId: mockProfileId,
@@ -44,7 +44,7 @@ async function main() {
   const historyRows = await prisma.resourceHistory.findMany({
     where: { workspaceId: mockWorkspaceId },
   });
-  const historySet = new Set(historyRows.map(h => h.identifier));
+  const historySet = new Set(historyRows.map((h) => h.identifier));
   console.log(`  Step 1 History stored identifiers (${historyRows.length}):`, Array.from(historySet));
 
   // Candidate pool for Step 2 containing one duplicate and one new item
@@ -53,13 +53,19 @@ async function main() {
     { url: 'https://en.wikipedia.org/wiki/Lua_(programming_language)', type: 'DOC' }, // Fresh
   ];
 
-  const filteredStep2 = candidatesStep2.filter(c => {
-    const id = extractYouTubeId(c.url) || normalizeUrl(c.url);
+  const filteredStep2 = candidatesStep2.filter((c) => {
+    const id = canonicalKey(c.url);
     return !historySet.has(id);
   });
 
-  console.log(`  Step 2 candidates before filter: ${candidatesStep2.length}, after history filter: ${filteredStep2.length}`);
-  console.log(`  Filtered out duplicate identifier successfully: ${filteredStep2.every(c => !historySet.has(extractYouTubeId(c.url) || normalizeUrl(c.url)))} (Expected: true)`);
+  console.log(
+    `  Step 2 candidates before filter: ${candidatesStep2.length}, after history filter: ${filteredStep2.length}`
+  );
+  console.log(
+    `  Filtered out duplicate identifier successfully: ${filteredStep2.every(
+      (c) => !historySet.has(canonicalKey(c.url))
+    )} (Expected: true)`
+  );
 
   // Clean up test history rows
   await prisma.resourceHistory.deleteMany({
@@ -76,12 +82,8 @@ async function main() {
     console.log(`    Text snippet: "${wikiResult.text.slice(0, 150)}..."`);
     console.log(`    Total Characters: ${wikiResult.text.length}`);
 
-    // Verified section deep-link
-    const sectionAnchor = wikipediaSectionLink(wikiResult.url, wikiResult.text, 'Game Development Mechanics');
-    console.log(`    Generated Section Anchor:`, sectionAnchor);
-
     // Verify absence of forbidden search trampoline URLs
-    const hasForbiddenSearch = /Special:Search|youtube\.com\/results|google\.com\/search/.test(wikiResult.url + (sectionAnchor?.url || ''));
+    const hasForbiddenSearch = /Special:Search|youtube\.com\/results|google\.com\/search/.test(wikiResult.url);
     console.log(`    Contains forbidden search URL? ${hasForbiddenSearch} (Expected: false)`);
   } else {
     console.log('  Wikipedia search returned null.');

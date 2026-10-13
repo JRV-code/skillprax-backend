@@ -1,4 +1,4 @@
-import { verifyLink, isSafePublicUrl, extractYouTubeId, normalizeUrl, checkYouTube } from '../../src/lib/foundation';
+import { verifyLink, isSafePublicUrl, extractYouTubeId, canonicalKey, checkYouTube } from '../../src/services/learning/foundation';
 
 async function main() {
   console.log('=== T4: LINK HEALTH & VERIFICATION AUDIT ===\n');
@@ -28,10 +28,10 @@ async function main() {
   console.log(`  Status: ${liveStatus} (Expected: VERIFIED)`);
 
   // Test 5: YouTube ID extraction & normalizer
-  const norm1 = normalizeUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ&utm_source=twitter&si=123#timestamp');
+  const norm1 = canonicalKey('https://www.youtube.com/watch?v=dQw4w9WgXcQ&utm_source=twitter&si=123#timestamp');
   const ytId = extractYouTubeId('https://youtu.be/dQw4w9WgXcQ?si=abcdef');
   console.log(`\n[T4.5] URL Normalization & YouTube ID Extraction:`);
-  console.log(`  Normalized URL: "${norm1}" (Stripped UTM/si params)`);
+  console.log(`  Canonical Key: "${norm1}" (Stripped UTM/si params)`);
   console.log(`  Extracted YouTube ID: "${ytId}"`);
 
   // Test 6: YouTube embeddability check

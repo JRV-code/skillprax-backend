@@ -15,6 +15,7 @@ import { fetchVerifiedStepVideos } from '../services/videoService';
 import { generateAthleticFuelingPlan } from '../services/nutritionEngine';
 
 import { callGroqJson } from '../lib/foundation';
+import { LEARNING_CONFIG } from '../config/learning';
 
 // Compound in-memory cache: skill:${skillId}:step:${stepNumber}:lang:${language}
 const stepResourceMemoryCache = new Map<string, { data: any; cachedAt: number }>();
@@ -582,7 +583,7 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
         // Cognitive skills require passed quiz
         if (!step.quiz_passed) {
           return reply.status(403).send({
-            error: `Pass the conceptual Socratic Quiz with >=75% to unlock Step ${num + 1}.`,
+            error: `Pass the conceptual Socratic Quiz with >=${LEARNING_CONFIG.PASS_THRESHOLD_PERCENT}% to unlock Step ${num + 1}.`,
             canProgress: false,
             reason: 'QUIZ_NOT_PASSED',
           });
@@ -724,7 +725,7 @@ ${JSON.stringify(quizSubmissions, null, 2)}
 Evaluation Criteria:
 - Grade bluntly and strictly based on conceptual accuracy.
 - Calculate an exact percentage score between 0 and 100 based on accuracy.
-- Passing threshold is strictly 75%. If they do not demonstrate clear understanding, score below 75%.
+- Passing threshold is strictly ${LEARNING_CONFIG.PASS_THRESHOLD_PERCENT}%. If they do not demonstrate clear understanding, score below ${LEARNING_CONFIG.PASS_THRESHOLD_PERCENT}%.
 - Do NOT inflate scores.
 
 Return strictly JSON:
@@ -773,17 +774,17 @@ Return strictly JSON:
         const scorePercentage = Math.round((correctCount / quizSubmissions.length) * 100);
         evaluationResult = {
           scorePercentage,
-          passed: scorePercentage >= 75,
-          grade: scorePercentage >= 90 ? 'A' : scorePercentage >= 75 ? 'B' : 'F',
+          passed: scorePercentage >= LEARNING_CONFIG.PASS_THRESHOLD_PERCENT,
+          grade: scorePercentage >= 90 ? 'A' : scorePercentage >= LEARNING_CONFIG.PASS_THRESHOLD_PERCENT ? 'B' : 'F',
           questionBreakdown: breakdown,
-          diagnosticReport: scorePercentage >= 75
+          diagnosticReport: scorePercentage >= LEARNING_CONFIG.PASS_THRESHOLD_PERCENT
             ? 'Candidate demonstrated mastery of foundational principles.'
             : 'Candidate exhibited misconceptions on key scenarios. Further study required.',
         };
       }
 
       const scorePercentage = Math.max(0, Math.min(100, Number(evaluationResult.scorePercentage) || 0));
-      const passed = scorePercentage >= 75;
+      const passed = scorePercentage >= LEARNING_CONFIG.PASS_THRESHOLD_PERCENT;
 
       // Update skill_steps if skillId & stepNumber provided
       if (skillId && stepNumber) {
@@ -799,7 +800,7 @@ Return strictly JSON:
       return reply.status(200).send({
         scorePercentage,
         passed,
-        passingThreshold: 75,
+        passingThreshold: LEARNING_CONFIG.PASS_THRESHOLD_PERCENT,
         grade: evaluationResult.grade || (passed ? 'B' : 'F'),
         questionBreakdown: evaluationResult.questionBreakdown || [],
         diagnosticReport: evaluationResult.diagnosticReport || 'Evaluation complete.',

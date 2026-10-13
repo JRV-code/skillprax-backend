@@ -151,11 +151,14 @@ model SkillStep {
   description     String        @default("")
   status          String        @default("IN_PROGRESS")
   difficultyTier   String?
+  approachBrief    Json?
   approachViewedAt DateTime?
   assessableUnits  Json             @default("[]")
   quizBlueprint    Json             @default("[]")
   questionCount    Int              @default(0)
   resources        Json             @default("[]")
+  chapters         Chapter[]
+  stepResources    Resource[]
   attempts         QuizAttempt[]
   contentDocument  ContentDocument?
   createdAt        DateTime         @default(now())
@@ -170,12 +173,17 @@ model QuizAttempt {
   scorePercent  Int       @default(0)
   correctCount  Int       @default(0)
   questionCount Int       @default(0)
+  totalCount    Int?
+  attemptNumber Int       @default(1)
   passed        Boolean   @default(false)
   status        String    @default("in_progress")
   questions     Json?     @default("[]")
   answers       Json?     @default("[]")
   results       Json?     @default("[]")
   userAnswers   Json?     @default("[]")
+  breakdown     Json?
+  analysis      Json?
+  analysisLanguage String?
   completedAt   DateTime?
   createdAt     DateTime  @default(now())
 }
@@ -400,13 +408,73 @@ model ResourceHistory {
   profileId    String   @map("profile_id")
   workspaceId  String   @map("workspace_id")
   stepIndex    Int      @map("step_index")
-  resourceType String   @map("resource_type")
+  resourceType String   @default("URL") @map("resource_type")
   identifier   String
+  title        String?
+  domain       String?
   createdAt    DateTime @default(now()) @map("created_at")
 
   @@unique([workspaceId, identifier])
   @@index([profileId])
   @@map("resource_histories")
+}
+
+model Chapter {
+  id            String     @id @default(uuid())
+  stepId        String
+  key           String                       // "c1".."c6"
+  orderIndex    Int
+  title         String
+  covers        String                       // one sentence
+  minutes       Int
+  acuIds        Json                         // string[]
+  preferredType String                       // VIDEO | DOCUMENT
+  buildsOn      String?                      // short phrase from earlier steps
+  newConcepts   Json                         // string[] (2-4 items new in this step)
+  status        String     @default("PLANNED") // PLANNED | READY | NO_VERIFIED_LINK
+  approachGuide Json?                        // section 8.4 shape
+  anchors       Json?                        // [{id,text,origin}] — server-only
+  step          SkillStep  @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  resources     Resource[]
+
+  @@unique([stepId, key])
+  @@map("chapters")
+}
+
+model Resource {
+  id           String    @id @default(uuid())
+  chapterId    String?   @map("chapter_id")
+  stepId       String?   @map("step_id")
+  type         String    @default("doc")
+  title        String
+  url          String
+  domain       String?
+  videoId      String?   @map("video_id")
+  channelName  String?   @map("channel_name")
+  canonicalKey String?   @map("canonical_key")
+  snippet      String?
+  embeddable   Boolean   @default(true)
+  linkStatus   String    @default("UNCHECKED") @map("link_status")
+  isPrimary    Boolean   @default(false) @map("is_primary")
+  checkedAt    DateTime? @map("checked_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  chapter Chapter?   @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  step    SkillStep? @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@map("resources")
+}
+
+model TranslationCache {
+  id           String   @id @default(uuid())
+  scope        String             // STEP_BOOK | QUIZ | UI
+  scopeId      String             // stepId | evaluationId | 'ui'
+  languageCode String
+  payload      Json
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([scope, scopeId, languageCode])
+  @@map("translation_caches")
 }
 
 model SubgenreCache {
@@ -416,6 +484,131 @@ model SubgenreCache {
   createdAt           DateTime @default(now()) @map("created_at")
 
   @@map("subgenre_caches")
+}
+
+model SportsPlayerProfile {
+  id               String   @id @default(uuid()) @db.Uuid
+  userId           String?  @map("user_id")
+  sport            String
+  secondarySports  String[] @default([]) @map("secondary_sports")
+  playingPosition  String   @map("playing_position")
+  heightCm         Decimal? @map("height_cm") @db.Decimal(5, 2)
+  weightKg         Decimal? @map("weight_kg") @db.Decimal(5, 2)
+  achievements     String?
+  certificates     Json?    @default("[]")
+  dateOfBirth      DateTime @default(dbgenerated("'2008-01-01'::date")) @map("date_of_birth") @db.Date
+  isMinor          Boolean  @default(false) @map("is_minor")
+  guardianName     String?  @map("guardian_name")
+  guardianPhone    String?  @map("guardian_phone")
+  guardianEmail    String?  @map("guardian_email")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([userId, sport])
+  @@map("sports_player_profiles")
+}
+
+model SportsClub {
+  id               String   @id @default(uuid()) @db.Uuid
+  clubName         String   @map("club_name")
+  sportsOffered    String[] @map("sports_offered")
+  city             String
+  address          String
+  latitude         Decimal  @db.Decimal(10, 7)
+  longitude        Decimal  @db.Decimal(10, 7)
+  timings          String
+  competitionLevel String   @map("competition_level")
+  monthlyFee       Decimal  @map("monthly_fee") @db.Decimal(10, 2)
+  discountedFee    Decimal? @map("discounted_fee") @db.Decimal(10, 2)
+  discountLabel    String?  @map("discount_label")
+  facilities       String[] @default([])
+  coachingStaff    Json?    @default("[]") @map("coaching_staff")
+  websiteUrl       String?  @map("website_url")
+  contactPhone     String?  @map("contact_phone")
+  isVerified       Boolean  @default(false) @map("is_verified")
+  verificationDocs Json?    @default("[]") @map("verification_docs")
+  createdAt        DateTime @default(now()) @map("created_at")
+  scoutingRequests SportsScoutingRequest[]
+  ratings          SportsPlayerRating[]
+
+  @@map("sports_clubs")
+}
+
+model SportsScoutingRequest {
+  id               String      @id @default(uuid()) @db.Uuid
+  clubId           String      @map("club_id") @db.Uuid
+  playerId         String      @map("player_id")
+  status           String      @default("pending")
+  guardianApproved Boolean     @default(false) @map("guardian_approved")
+  message          String?
+  trialDate        DateTime?   @map("trial_date")
+  createdAt        DateTime    @default(now()) @map("created_at")
+  updatedAt        DateTime    @default(now()) @updatedAt @map("updated_at")
+  club             SportsClub  @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@unique([clubId, playerId])
+  @@map("sports_scouting_requests")
+}
+
+model SportsPlayerRating {
+  id             String     @id @default(uuid()) @db.Uuid
+  playerId       String     @map("player_id")
+  clubId         String     @map("club_id") @db.Uuid
+  overallRating  Decimal?   @map("overall_rating") @db.Decimal(3, 1)
+  technicalScore Int?       @map("technical_score")
+  agilityScore   Int?       @map("agility_score")
+  notes          String?
+  createdAt      DateTime   @default(now()) @map("created_at")
+  club           SportsClub @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@map("sports_player_ratings")
+}
+
+model SportsShopProduct {
+  id         String   @id @default(uuid()) @db.Uuid
+  title      String
+  sport      String
+  category   String
+  price      Decimal  @db.Decimal(10, 2)
+  imageUrl   String   @map("image_url")
+  sellerType String   @default("official") @map("seller_type")
+  vendorName String?  @map("vendor_name")
+  inStock    Boolean  @default(true) @map("in_stock")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@map("sports_shop_products")
+}
+
+model SportsTravelVan {
+  id                 String   @id @default(uuid()) @db.Uuid
+  registrationNumber String   @map("registration_number")
+  driverName         String   @map("driver_name")
+  driverPhone        String   @map("driver_phone")
+  licenseLastFour    String   @map("license_last_four")
+  isDriverVerified   Boolean  @default(false) @map("is_driver_verified")
+  routeTitle         String   @map("route_title")
+  stops              String[]
+  totalSeats         Int      @default(14) @map("total_seats")
+  availableSeats     Int      @default(14) @map("available_seats")
+  monthlyFare        Decimal  @map("monthly_fare") @db.Decimal(10, 2)
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@map("sports_travel_vans")
+}
+
+model SportsEscrowTransaction {
+  id                 String    @id @default(uuid()) @db.Uuid
+  userId             String    @map("user_id")
+  transactionType    String    @map("transaction_type")
+  referenceId        String    @map("reference_id")
+  amount             Decimal   @db.Decimal(10, 2)
+  razorpayPaymentId  String?   @map("razorpay_payment_id")
+  escrowStatus       String    @default("held") @map("escrow_status")
+  payoutReleasedAt   DateTime? @map("payout_released_at")
+  refundedAt         DateTime? @map("refunded_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  @@map("sports_escrow_transactions")
 }
 
 
