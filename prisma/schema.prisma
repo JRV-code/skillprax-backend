@@ -478,35 +478,34 @@ model Chapter {
   approachGuide Json?                        // section 8.4 shape
   anchors       Json?                        // [{id,text,origin}] — server-only
   step          SkillStep  @relation(fields: [stepId], references: [id], onDelete: Cascade)
-  resources     Resource[]
 
   @@unique([stepId, key])
   @@map("chapters")
 }
 
 model Resource {
-  id           String    @id @default(cuid())
-  chapterId    String?   @map("chapter_id")
-  stepId       String?   @map("step_id")
-  topicId      String?   @map("topic_id")
-  type         String    @default("doc")
+  id           String       @id @default(cuid())
+  chapterId    String?      @map("chapter_id")
+  chapter      StepChapter? @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  stepId       String?      @map("step_id")
+  topicId      String?      @map("topic_id")
+  type         String       @default("doc")
   title        String
   url          String
   domain       String?
-  videoId      String?   @map("video_id")
-  channelName  String?   @map("channel_name")
-  videoType    String?   @map("video_type")
-  canonicalKey String?   @map("canonical_key")
+  videoId      String?      @map("video_id")
+  channelName  String?      @map("channel_name")
+  videoType    String?      @map("video_type")
+  canonicalKey String?      @map("canonical_key")
   snippet      String?
-  embeddable   Boolean   @default(true)
-  linkStatus   String    @default("UNCHECKED") @map("link_status")
-  isPrimary    Boolean   @default(false) @map("is_primary")
-  checkedAt    DateTime? @map("checked_at")
-  createdAt    DateTime  @default(now()) @map("created_at")
+  embeddable   Boolean      @default(true)
+  linkStatus   String       @default("UNCHECKED") @map("link_status")
+  isPrimary    Boolean      @default(false) @map("is_primary")
+  checkedAt    DateTime?    @map("checked_at")
+  createdAt    DateTime     @default(now()) @map("created_at")
 
   step         SkillStep? @relation(fields: [stepId], references: [id], onDelete: Cascade)
   topic        StepTopic? @relation(fields: [topicId], references: [id], onDelete: Cascade)
-  chapter      Chapter?   @relation(fields: [chapterId], references: [id], onDelete: Cascade)
 
   @@map("resources")
 }
@@ -520,6 +519,7 @@ model StepChapter {
   createdAt DateTime    @default(now()) @map("created_at")
   step      SkillStep   @relation(fields: [stepId], references: [id], onDelete: Cascade)
   topics    StepTopic[]
+  resources Resource[]
 
   @@map("step_chapters")
 }

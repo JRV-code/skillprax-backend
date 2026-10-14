@@ -692,17 +692,31 @@ export async function getStepGuide(stepId: string, lang = 'en') {
       },
       chapters: {
         orderBy: { orderIndex: 'asc' },
-        include: {
-          resources: {
-            where: { isPrimary: true },
-          },
-        },
       },
     },
   });
 
   if (!step) {
     throw new Error(`Step not found: ${stepId}`);
+  }
+
+  const chapterIds = step.chapters.map((c) => c.id);
+  const primaryResources = await prisma.resource.findMany({
+    where: {
+      chapterId: { in: chapterIds },
+      isPrimary: true,
+    },
+  });
+  const resByChapter = new Map<string, any[]>();
+  for (const r of primaryResources) {
+    if (r.chapterId) {
+      const list = resByChapter.get(r.chapterId) || [];
+      list.push(r);
+      resByChapter.set(r.chapterId, list);
+    }
+  }
+  for (const ch of step.chapters) {
+    (ch as any).resources = resByChapter.get(ch.id) || [];
   }
 
   const totalSteps = step.workspace.steps.length;
@@ -725,8 +739,8 @@ export async function getStepGuide(stepId: string, lang = 'en') {
     }
   }
 
-  const chapters = step.chapters.map((ch) => {
-    const res = ch.resources[0];
+  const chapters = step.chapters.map((ch: any) => {
+    const res = ch.resources?.[0];
     const transCh = translatedPayload?.chapters?.find((c: any) => c.key === ch.key);
 
     return {
@@ -787,13 +801,17 @@ export async function retryChapterResource(chapterId: string) {
           },
         },
       },
-      resources: true,
     },
   });
 
   if (!chapter) {
     throw new Error(`Chapter not found: ${chapterId}`);
   }
+
+  const chapterResources = await prisma.resource.findMany({
+    where: { chapterId },
+  });
+  (chapter as any).resources = chapterResources;
 
   const step = chapter.step;
   const workspace = step.workspace;
@@ -896,24 +914,29 @@ export async function retryChapterResource(chapterId: string) {
 export async function replaceResource(resourceId: string) {
   const resource = await prisma.resource.findUnique({
     where: { id: resourceId },
+  });
+
+  if (!resource || !resource.chapterId) {
+    throw new Error('Resource or parent chapter not found');
+  }
+
+  const chapter = await prisma.chapter.findUnique({
+    where: { id: resource.chapterId },
     include: {
-      chapter: {
+      step: {
         include: {
-          step: {
-            include: {
-              workspace: {
-                include: { steps: { orderBy: { stepIndex: 'asc' } } },
-              },
-            },
+          workspace: {
+            include: { steps: { orderBy: { stepIndex: 'asc' } } },
           },
         },
       },
     },
   });
 
-  if (!resource || !resource.chapter) {
-    throw new Error('Resource or parent chapter not found');
+  if (!chapter) {
+    throw new Error('Parent chapter not found');
   }
+  (resource as any).chapter = chapter;
 
   // Mark existing resource as DEAD
   await prisma.resource.update({
@@ -922,7 +945,7 @@ export async function replaceResource(resourceId: string) {
   });
 
   // Re-run search and replace via retryChapterResource
-  const retryResult = await retryChapterResource(resource.chapter.id);
+  const retryResult = await retryChapterResource(chapter.id);
   if (!retryResult.success) {
     throw new Error(retryResult.message || 'Could not find a valid replacement resource');
   }
@@ -938,20 +961,38 @@ export async function generateStepApproach(stepId: string) {
       workspace: { include: { steps: { orderBy: { stepIndex: 'asc' } } } },
       chapters: {
         orderBy: { orderIndex: 'asc' },
-        include: { resources: { where: { isPrimary: true } } },
       },
     },
   });
 
   if (!step) throw new Error('Step not found');
 
+  const chapterIds = step.chapters.map((c) => c.id);
+  const primaryResources = await prisma.resource.findMany({
+    where: {
+      chapterId: { in: chapterIds },
+      isPrimary: true,
+    },
+  });
+  const resByChapter = new Map<string, any[]>();
+  for (const r of primaryResources) {
+    if (r.chapterId) {
+      const list = resByChapter.get(r.chapterId) || [];
+      list.push(r);
+      resByChapter.set(r.chapterId, list);
+    }
+  }
+  for (const ch of step.chapters) {
+    (ch as any).resources = resByChapter.get(ch.id) || [];
+  }
+
   const domain = (((step.workspace as any).domainCategory || (step.workspace as any).domain || '').toUpperCase().includes('SPORT')
     ? 'SPORT'
     : 'SKILL') as 'SKILL' | 'SPORT';
   const tier = step.difficultyTier || tierForStep(step.stepIndex, step.workspace.steps.length);
 
-  const guideChaptersPayload = step.chapters.map((ch) => {
-    const res = ch.resources[0];
+  const guideChaptersPayload = step.chapters.map((ch: any) => {
+    const res = ch.resources?.[0];
     return {
       chapterKey: ch.key,
       title: ch.title,
