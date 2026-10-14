@@ -14,6 +14,7 @@ import {
 import { fetchVerifiedStepVideos } from '../services/videoService';
 import { generateAthleticFuelingPlan } from '../services/nutritionEngine';
 import { sourceStepContent, sourceStepContentFast } from '../services/resourceSourcingService';
+import { generateStepQuiz, evaluateQuizSubmission } from '../services/quizService';
 
 import { callGroqJson } from '../lib/foundation';
 import { LEARNING_CONFIG } from '../config/learning';
@@ -404,6 +405,90 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
     }
   });
 
+  // 2d. POST /api/skills/:skillId/step/:stepNumber/quiz/generate — Resource-grounded Socratic Quiz
+  fastify.post('/api/skills/:skillId/step/:stepNumber/quiz/generate', async (req, reply) => {
+    try {
+      const { skillId, stepNumber } = req.params as { skillId: string; stepNumber: string };
+      const stepNum = parseInt(stepNumber, 10);
+      const body = (req.body || {}) as { userId?: string };
+
+      if (isNaN(stepNum) || stepNum < 1) {
+        return reply.status(400).send({ error: 'Valid positive stepNumber is required.' });
+      }
+
+      let userId = body.userId;
+      if (!userId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          try {
+            const decoded: any = jwt.verify(
+              authHeader.split(' ')[1],
+              process.env.JWT_SECRET || 'skilltrack_enterprise_jwt_secret_2026'
+            );
+            userId = decoded.userId || decoded.id;
+          } catch (_) {}
+        }
+      }
+
+      if (!userId) {
+        userId = 'default-user';
+      }
+
+      const questions = await generateStepQuiz(userId, skillId, stepNum);
+      return reply.status(200).send({
+        success: true,
+        questions,
+        questionCount: questions.length,
+        passingThreshold: 70,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, '[POST /api/skills/:skillId/step/:stepNumber/quiz/generate] Failed');
+      return reply.status(500).send({ error: err.message || 'Failed to generate step quiz' });
+    }
+  });
+
+  // 2e. POST /api/skills/:skillId/step/:stepNumber/quiz/evaluate — Strict 70% Pass Gate Evaluator
+  fastify.post('/api/skills/:skillId/step/:stepNumber/quiz/evaluate', async (req, reply) => {
+    try {
+      const { skillId, stepNumber } = req.params as { skillId: string; stepNumber: string };
+      const stepNum = parseInt(stepNumber, 10);
+      const body = (req.body || {}) as { userId?: string; answers?: number[] };
+
+      if (isNaN(stepNum) || stepNum < 1) {
+        return reply.status(400).send({ error: 'Valid positive stepNumber is required.' });
+      }
+
+      let userId = body.userId;
+      if (!userId) {
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+          try {
+            const decoded: any = jwt.verify(
+              authHeader.split(' ')[1],
+              process.env.JWT_SECRET || 'skilltrack_enterprise_jwt_secret_2026'
+            );
+            userId = decoded.userId || decoded.id;
+          } catch (_) {}
+        }
+      }
+
+      if (!userId) {
+        userId = 'default-user';
+      }
+
+      const answers = Array.isArray(body.answers) ? body.answers : [];
+      const result = await evaluateQuizSubmission(userId, skillId, stepNum, answers);
+
+      return reply.status(200).send({
+        success: true,
+        ...result,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, '[POST /api/skills/:skillId/step/:stepNumber/quiz/evaluate] Failed');
+      return reply.status(500).send({ error: err.message || 'Failed to evaluate step quiz' });
+    }
+  });
+
   // 3. GET /api/skills/user/:userId — List active skills for user
   fastify.get('/api/skills/user/:userId', async (req, reply) => {
     try {
@@ -748,9 +833,17 @@ Return strictly JSON:
         try {
           await prisma.$executeRawUnsafe(`
             UPDATE skill_steps 
-            SET quiz_passed = $1, quiz_score = $2
-            WHERE skill_id = $3 AND step_number = $4;
-          `, passed, scorePercentage, skillId, Number(stepNumber));
+            SET quiz_passed = $1, quiz_score = $2, is_completed = $3
+            WHERE skill_id = $4 AND step_number = $5;
+          `, passed, scorePercentage, passed, skillId, Number(stepNumber));
+
+          if (passed) {
+            await prisma.$executeRawUnsafe(`
+              UPDATE skill_steps 
+              SET is_unlocked = TRUE 
+              WHERE skill_id = $1 AND step_number = $2;
+            `, skillId, Number(stepNumber) + 1);
+          }
         } catch (_) {}
       }
 

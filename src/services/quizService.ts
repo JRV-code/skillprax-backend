@@ -62,6 +62,90 @@ Return strictly JSON:
   return parsed.questions || [];
 }
 
+export async function evaluateQuizSubmission(
+  userId: string,
+  skillId: string,
+  stepNumber: number,
+  answers: number[]
+) {
+  const stepRes = await db.query(
+    'SELECT quiz_data FROM skill_steps WHERE skill_id = $1 AND step_number = $2',
+    [skillId, stepNumber]
+  );
+
+  if (stepRes.rows.length === 0) {
+    throw new Error(`Step ${stepNumber} not found for skill ${skillId}`);
+  }
+
+  let questions = stepRes.rows[0].quiz_data || [];
+  if (typeof questions === 'string') {
+    try {
+      questions = JSON.parse(questions);
+    } catch (_) {
+      questions = [];
+    }
+  }
+
+  let correctCount = 0;
+  const breakdown = questions.map((q: any, idx: number) => {
+    const isCorrect = q.correctOptionIndex === answers[idx];
+    if (isCorrect) correctCount++;
+    return {
+      questionId: q.id || `q${idx + 1}`,
+      isCorrect,
+      explanation: q.explanation || '',
+    };
+  });
+
+  // Calculate score percentage
+  const total = Math.max(questions.length, 1);
+  const scorePercentage = Math.round((correctCount / total) * 100);
+
+  // STRICT 70% PASSING CRITERIA
+  const passed = scorePercentage >= 70;
+
+  if (passed) {
+    // 1. Mark current step as completed and quiz passed
+    await db.query(
+      `UPDATE skill_steps 
+       SET is_completed = TRUE, quiz_passed = TRUE, quiz_score = $1 
+       WHERE skill_id = $2 AND step_number = $3`,
+      [scorePercentage, skillId, stepNumber]
+    );
+
+    // 2. Unlock next step (Step N + 1)
+    await db.query(
+      `UPDATE skill_steps 
+       SET is_unlocked = TRUE 
+       WHERE skill_id = $1 AND step_number = $2`,
+      [skillId, stepNumber + 1]
+    );
+
+    // 3. Award learner XP points
+    try {
+      await db.query(
+        `UPDATE users SET xp = COALESCE(xp, 0) + 150 WHERE id = $1`,
+        [userId]
+      );
+    } catch (_) {
+      try {
+        await db.query(
+          `UPDATE users SET xp_points = COALESCE(xp_points, 0) + 150 WHERE id = $1`,
+          [userId]
+        );
+      } catch (_) {}
+    }
+  }
+
+  return {
+    scorePercentage,
+    passed,
+    passingThreshold: 70,
+    breakdown,
+  };
+}
+
 export default {
   generateStepQuiz,
+  evaluateQuizSubmission,
 };
