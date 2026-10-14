@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import { env, getAuthRedirectUrl } from './config/env';
 import adminRoutes from './routes/admin';
+import authRoutes from './routes/auth';
 import workspaceRoutes from './routes/workspaces';
 import stepRoutes from './routes/steps';
 import { learningRoutes } from './routes/learning';
@@ -70,6 +71,7 @@ const start = async () => {
     await server.register(websocket);
 
     // Register REST Routes
+    await server.register(authRoutes);
     await server.register(adminRoutes);
     await server.register(workspaceRoutes);
     await server.register(stepRoutes);
