@@ -10,6 +10,7 @@ export interface RealSportsClub {
   contactPhone: string;
   verified: boolean;
   googleMapsQuery: string;
+  ageEligibility?: string;
 }
 
 export interface LocalSportsShop {
@@ -151,17 +152,28 @@ const VERIFIED_SHOPS_CATALOG: Record<string, LocalSportsShop[]> = {
 /**
  * Discovers real, authentic sports clubs & academies using Tavily + Groq
  */
-export async function fetchRealClubs(sport: string = 'Football', city: string = 'Ahmedabad', state: string = 'Gujarat'): Promise<RealSportsClub[]> {
+export async function fetchRealClubs(
+  sport: string = 'Football',
+  city: string = 'Ahmedabad',
+  state: string = 'Gujarat',
+  ageCategory: string = 'ALL'
+): Promise<RealSportsClub[]> {
   const cleanSport = (sport || 'Football').trim();
   const cleanCity = (city || 'Ahmedabad').trim();
   const cleanState = (state || 'Gujarat').trim();
+  const cleanAge = (ageCategory || 'ALL').trim();
+  const ageLabel = cleanAge && cleanAge !== 'ALL' ? `${cleanAge} youth` : '';
+  const defaultEligibility = cleanAge !== 'ALL' ? `Eligible for ${cleanAge}` : 'Eligible for All Ages';
 
   const { tavilyKey, groqKey } = await getEffectiveKeys();
 
   // Try real-time web discovery via Tavily + Groq if keys are present
   if (tavilyKey && groqKey) {
     try {
-      const tavilyQuery = `best verified ${cleanSport} training academies clubs in ${cleanCity} ${cleanState} address phone website`;
+      const tavilyQuery = `top verified ${cleanSport} ${ageLabel} coaching academies clubs in ${cleanCity} ${cleanState} contact address`
+        .replace(/\s+/g, ' ')
+        .trim();
+
       const res = await fetch('https://api.tavily.com/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -182,7 +194,7 @@ export async function fetchRealClubs(sport: string = 'Football', city: string = 
 
         if (resultsSnippet.trim()) {
           const prompt = `You are an expert Sports Directory Specialist.
-Extract 4-6 REAL, ACTUALLY EXISTING sports clubs/academies for "${cleanSport}" located in "${cleanCity}, ${cleanState}".
+Extract 4-6 REAL, ACTUALLY EXISTING sports clubs/academies for "${cleanSport}" ${ageLabel ? `specifically accommodating ${cleanAge} youth players` : ''} located in "${cleanCity}, ${cleanState}".
 Use this live web search context:
 ${resultsSnippet}
 
@@ -191,6 +203,7 @@ Rules:
 2. "googleMapsQuery" must be a clean search query that opens the exact location on Google Maps (e.g. "Club Name, Neighborhood, ${cleanCity}").
 3. "verified" must be true.
 4. "estimatedDistanceKm" should be a realistic estimate (e.g. 2.5 to 12.0).
+5. "ageEligibility" must specify the age category (e.g. "${defaultEligibility}").
 
 Return strictly JSON matching this structure:
 [
@@ -202,7 +215,8 @@ Return strictly JSON matching this structure:
     "timing": "e.g., 6:00 AM - 8:30 PM",
     "contactPhone": "+91 ... or Available on site",
     "verified": true,
-    "googleMapsQuery": "Club Name, Neighborhood, ${cleanCity}"
+    "googleMapsQuery": "Club Name, Neighborhood, ${cleanCity}",
+    "ageEligibility": "${defaultEligibility}"
   }
 ]`;
 
@@ -227,6 +241,7 @@ Return strictly JSON matching this structure:
               contactPhone: String(c.contactPhone || 'Available on site'),
               verified: true,
               googleMapsQuery: String(c.googleMapsQuery || `${c.name}, ${cleanCity}`),
+              ageEligibility: String(c.ageEligibility || defaultEligibility),
             }));
           }
         }
@@ -239,7 +254,10 @@ Return strictly JSON matching this structure:
   // City catalog fallback
   const cityClubs = VERIFIED_CLUBS_CATALOG[cleanCity]?.[cleanSport];
   if (cityClubs && cityClubs.length > 0) {
-    return cityClubs;
+    return cityClubs.map((club) => ({
+      ...club,
+      ageEligibility: club.ageEligibility || defaultEligibility,
+    }));
   }
 
   // General authentic structure calibrated to requested city
@@ -253,6 +271,7 @@ Return strictly JSON matching this structure:
       contactPhone: 'Contact at sports complex desk',
       verified: true,
       googleMapsQuery: `${cleanSport} academy ${cleanCity} ${cleanState}`,
+      ageEligibility: defaultEligibility,
     },
     {
       name: `Elite Youth ${cleanSport} Club`,
@@ -263,6 +282,7 @@ Return strictly JSON matching this structure:
       contactPhone: '+91 Available on site',
       verified: true,
       googleMapsQuery: `best ${cleanSport} club in ${cleanCity}`,
+      ageEligibility: defaultEligibility,
     },
     {
       name: `Champion ${cleanSport} Training Center`,
@@ -273,6 +293,7 @@ Return strictly JSON matching this structure:
       contactPhone: '+91 Inquire at academy',
       verified: true,
       googleMapsQuery: `sports academy ${cleanSport} ${cleanCity}`,
+      ageEligibility: defaultEligibility,
     },
   ];
 }
