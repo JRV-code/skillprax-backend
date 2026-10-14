@@ -506,7 +506,7 @@ Return strictly JSON matching this structure:
           if (!data?.intro || !Array.isArray(data?.chapters)) throw new Error('Invalid translation format');
           return data;
         },
-        maxTokens: 2500,
+        maxTokens: 5000,
         temperature: 0.1,
       });
 

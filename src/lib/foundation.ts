@@ -62,7 +62,7 @@ export async function callGroqJson<T = any>(
               { role: 'user', content: usr },
             ],
             response_format: { type: 'json_object' },
-            max_tokens: options.maxTokens ?? 3500,
+            max_tokens: options.maxTokens ?? 4500,
             temperature: options.temperature ?? 0.3,
           }),
           signal: controller.signal,
@@ -77,7 +77,14 @@ export async function callGroqJson<T = any>(
 
         if (res.status === 404 || res.status === 400) {
           const errBody = await res.text();
-          if (errBody.includes('model_not_found') || errBody.includes('does not exist') || res.status === 404 || res.status === 400) {
+          if (res.status === 400 && (errBody.includes('max completion tokens') || errBody.includes('json_validate_failed'))) {
+            if (retryCount < 2) {
+              options.maxTokens = 8000;
+              const briefUsr = `${usr}\n\nCRITICAL: Be concise and avoid filler so the entire JSON payload fits completely within token limits.`;
+              return sendRequest(sys, briefUsr, targetModel, retryCount + 1);
+            }
+          }
+          if (errBody.includes('model_not_found') || errBody.includes('does not exist') || res.status === 404) {
             // Pick best available chat model from Groq
             try {
               const modelsRes = await fetch('https://api.groq.com/openai/v1/models', {

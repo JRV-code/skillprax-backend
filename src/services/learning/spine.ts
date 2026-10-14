@@ -110,6 +110,7 @@ REQUIREMENTS:
    - "preferredType": "VIDEO" or "DOCUMENT"
    - "buildsOn": short phrase referencing earlier skills (or empty string for step 1)
    - "newConcepts": array of 2 to 4 specific concepts that appear for the first time in this step
+10. Be concise: keep titles and covers descriptions succinct (covers under 20 words each) so the full JSON output fits completely within completion tokens.
 
 Return ONLY a JSON object formatted as:
 {
@@ -245,7 +246,7 @@ Return ONLY a JSON object formatted as:
   try {
     spine = await callGroqJson<CurriculumSpineResult>(systemPrompt, userPrompt, {
       validate: validateSpine,
-      maxTokens: 3500,
+      maxTokens: 5500,
       temperature: 0.2,
       retryCount: 1,
     });

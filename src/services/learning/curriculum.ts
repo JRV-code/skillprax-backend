@@ -255,7 +255,7 @@ Return ONLY JSON:
           if (!data || !Array.isArray(data.picks)) throw new Error('Missing picks array');
           return data;
         },
-        maxTokens: 1200,
+        maxTokens: 2000,
         temperature: 0.1,
       }
     );
@@ -417,7 +417,7 @@ Return ONLY JSON:
           if (!data || !Array.isArray(data.chapters)) throw new Error('Missing chapters in anchor result');
           return data;
         },
-        maxTokens: 2500,
+        maxTokens: 4000,
         temperature: 0.15,
       }
     );
@@ -552,7 +552,7 @@ Return ONLY JSON:
           }
           return data;
         },
-        maxTokens: 3000,
+        maxTokens: 5000,
         temperature: 0.2,
       }
     );
@@ -1025,7 +1025,7 @@ Return ONLY JSON:
         }
         return data;
       },
-      maxTokens: 3000,
+      maxTokens: 4500,
       temperature: 0.2,
     }
   );

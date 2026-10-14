@@ -120,7 +120,7 @@ ${JSON.stringify(DEFAULT_UI_STRINGS)}`;
           const translatedUi = await callGroqJson<Record<string, string>>(
             'You are a professional localization expert. Return strictly valid JSON.',
             uiPrompt,
-            { maxTokens: 800, temperature: 0.1 }
+            { maxTokens: 1500, temperature: 0.1 }
           );
 
           uiStrings = translatedUi;
@@ -169,7 +169,7 @@ Rules:
       const transResult = await callGroqJson<any>(
         transSystem,
         JSON.stringify(translationPayload),
-        { maxTokens: 2500, temperature: 0.2 }
+        { maxTokens: 4500, temperature: 0.2 }
       );
 
       // Translate markdown chunked (if markdown exists)
@@ -185,7 +185,7 @@ ${doc.markdown.slice(0, 5000)}`;
           const mdRes = await callGroqJson<{ markdown: string }>(
             'Translate markdown preserving all code fences and headings. Return JSON: {"markdown": "..."}',
             mdPrompt,
-            { maxTokens: 3500, temperature: 0.2 }
+            { maxTokens: 5000, temperature: 0.2 }
           );
           translatedMarkdown = mdRes.markdown || doc.markdown;
         } catch (_) {

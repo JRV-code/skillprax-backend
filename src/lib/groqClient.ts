@@ -33,9 +33,7 @@ export const groq = {
         if (options.response_format) {
           body.response_format = options.response_format;
         }
-        if (options.max_tokens) {
-          body.max_tokens = options.max_tokens;
-        }
+        body.max_tokens = options.max_tokens || 4500;
 
         const candidateModels = [
           model,
@@ -74,6 +72,10 @@ export const groq = {
             }
 
             const errText = await res.text();
+            if (res.status === 400 && (errText.includes('max completion tokens') || errText.includes('json_validate_failed'))) {
+              body.max_tokens = 8000;
+              continue;
+            }
             lastError = new Error(`Groq API request failed (${res.status}): ${errText}`);
             // If error is not 404/model_not_found, break
             if (res.status !== 404 && !errText.includes('model_not_found')) {

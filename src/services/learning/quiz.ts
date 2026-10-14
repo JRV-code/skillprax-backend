@@ -324,7 +324,7 @@ Return ONLY JSON:
         }
         return data;
       },
-      maxTokens: 3500,
+      maxTokens: 5500,
       temperature: 0.2,
     });
 
@@ -706,7 +706,7 @@ Return ONLY JSON:
         }
         return data;
       },
-      maxTokens: 1200,
+      maxTokens: 2000,
       temperature: 0.2,
     });
   } catch (err: any) {

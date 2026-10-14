@@ -79,6 +79,67 @@ function cleanJsonCodeFences(text: string): string {
   return cleaned.trim();
 }
 
+export function extractAndParseJson<T = any>(rawText: string): T {
+  const cleaned = cleanJsonCodeFences(rawText);
+  try {
+    return JSON.parse(cleaned);
+  } catch (err: any) {
+    // 1. Try finding outermost matching braces
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        const sliced = cleaned.slice(firstBrace, lastBrace + 1);
+        return JSON.parse(sliced);
+      } catch (_) {}
+    }
+
+    // 2. Try repairing trailing commas or missing closing braces if cut off
+    let repaired = cleaned;
+    // Strip trailing commas before closing braces/brackets
+    repaired = repaired.replace(/,\s*([}\]])/g, '$1');
+
+    // Count unbalanced quotes, braces, brackets
+    let inString = false;
+    let escape = false;
+    let openBraces = 0;
+    let openBrackets = 0;
+
+    for (let i = 0; i < repaired.length; i++) {
+      const c = repaired[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
+      if (c === '\\') {
+        escape = true;
+        continue;
+      }
+      if (c === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (!inString) {
+        if (c === '{') openBraces++;
+        else if (c === '}') openBraces = Math.max(0, openBraces - 1);
+        else if (c === '[') openBrackets++;
+        else if (c === ']') openBrackets = Math.max(0, openBrackets - 1);
+      }
+    }
+
+    if (inString) repaired += '"';
+    repaired = repaired.replace(/,\s*$/, '');
+    for (let i = 0; i < openBrackets; i++) repaired += ']';
+    for (let i = 0; i < openBraces; i++) repaired += '}';
+
+    try {
+      return JSON.parse(repaired);
+    } catch (_) {}
+
+    throw err;
+  }
+}
+
 export async function callGroqJson<T>(
   systemPrompt: string,
   userPrompt: string,
@@ -95,12 +156,13 @@ export async function callGroqJson<T>(
   }
 
   const model = await getBestGroqModel(groqKey);
-  const maxTokens = opts.maxTokens ?? 2800;
+  let currentMaxTokens = Math.min(8192, Math.max(opts.maxTokens ?? 4500, 3500));
   const temperature = opts.temperature ?? 0.2;
 
   let currentUserPrompt = userPrompt;
   let attempts = 0;
-  const maxAttempts = (opts.retryCount ?? 1) + 1; // 1 attempt + 1 retry
+  const maxAttempts = (opts.retryCount ?? 1) + 2; // Extra recovery headroom for token limit healing
+  let forceJsonMode = true;
 
   while (attempts < maxAttempts) {
     attempts++;
@@ -109,22 +171,27 @@ export async function callGroqJson<T>(
     let res: Response | null = null;
     while (rateLimitRetries <= 2) {
       try {
+        const bodyPayload: Record<string, any> = {
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: currentUserPrompt },
+          ],
+          max_tokens: currentMaxTokens,
+          temperature,
+        };
+
+        if (forceJsonMode) {
+          bodyPayload.response_format = { type: 'json_object' };
+        }
+
         res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${groqKey}`,
           },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: currentUserPrompt },
-            ],
-            response_format: { type: 'json_object' },
-            max_tokens: maxTokens,
-            temperature,
-          }),
+          body: JSON.stringify(bodyPayload),
           signal: AbortSignal.timeout(45000),
         });
       } catch (err: any) {
@@ -151,6 +218,30 @@ export async function callGroqJson<T>(
           continue;
         }
       }
+
+      // Handle Groq 400 token limit exhaustion / json_validate_failed
+      if (
+        errBody.includes('max completion tokens') ||
+        errBody.includes('json_validate_failed') ||
+        (res && res.status === 400 && errBody.includes('Failed to generate JSON'))
+      ) {
+        console.warn(
+          `[callGroqJson] Groq token truncation / json_validate_failed (current tokens: ${currentMaxTokens}). Scaling tokens & requesting conciseness.`
+        );
+        // Scale max_tokens up to Groq's maximum output limit (8192)
+        currentMaxTokens = Math.min(8192, Math.max(currentMaxTokens + 3000, 7800));
+        currentUserPrompt = `${userPrompt}\n\nCRITICAL CONSTRAINTS: Your previous response exceeded the completion token limit and was truncated before the JSON document closed. Be concise, direct, and avoid filler words or excessive verbosity. Return ONLY complete, valid JSON adhering to the schema so the entire document fits within limits.`;
+
+        // If on next-to-last attempt and still failing json_validate_failed, try omitting response_format: { type: 'json_object' }
+        if (attempts >= maxAttempts - 1) {
+          forceJsonMode = false;
+        }
+
+        if (attempts < maxAttempts) {
+          continue;
+        }
+      }
+
       if (attempts >= maxAttempts) {
         throw new Error(`Groq API error (status ${res?.status}): ${errBody.slice(0, 300)}`);
       }
@@ -161,7 +252,7 @@ export async function callGroqJson<T>(
     try {
       const completion: any = await res.json();
       rawJsonText = completion?.choices?.[0]?.message?.content || '';
-      const parsed = JSON.parse(cleanJsonCodeFences(rawJsonText));
+      const parsed = extractAndParseJson(rawJsonText);
       return opts.validate(parsed);
     } catch (parseOrValErr: any) {
       if (attempts >= maxAttempts) {

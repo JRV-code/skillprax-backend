@@ -82,6 +82,7 @@ STRICT RULES:
 2. Keep JSON keys, IDs ("c1", "key", etc.), numbers, timeboxes, and structural shapes EXACTLY unchanged.
 3. Keep widely used technical and domain terms in their original form (optionally with brief native explanation in parentheses).
 4. Do NOT add any URLs or markdown code fences.
+5. Be concise and natural in the target language without verbose padding.
 
 Return ONLY the translated JSON matching the exact input structure.`;
 
@@ -96,7 +97,7 @@ Return ONLY the translated JSON matching the exact input structure.`;
         }
         return data;
       },
-      maxTokens: 3500,
+      maxTokens: 7500,
       temperature: 0.1,
       retryCount: 1,
     }
@@ -191,7 +192,7 @@ STRICT RULES:
         }
         return data;
       },
-      maxTokens: 3000,
+      maxTokens: 4500,
       temperature: 0.1,
     }
   );
@@ -284,7 +285,7 @@ Return ONLY valid JSON.`;
           }
           return data;
         },
-        maxTokens: 1200,
+        maxTokens: 2500,
         temperature: 0.1,
       }
     );

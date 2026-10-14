@@ -212,7 +212,7 @@ Rules:
           }
           return data;
         },
-        maxTokens: 1400,
+        maxTokens: 2500,
         temperature: 0.25,
       });
     } catch {
@@ -358,7 +358,7 @@ Rules:
           if (!Array.isArray(data?.assignments)) throw new Error('assignments must be array');
           return data;
         },
-        maxTokens: 600,
+        maxTokens: 1200,
         temperature: 0.1,
       });
 
@@ -524,7 +524,7 @@ Return ONLY JSON:
           if (!data?.intro || !Array.isArray(data?.topics)) throw new Error('Invalid guide structure');
           return data;
         },
-        maxTokens: 2200,
+        maxTokens: 4000,
         temperature: 0.2,
       });
     } catch {
