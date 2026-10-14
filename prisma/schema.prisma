@@ -275,7 +275,6 @@ model UserSkill {
   isCompleted        Boolean             @default(false) @map("is_completed")
   createdAt          DateTime            @default(now()) @map("created_at")
   updatedAt          DateTime            @updatedAt @map("updated_at")
-  steps              BlueprintSkillStep[]
 
   @@map("user_skills")
 }
@@ -285,20 +284,30 @@ model BlueprintSkillStep {
   skillId                String    @map("skill_id")
   stepNumber             Int       @map("step_number")
   title                  String
-  description            String
+  description            String    @default("")
   requiredPracticeDays   Int       @default(1) @map("required_practice_days")
   practiceDaysCompleted  Int       @default(0) @map("practice_days_completed")
   quizPassed             Boolean   @default(false) @map("quiz_passed")
   quizScore              Int?      @map("quiz_score")
-  videoUrl               String    @map("video_url")
-  videoId                String    @map("video_id")
-  documentationMarkdown  String    @map("documentation_markdown")
+  videoUrl               String    @default("") @map("video_url")
+  videoId                String    @default("") @map("video_id")
+  videoTitle             String?   @default("") @map("video_title")
+  videoMiniGuide         String?   @default("") @map("video_mini_guide")
+  docTitle               String?   @default("") @map("doc_title")
+  docUrl                 String?   @default("") @map("doc_url")
+  docDomain              String?   @default("") @map("doc_domain")
+  docMiniGuide           String?   @default("") @map("doc_mini_guide")
+  stepExplanation        String?   @default("") @map("step_explanation")
+  documentationMarkdown  String    @default("") @map("documentation_markdown")
   documentationSourceUrl String?   @map("documentation_source_url")
-  documentationQuadrants Json      @map("documentation_quadrants")
+  documentationQuadrants Json?     @default("{}") @map("documentation_quadrants")
   dailyDietPlan          Json?     @map("daily_diet_plan")
+  topics                 Json?     @default("[]")
+  difficultyTier         String?   @default("Foundations") @map("difficulty_tier")
+  quizData               Json?     @default("[]") @map("quiz_data")
+  isSourced              Boolean?  @default(false) @map("is_sourced")
   isUnlocked             Boolean   @default(false) @map("is_unlocked")
   isCompleted            Boolean   @default(false) @map("is_completed")
-  userSkill              UserSkill @relation(fields: [skillId], references: [id], onDelete: Cascade)
 
   @@unique([skillId, stepNumber])
   @@map("skill_steps")
@@ -313,6 +322,7 @@ model UserResourceHistory {
   resourceIdentifier String   @map("resource_identifier")
   createdAt          DateTime @default(now()) @map("created_at")
 
+  @@unique([userId, resourceIdentifier])
   @@unique([userId, resourceType, resourceIdentifier])
   @@map("user_resource_history")
 }
