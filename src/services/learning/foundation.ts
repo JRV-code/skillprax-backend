@@ -436,7 +436,7 @@ export async function mapWithLimit<T, R>(items: T[], limit: number, fn: (x: T) =
 }
 
 export function assertNoUrls(value: unknown, label: string): void {
-  if (/https?:\/\/|www\./i.test(JSON.stringify(value))) {
+  if (/https?:\/\/\S+/i.test(JSON.stringify(value))) {
     throw new Error(`${label}: model output contained a URL (URLs only come from Tavily)`);
   }
 }
@@ -529,8 +529,11 @@ export async function verifyLink(
       });
       await res.body?.cancel();
       const finalUrl = res.url || url;
-      if (res.status === 401 || res.status === 404 || res.status === 410 || looksWalled(finalUrl)) {
+      if (res.status === 404 || res.status === 410 || looksWalled(finalUrl)) {
         return { status: 'DEAD', finalUrl };
+      }
+      if (res.status === 401 || res.status === 403 || res.status === 429) {
+        return { status: 'UNCHECKED', finalUrl };
       }
       if (res.ok) return { status: 'VERIFIED', finalUrl };
       if (res.status === 405 || res.status === 501) continue;
