@@ -503,10 +503,20 @@ Return ONLY JSON:
 }
 
 // 11.2 & 11.3 SERVE QUIZ QUESTIONS
-export async function generateLevelUpQuiz(stepId: string) {
+// 11.2 & 11.3 SERVE QUIZ QUESTIONS
+export async function generateLevelUpQuiz(
+  stepId: string,
+  options?: {
+    mode?: 'initial' | 'retest' | 'perfection';
+    retestMode?: boolean;
+    perfectionMode?: boolean;
+    failedQuestionIds?: string[];
+  }
+) {
   let step = await prisma.skillStep.findUnique({
     where: { id: stepId },
     include: {
+      workspace: true,
       stepTopics: { include: { resources: true } },
     },
   });
@@ -520,15 +530,24 @@ export async function generateLevelUpQuiz(stepId: string) {
       const activeS = ws.steps.find((s) => s.status !== 'PASSED') || ws.steps[0];
       step = await prisma.skillStep.findUnique({
         where: { id: activeS.id },
-        include: { stepTopics: { include: { resources: true } } },
+        include: {
+          workspace: true,
+          stepTopics: { include: { resources: true } },
+        },
       });
     }
   }
 
   if (!step) throw new Error('Step not found');
 
+  const isRetestOrPerfection =
+    options?.mode === 'retest' ||
+    options?.mode === 'perfection' ||
+    Boolean(options?.retestMode) ||
+    Boolean(options?.perfectionMode);
+
   const existingBlueprint = Array.isArray(step.quizBlueprint) ? (step.quizBlueprint as any[]) : [];
-  if (step.quizStatus !== 'READY' || existingBlueprint.length === 0) {
+  if (isRetestOrPerfection || step.quizStatus !== 'READY' || existingBlueprint.length === 0) {
     await runQuizBuild(step.id);
   }
 
@@ -567,15 +586,20 @@ export async function generateLevelUpQuiz(stepId: string) {
   });
 
   return {
+    evaluationId: `eval_${step.id}_${Date.now()}`,
+    stepId: step.id,
+    stepNumber: step.stepIndex,
+    stepTitle: step.title,
+    passThreshold: 70,
+    passingThreshold: 70,
     questions: sanitized,
     questionCount: sanitized.length,
-    passingThreshold: LEARNING_CONFIG.PASS_THRESHOLD_PERCENT,
     attemptNumber: priorAttemptsCount + 1,
     coveredTopics: Array.from(new Set(balancedQuestions.map((q) => q.topicKey))),
   };
 }
 
-// 11.3 SUBMIT AND GRADE QUIZ AT 70%
+// 11.3 SUBMIT AND GRADE QUIZ AT STRICT 70% CRITERIA WITH MISTAKE ANALYSIS & REMEDIATION
 export async function submitQuizAnswers(
   stepId: string,
   payload: {
@@ -618,8 +642,8 @@ export async function submitQuizAnswers(
     throw new Error('No active quiz blueprint found for step');
   }
 
-  // Pure server scoring function
-  const scored = scoreAttempt(questions, payload.answers, LEARNING_CONFIG.PASS_THRESHOLD_PERCENT);
+  const totalCount = questions.length;
+  let correctCount = 0;
 
   const detailedBreakdown = questions.map((q) => {
     const rawAnswer = (payload.answers[q.id] ?? '').toString().trim();
@@ -635,10 +659,13 @@ export async function submitQuizAnswers(
       ? chosenOption.id === q.correctOptionId
       : rawAnswer === q.correctOptionId;
 
+    if (isCorrect) correctCount++;
+
     const topic = step!.stepTopics.find((t) => t.key === q.topicKey);
 
     return {
       id: q.id,
+      questionId: q.id,
       topicKey: q.topicKey,
       topicId: q.topicId || topic?.id,
       topicTitle: topic?.title || q.topicKey,
@@ -646,25 +673,213 @@ export async function submitQuizAnswers(
       evidenceFact: q.evidenceFact,
       question: q.question,
       chosenOptionId: chosenOption?.id || rawAnswer || null,
-      chosenOptionText: chosenOption?.text || null,
+      chosenOptionText: chosenOption?.text || rawAnswer || null,
+      chosenText: chosenOption?.text || rawAnswer || 'No response recorded',
       correctOptionId: q.correctOptionId,
-      correctOptionText: correctOption?.text || null,
+      correctOptionText: correctOption?.text || 'Correct principle',
+      correctText: correctOption?.text || 'Correct principle',
       isCorrect,
       explanation: q.explanation,
     };
   });
 
+  // Strict 70% passing criteria
+  const percent = totalCount > 0 ? Math.floor((correctCount * 100) / totalCount) : 0;
+  const passed = totalCount > 0 && correctCount * 100 >= 70 * totalCount;
+
+  // Identify wrong answers
+  const wrongQuestions = detailedBreakdown.filter((q) => !q.isCorrect);
+  let wrongQuestionsWithAi = wrongQuestions.map((wq) => ({
+    questionId: wq.id,
+    question: wq.question,
+    chosenText: wq.chosenText,
+    correctText: wq.correctText,
+    explanation: wq.explanation,
+    mistakeExplanation: wq.explanation,
+    topicKey: wq.topicKey,
+    topicTitle: wq.topicTitle,
+  }));
+
+  // AI Mistake Analysis (Groq) for wrong questions
+  if (wrongQuestions.length > 0) {
+    try {
+      const groqMistakeRes = await callGroqJson<{ analyses: Array<{ questionId: string; mistakeExplanation: string }> }>(
+        `You are a Senior Socratic Evaluator. Analyze the learner's incorrect quiz answers.
+For each question, provide a concise, personalized mistakeExplanation (1-2 sentences) explaining:
+1. Why their selected answer is incorrect or reflects a misconception
+2. The core principle behind the correct answer
+3. How to remember or apply that concept correctly
+
+Return JSON:
+{
+  "analyses": [
+    { "questionId": "...", "mistakeExplanation": "..." }
+  ]
+}`,
+        JSON.stringify({
+          stepTitle: step.title,
+          mistakes: wrongQuestions.map((wq) => ({
+            questionId: wq.id,
+            question: wq.question,
+            userSelected: wq.chosenText,
+            correctAnswer: wq.correctText,
+            topic: wq.topicTitle,
+          })),
+        }),
+        {
+          validate: (data: any) => {
+            if (!data || typeof data !== 'object') throw new Error('Invalid JSON response');
+            return data;
+          },
+          maxTokens: 2500,
+          temperature: 0.3,
+        }
+      );
+
+      if (Array.isArray(groqMistakeRes?.analyses)) {
+        const analysisMap = new Map(groqMistakeRes.analyses.map((a) => [a.questionId, a.mistakeExplanation]));
+        wrongQuestionsWithAi = wrongQuestionsWithAi.map((wq) => ({
+          ...wq,
+          mistakeExplanation: analysisMap.get(wq.questionId) || wq.explanation,
+        }));
+      }
+    } catch (gErr) {
+      console.warn('[SubmitQuiz] Groq mistake analysis notice:', gErr);
+    }
+  }
+
+  // IF FAILED (percent < 70) — Source Fresh Remediation Resources
+  const remediationResources: Array<{
+    id: string;
+    topicTitle: string;
+    type: 'VIDEO' | 'DOC';
+    title: string;
+    url: string;
+    videoId: string | null;
+    domain: string;
+    whyWatchOrRead: string;
+  }> = [];
+
+  if (!passed) {
+    let historyIdentifiers = new Set<string>();
+    try {
+      const history = await prisma.resourceHistory.findMany({
+        where: { workspaceId: step.workspaceId },
+      });
+      historyIdentifiers = new Set(history.map((h) => h.identifier));
+    } catch (_) {}
+
+    const weakTopics = Array.from(new Set(wrongQuestions.map((w) => w.topicTitle))).slice(0, 3);
+    const workspaceTitle = step.workspace?.title || step.title;
+
+    for (const topicTitle of weakTopics) {
+      const vidQuery = `${workspaceTitle} ${topicTitle} tutorial video breakdown`;
+      const docQuery = `${workspaceTitle} ${topicTitle} technical guide documentation`;
+
+      try {
+        const [vidResults, docResults] = await Promise.all([
+          searchTavily(vidQuery, {
+            searchDepth: 'basic',
+            maxResults: 4,
+            includeDomains: ['youtube.com'],
+          }).catch(() => []),
+          searchTavily(docQuery, {
+            searchDepth: 'advanced',
+            maxResults: 4,
+          }).catch(() => []),
+        ]);
+
+        // Find 1 fresh YouTube video
+        for (const r of vidResults) {
+          const norm = normalizeUrl(r.url);
+          if (historyIdentifiers.has(norm)) continue;
+          const ytId = extractYouTubeId(r.url);
+          if (!ytId) continue;
+          const ytCheck = await checkYouTube(ytId);
+          if (ytCheck.status === 'GONE') continue;
+
+          remediationResources.push({
+            id: `rem-vid-${remediationResources.length + 1}`,
+            topicTitle,
+            type: 'VIDEO',
+            title: r.title || `${topicTitle} Video Tutorial`,
+            url: r.url,
+            videoId: ytId,
+            domain: 'youtube.com',
+            whyWatchOrRead: `Visual walkthrough of ${topicTitle} mechanics to overcome identified misconception.`,
+          });
+
+          historyIdentifiers.add(norm);
+          try {
+            await prisma.resourceHistory.create({
+              data: {
+                workspaceId: step.workspaceId,
+                profileId: step.workspace?.profileId || (step.workspace as any)?.userProfileId || 'anonymous',
+                stepIndex: step.stepIndex,
+                resourceType: 'YOUTUBE',
+                identifier: norm,
+                title: r.title,
+                domain: 'youtube.com',
+              },
+            });
+          } catch (_) {}
+          break;
+        }
+
+        // Find 1 fresh Doc
+        for (const r of docResults) {
+          const norm = normalizeUrl(r.url);
+          if (historyIdentifiers.has(norm)) continue;
+          if (r.url.includes('youtube.com') || r.url.includes('youtu.be')) continue;
+          if (!(await isSafePublicUrl(r.url))) continue;
+          const vLink = await verifyLink(r.url);
+          if (vLink.status === 'DEAD') continue;
+
+          remediationResources.push({
+            id: `rem-doc-${remediationResources.length + 1}`,
+            topicTitle,
+            type: 'DOC',
+            title: r.title || `${topicTitle} Technical Guide`,
+            url: vLink.finalUrl,
+            videoId: null,
+            domain: domainOf(vLink.finalUrl),
+            whyWatchOrRead: `Official reference covering foundational principles of ${topicTitle}.`,
+          });
+
+          historyIdentifiers.add(norm);
+          try {
+            await prisma.resourceHistory.create({
+              data: {
+                workspaceId: step.workspaceId,
+                profileId: step.workspace?.profileId || (step.workspace as any)?.userProfileId || 'anonymous',
+                stepIndex: step.stepIndex,
+                resourceType: 'URL',
+                identifier: norm,
+                title: r.title,
+                domain: domainOf(vLink.finalUrl),
+              },
+            });
+          } catch (_) {}
+          break;
+        }
+      } catch (remErr) {
+        console.warn('[SubmitQuiz] Remediation search error for topic:', topicTitle, remErr);
+      }
+    }
+  }
+
+  // IF PASSED (percent >= 70) — Unlock Next Step
   const priorPassed = await prisma.attemptResult.findFirst({
     where: { stepId: step.id, passed: true },
   });
-  const isFirstTransitionToPassed = scored.passed && !priorPassed;
+  const isFirstTransitionToPassed = passed && !priorPassed;
 
   let xpEarned = 0;
   let unlockedNextStepId: string | null = null;
   let isFinalStep = false;
   let nextStepIndex: number | null = null;
 
-  if (scored.passed) {
+  if (passed) {
     const allWorkspaceSteps = await prisma.skillStep.findMany({
       where: { workspaceId: step.workspaceId },
       orderBy: { stepIndex: 'asc' },
@@ -673,21 +888,39 @@ export async function submitQuizAnswers(
     const nextStep = allWorkspaceSteps.find((s) => s.stepIndex === step!.stepIndex + 1);
     isFinalStep = step.stepIndex === totalSteps || !nextStep;
 
-    const grandmasterBonus = scored.percent === 100 ? 1000 : 0;
+    const grandmasterBonus = percent === 100 ? 1000 : 0;
     const completionBonus = isFinalStep ? 1000 : 0;
     xpEarned = isFirstTransitionToPassed
       ? step.stepIndex * 500 + grandmasterBonus + completionBonus
       : 100;
 
     if (nextStep) {
+      const currentTier = step.difficultyTier || 'FOUNDATIONS';
+      let nextTier = 'APPLICATIONS';
+      if (currentTier === 'FOUNDATIONS') nextTier = 'APPLICATIONS';
+      else if (currentTier === 'APPLICATIONS') nextTier = 'OPTIMIZATION';
+      else if (currentTier === 'OPTIMIZATION') nextTier = 'MASTERY';
+      else nextTier = 'MASTERY';
+
       const updatedNext = await prisma.skillStep.update({
         where: { id: nextStep.id },
         data: {
           status: 'STUDY_UNGENERATED',
+          difficultyTier: nextTier,
         },
       });
       unlockedNextStepId = updatedNext.id;
       nextStepIndex = nextStep.stepIndex;
+
+      try {
+        await prisma.workspace.update({
+          where: { id: step.workspaceId },
+          data: {
+            currentStep: Math.max(step.workspace.currentStep, nextStep.stepIndex),
+            progress: Math.min(100, Math.floor((step.stepIndex / totalSteps) * 100)),
+          },
+        });
+      } catch (_) {}
     }
 
     if (isFirstTransitionToPassed) {
@@ -705,7 +938,14 @@ export async function submitQuizAnswers(
 
   // Determine kind: INITIAL | TARGETED_RETEST | PERFECTION
   const priorAttemptCount = await prisma.attemptResult.count({ where: { stepId: step.id } });
-  const kind = priorAttemptCount === 0 ? 'INITIAL' : (scored.percent === 100 ? 'PERFECTION' : 'TARGETED_RETEST');
+  const kind = priorAttemptCount === 0 ? 'INITIAL' : (percent === 100 ? 'PERFECTION' : 'TARGETED_RETEST');
+
+  // Compute byTopic breakdown
+  const scoredByTopic = [...new Set(detailedBreakdown.map((r) => r.topicKey ?? 'general'))].map((topicKey) => {
+    const rs = detailedBreakdown.filter((r) => (r.topicKey ?? 'general') === topicKey);
+    const c = rs.filter((r) => r.isCorrect).length;
+    return { topicKey, correct: c, total: rs.length, percent: Math.floor((c * 100) / rs.length) };
+  });
 
   // Persist AttemptResult
   const attemptResult = await prisma.attemptResult.create({
@@ -713,11 +953,11 @@ export async function submitQuizAnswers(
       stepId: step.id,
       profileId: step.workspace?.profileId || (step.workspace as any)?.userProfileId,
       kind,
-      correctCount: scored.correctCount,
-      totalCount: scored.totalCount,
-      percent: scored.percent,
-      passed: scored.passed,
-      topicBreakdown: scored.byTopic as any,
+      correctCount,
+      totalCount,
+      percent,
+      passed,
+      topicBreakdown: scoredByTopic as any,
     },
   });
 
@@ -726,16 +966,16 @@ export async function submitQuizAnswers(
     data: {
       id: attemptResult.id,
       stepId: step.id,
-      score: scored.percent,
-      scorePercent: scored.percent,
-      correctCount: scored.correctCount,
-      totalCount: scored.totalCount,
-      questionCount: scored.totalCount,
+      score: percent,
+      scorePercent: percent,
+      correctCount,
+      totalCount,
+      questionCount: totalCount,
       attemptNumber: priorAttemptCount + 1,
-      passed: scored.passed,
+      passed,
       status: 'completed',
       results: detailedBreakdown as any,
-      breakdown: scored.byTopic as any,
+      breakdown: scoredByTopic as any,
       completedAt: new Date(),
     },
   });
@@ -744,35 +984,44 @@ export async function submitQuizAnswers(
   await prisma.skillStep.update({
     where: { id: step.id },
     data: {
-      status: scored.passed ? 'PASSED' : 'FAILED_REMEDIATION',
+      status: passed ? 'PASSED' : 'FAILED_REMEDIATION',
     },
   });
 
   // Generate analysis
-  const analysis = await generateEvaluationAnalysis(attemptResult.id);
+  let analysis: any = null;
+  try {
+    analysis = await generateEvaluationAnalysis(attemptResult.id);
+  } catch (_) {}
 
   return {
     id: attemptResult.id,
     evaluationId: attemptResult.id,
     attemptNumber: priorAttemptCount + 1,
     kind,
-    score: scored.percent,
-    scorePercent: scored.percent,
-    percent: scored.percent,
-    correctCount: scored.correctCount,
-    totalCount: scored.totalCount,
-    requiredCorrect: Math.ceil((LEARNING_CONFIG.PASS_THRESHOLD_PERCENT * scored.totalCount) / 100),
-    passed: scored.passed,
-    passThresholdPercent: LEARNING_CONFIG.PASS_THRESHOLD_PERCENT,
-    byTopic: scored.byTopic,
-    chapters: scored.byTopic,
+    score: percent,
+    scorePercent: percent,
+    percent,
+    correctCount,
+    totalCount,
+    requiredCorrect: Math.ceil((70 * totalCount) / 100),
+    passed,
+    passThresholdPercent: 70,
+    passThreshold: 70,
+    isPerfect: percent === 100,
+    wrongQuestions: wrongQuestionsWithAi,
+    remediationResources,
+    aiSummary: analysis?.headline || (passed ? 'Milestone competency verified at 70% threshold.' : 'Targeted remediation required before retest.'),
+    nextStepUnlocked: passed && Boolean(unlockedNextStepId),
+    nextStepId: unlockedNextStepId,
+    nextStepIndex,
+    byTopic: scoredByTopic,
+    chapters: scoredByTopic,
     results: detailedBreakdown,
     analysis,
     isFirstTransitionToPassed,
     xpEarned,
     isFinalStep,
-    nextStepIndex,
-    nextStepId: unlockedNextStepId,
     unlockedNextStepId,
   };
 }

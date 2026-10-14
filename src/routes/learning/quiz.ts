@@ -12,6 +12,7 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
   // GET /api/steps/:stepId/level-up-quiz and GET /api/steps/:stepId/quiz
   const handleGetQuiz = async (req: any, reply: any) => {
     const { stepId } = req.params as { stepId: string };
+    const queryMode = req.query?.mode as 'initial' | 'retest' | 'perfection' | undefined;
     try {
       let step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { id: true, status: true } });
       if (!step) {
@@ -26,7 +27,7 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
       }
       if (!step) return reply.status(404).send({ error: 'Step not found' });
       if (step.status === 'LOCKED') return reply.send({ locked: true });
-      const quiz = await generateLevelUpQuiz(step.id);
+      const quiz = await generateLevelUpQuiz(step.id, { mode: queryMode || 'initial' });
       return reply.send(quiz);
     } catch (err: any) {
       fastify.log.error(err, '[GetQuiz] Failed');
@@ -42,6 +43,15 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
   // POST /api/steps/:stepId/level-up-quiz & POST /api/steps/:stepId/quiz — Grounded Socratic Quiz Generation
   const handlePostQuiz = async (req: any, reply: any) => {
     const { stepId } = req.params as { stepId: string };
+    const queryMode = req.query?.mode;
+    const body = (req.body || {}) as {
+      mode?: 'initial' | 'retest' | 'perfection';
+      retestMode?: boolean;
+      perfectionMode?: boolean;
+      failedQuestionIds?: string[];
+    };
+    const effectiveMode = body.mode || queryMode || (body.retestMode ? 'retest' : body.perfectionMode ? 'perfection' : 'initial');
+
     try {
       let step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { id: true, status: true } });
       if (!step) {
@@ -56,7 +66,12 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
       }
       if (!step) return reply.status(404).send({ error: 'Step not found' });
       if (step.status === 'LOCKED') return reply.send({ locked: true });
-      const quiz = await generateLevelUpQuiz(step.id);
+      const quiz = await generateLevelUpQuiz(step.id, {
+        mode: effectiveMode,
+        retestMode: body.retestMode || effectiveMode === 'retest',
+        perfectionMode: body.perfectionMode || effectiveMode === 'perfection',
+        failedQuestionIds: body.failedQuestionIds,
+      });
       return reply.send(quiz);
     } catch (err: any) {
       fastify.log.error(err, '[GenerateQuiz] Failed');
@@ -71,13 +86,13 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
 
   fastify.post('/api/steps/:stepId/prompt-quiz', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
-    const quiz = await generateLevelUpQuiz(stepId);
+    const quiz = await generateLevelUpQuiz(stepId, { mode: 'initial' });
     return reply.send(quiz);
   });
 
   fastify.post('/api/quizzes/generate/:stepId', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
-    const quiz = await generateLevelUpQuiz(stepId);
+    const quiz = await generateLevelUpQuiz(stepId, { mode: 'initial' });
     return reply.send(quiz);
   });
 
