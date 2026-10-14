@@ -1,15 +1,15 @@
-import { prisma } from '../../lib/prisma';
+import prisma from '../../lib/prisma';
 import { LEARNING_CONFIG } from '../../config/learning';
 import {
   callGroqJson,
   assertNoUrls,
   searchTavily,
-  canonicalKey,
-  registrableDomain,
   extractYouTubeId,
   checkYouTube,
   verifyLink,
   isSafePublicUrl,
+  domainOf,
+  normalizeUrl,
 } from './foundation';
 
 export interface QuizQuestionOption {
@@ -20,22 +20,32 @@ export interface QuizQuestionOption {
 }
 
 export interface QuizQuestionRaw {
-  anchorId: string;
-  chapterKey: string;
+  topicKey: string;
+  topicId?: string;
+  resourceId?: string;
+  evidenceFact: string;
+  acuId: string;
   question: string;
   correctAnswer: string;
   distractors: string[];
   explanation: string;
+  chapterKey?: string;
+  anchorId?: string;
 }
 
 export interface StoredQuizQuestion {
   id: string;
-  anchorId: string;
-  chapterKey: string;
+  topicKey: string;
+  topicId?: string;
+  resourceId?: string;
+  evidenceFact: string;
+  acuId: string;
   question: string;
   explanation: string;
   correctOptionId: string;
   options: QuizQuestionOption[];
+  chapterKey?: string;
+  anchorId?: string;
 }
 
 function shuffle<T>(a: T[]): T[] {
@@ -47,8 +57,38 @@ function shuffle<T>(a: T[]): T[] {
   return r;
 }
 
+export function checkLexicalGrounding(textA: string, textB: string): boolean {
+  const get5LetterWords = (s: string) =>
+    new Set(
+      s
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 5)
+    );
+  const factWords = get5LetterWords(textB);
+  const testWords = get5LetterWords(textA);
+  let shared = 0;
+  for (const w of testWords) {
+    if (factWords.has(w)) shared++;
+  }
+  return shared >= 2;
+}
+
+export function checkOptionLengths(opts: string[]): boolean {
+  if (opts.length !== 4) return false;
+  const wordCounts = opts.map((o) => o.trim().split(/\s+/).filter(Boolean).length);
+  const minLen = Math.min(...wordCounts);
+  const maxLen = Math.max(...wordCounts);
+  if (maxLen <= 5) {
+    return maxLen - minLen <= 2;
+  }
+  const avg = wordCounts.reduce((a, b) => a + b, 0) / 4;
+  return wordCounts.every((len) => Math.abs(len - avg) <= avg * 0.35 || Math.abs(len - avg) <= 2);
+}
+
 export function buildBalancedQuestions(raw: QuizQuestionRaw[]): StoredQuizQuestion[] {
-  const targets = shuffle(raw.map((_, i) => i % 4)); // as even as possible across A-D (positions 0-3)
+  const targets = shuffle(raw.map((_, i) => i % 4)); // Evenly distributes correct answer across positions 0-3
   return raw.map((q, i) => {
     const correctOpt: QuizQuestionOption = {
       id: `opt-${i}-c`,
@@ -76,8 +116,13 @@ export function buildBalancedQuestions(raw: QuizQuestionRaw[]): StoredQuizQuesti
 
     return {
       id: `q-${i + 1}`,
-      anchorId: q.anchorId,
-      chapterKey: q.chapterKey,
+      topicKey: q.topicKey,
+      topicId: q.topicId,
+      resourceId: q.resourceId,
+      evidenceFact: q.evidenceFact,
+      acuId: q.acuId,
+      chapterKey: q.chapterKey || q.topicKey,
+      anchorId: q.anchorId || `anchor-${i + 1}`,
       question: q.question,
       explanation: q.explanation,
       correctOptionId: correctOpt.id,
@@ -86,7 +131,7 @@ export function buildBalancedQuestions(raw: QuizQuestionRaw[]): StoredQuizQuesti
   });
 }
 
-// 12.1 ONE PURE SCORING FUNCTION (INTEGER MATH & FLOORED PERCENT)
+// 11.3 ONE PURE SCORING FUNCTION ON SERVER (INTEGER MATH & FLOORED PERCENT)
 export function scoreAttempt(
   questions: { id: string; correctOptionId: string; topicKey?: string | null; chapterKey?: string | null; acuId?: string | null }[],
   answers: Record<string, string | undefined>,
@@ -110,13 +155,13 @@ export function scoreAttempt(
   return { totalCount, correctCount, percent, passed, results, byTopic };
 }
 
-// 14.5 DETERMINISTIC GRADING
+// DETERMINISTIC GRADING
 export function gradeAttempt(
-  questions: { id: string; chapterKey: string; correctOptionId: string; topicKey?: string }[],
+  questions: { id: string; correctOptionId: string; topicKey?: string | null; chapterKey?: string | null }[],
   answers: Record<string, string>,
   thresholdPercent: number = LEARNING_CONFIG.PASS_THRESHOLD_PERCENT
 ) {
-  const total = questions.length; // from the DB, never from the request
+  const total = questions.length;
   if (total === 0) throw new Error('Cannot grade an empty evaluation');
 
   const scored = scoreAttempt(questions, answers, thresholdPercent);
@@ -137,120 +182,122 @@ export function gradeAttempt(
   };
 }
 
-// 14.1 & 14.2 GENERATE LEVEL UP QUIZ
-export async function generateLevelUpQuiz(stepId: string) {
+// 11.1 RUN QUIZ BUILD (BUILT FROM STORED FACTS)
+export async function runQuizBuild(stepId: string): Promise<void> {
   const step = await prisma.skillStep.findUnique({
     where: { id: stepId },
     include: {
-      chapters: {
-        orderBy: { orderIndex: 'asc' },
-        include: {
-          resources: { where: { isPrimary: true } },
-        },
+      workspace: true,
+      stepTopics: {
+        where: { status: 'READY' },
+        include: { resources: true },
       },
-      attempts: { orderBy: { createdAt: 'desc' }, take: 1 },
     },
   });
 
-  if (!step) {
-    throw new Error('Step not found');
-  }
+  if (!step) throw new Error('Step not found');
 
-  if (step.chapters.length === 0) {
-    const err: any = new Error('Build the curriculum first');
+  if (step.packStatus !== 'READY') {
+    await prisma.skillStep.update({
+      where: { id: stepId },
+      data: { quizStatus: 'FAILED', quizError: 'Pack must be READY before quiz can be built' },
+    });
+    const err: any = new Error('Pack must be READY before quiz can be built');
     err.statusCode = 409;
     throw err;
   }
 
-  // Collect anchors across chapters
-  interface UsableAnchor {
-    id: string;
-    chapterKey: string;
-    chapterTitle: string;
-    text: string;
-    origin: 'SOURCE_TEXT' | 'CHAPTER_OBJECTIVE';
+  interface UsableFact {
+    topicKey: string;
+    topicId: string;
+    topicTitle: string;
+    resourceId?: string;
+    acuId: string;
+    fact: string;
   }
 
-  const allAnchors: UsableAnchor[] = [];
-  for (const ch of step.chapters) {
-    const anchorsRaw = Array.isArray(ch.anchors) ? (ch.anchors as any[]) : [];
-    for (const a of anchorsRaw) {
-      if (a?.id && a?.text) {
-        allAnchors.push({
-          id: a.id,
-          chapterKey: ch.key,
-          chapterTitle: ch.title,
-          text: a.text,
-          origin: a.origin === 'SOURCE_TEXT' ? 'SOURCE_TEXT' : 'CHAPTER_OBJECTIVE',
+  const allFacts: UsableFact[] = [];
+  for (const topic of step.stepTopics) {
+    const factsRaw = Array.isArray(topic.facts) ? (topic.facts as string[]) : [];
+    const acuIds = Array.isArray(topic.acuIds) ? (topic.acuIds as string[]) : [];
+    const primaryAcu = acuIds[0] || `${topic.key}-acu`;
+    const resourceId = topic.resources[0]?.id;
+
+    for (const factStr of factsRaw) {
+      if (typeof factStr === 'string' && factStr.trim().length > 10) {
+        allFacts.push({
+          topicKey: topic.key,
+          topicId: topic.id,
+          topicTitle: topic.title,
+          resourceId,
+          acuId: primaryAcu,
+          fact: factStr.trim(),
         });
       }
     }
   }
 
-  if (allAnchors.length < LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) {
-    const err: any = new Error('Not enough key ideas — rebuild the curriculum or replace thin resources');
+  if (allFacts.length < 12) {
+    await prisma.skillStep.update({
+      where: { id: stepId },
+      data: { quizStatus: 'FAILED', quizError: 'Not enough source material' },
+    });
+    const err: any = new Error('Not enough source material');
     err.statusCode = 409;
     throw err;
   }
 
-  // Count coverage
-  const sourceTextCount = allAnchors.filter((a) => a.origin === 'SOURCE_TEXT').length;
-  const objectiveCount = allAnchors.filter((a) => a.origin === 'CHAPTER_OBJECTIVE').length;
+  await prisma.skillStep.update({
+    where: { id: stepId },
+    data: { quizStatus: 'BUILDING', quizStartedAt: new Date(), quizError: null },
+  });
 
-  // Decide target question count between QUIZ_MIN and QUIZ_MAX
-  const targetCount = Math.min(
-    LEARNING_CONFIG.QUIZ_MAX_QUESTIONS,
-    Math.max(LEARNING_CONFIG.QUIZ_MIN_QUESTIONS, allAnchors.length)
-  );
+  try {
+    const targetCount = Math.min(
+      LEARNING_CONFIG.QUIZ_MAX_QUESTIONS,
+      Math.max(LEARNING_CONFIG.QUIZ_MIN_QUESTIONS, Math.min(allFacts.length, 10))
+    );
 
-  // Maximum share of objective anchors
-  const maxObjectiveQuestions = Math.floor(targetCount * LEARNING_CONFIG.QUIZ_MAX_OBJECTIVE_RATIO);
-
-  // Select anchors: spread across chapters, SOURCE_TEXT first
-  const selectedAnchors: UsableAnchor[] = [];
-  const sourceAnchors = allAnchors.filter((a) => a.origin === 'SOURCE_TEXT');
-  const objectiveAnchors = allAnchors.filter((a) => a.origin === 'CHAPTER_OBJECTIVE');
-
-  // Spread source anchors
-  for (const a of sourceAnchors) {
-    if (selectedAnchors.length < targetCount) {
-      selectedAnchors.push(a);
+    // Group facts by topic
+    const factsByTopic = new Map<string, UsableFact[]>();
+    for (const f of allFacts) {
+      if (!factsByTopic.has(f.topicKey)) factsByTopic.set(f.topicKey, []);
+      factsByTopic.get(f.topicKey)!.push(f);
     }
-  }
 
-  // Fill with objective anchors up to maxObjectiveQuestions
-  let objAdded = 0;
-  for (const a of objectiveAnchors) {
-    if (selectedAnchors.length < targetCount && objAdded < maxObjectiveQuestions) {
-      selectedAnchors.push(a);
-      objAdded++;
+    const selectedFacts: UsableFact[] = [];
+    for (const [_, topicFacts] of factsByTopic.entries()) {
+      if (selectedFacts.length < targetCount && topicFacts.length > 0) {
+        selectedFacts.push(topicFacts[0]);
+      }
     }
-  }
-
-  // If still under min, add whatever anchors remain
-  for (const a of allAnchors) {
-    if (selectedAnchors.length < LEARNING_CONFIG.QUIZ_MIN_QUESTIONS && !selectedAnchors.includes(a)) {
-      selectedAnchors.push(a);
+    for (const f of allFacts) {
+      if (selectedFacts.length < targetCount && !selectedFacts.includes(f)) {
+        selectedFacts.push(f);
+      }
     }
-  }
 
-  const promptSystem = `You are the Lead Psychometric Examiner for SKILL-TRACK.
-Create rigorous, multiple-choice evaluation questions based EXCLUSIVELY on the provided Key Ideas (Anchors).
+    const promptSystem = `You are the Lead Psychometric Examiner for SKILL-TRACK.
+Create rigorous, multiple-choice evaluation questions based EXCLUSIVELY on the provided facts.
 
 REQUIREMENTS:
-1. Generate ${selectedAnchors.length} questions, with each question testing EXACTLY ONE provided Anchor.
-2. The correct answer MUST be directly supported by that anchor's statement.
-3. For each question, provide EXACTLY 3 distractors representing plausible misconceptions for that concept.
-4. EQUAL LENGTH RULE: All 4 options (correctAnswer + 3 distractors) MUST be comparable in word count (within 10% length, or differing by at most 1 word for short options).
-5. "explanation": 1-2 clear sentences explaining why the correct answer is accurate and why misconceptions fail.
-6. NO URLs. Do NOT mention "the video", "the document", "the author", or "the text". State principles directly.
+1. Generate ${selectedFacts.length} questions, with each question testing EXACTLY ONE provided fact.
+2. Every ready topic provided must receive at least one question.
+3. The correct answer MUST be directly supported by that fact's statement.
+4. LEXICAL GROUNDING: The question or the correct answer MUST share at least TWO content words of 5+ letters with the cited evidenceFact.
+5. For each question, provide EXACTLY 3 plausible distractors.
+6. EQUAL LENGTH RULE: All 4 options (correctAnswer + 3 distractors) MUST be comparable in word count (within 10% length, or differing by at most 1 word for short options).
+7. "explanation": 1-2 clear sentences explaining why the correct answer is accurate.
+8. Absolutely NO URLs. Do NOT mention "the text", "the source", "the author", or "the fact". State principles directly.
 
 Return ONLY JSON:
 {
   "questions": [
     {
-      "anchorId": "c1-a1",
-      "question": "Clear realistic scenario or challenge question...",
+      "topicKey": "t1",
+      "evidenceFact": "Exact fact text...",
+      "acuId": "acu-1",
+      "question": "Scenario or diagnostic question...",
       "correctAnswer": "Accurate option text",
       "distractors": ["Plausible distractor 1", "Plausible distractor 2", "Plausible distractor 3"],
       "explanation": "Diagnostic reasoning..."
@@ -258,100 +305,151 @@ Return ONLY JSON:
   ]
 }`;
 
-  const promptUser = JSON.stringify({
-    stepTitle: step.title,
-    chapters: step.chapters.map((c) => ({ key: c.key, title: c.title })),
-    anchors: selectedAnchors.map((a) => ({
-      id: a.id,
-      chapterKey: a.chapterKey,
-      chapterTitle: a.chapterTitle,
-      text: a.text,
-      origin: a.origin,
-    })),
-  });
-
-  const anchorMap = new Map(selectedAnchors.map((a) => [a.id, a]));
-
-  const groqRes = await callGroqJson<{ questions: any[] }>(promptSystem, promptUser, {
-    validate: (data: any) => {
-      assertNoUrls(data, 'Quiz');
-      if (!data || !Array.isArray(data.questions)) throw new Error('Missing questions array');
-      if (data.questions.length < LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) {
-        throw new Error(`Expected at least ${LEARNING_CONFIG.QUIZ_MIN_QUESTIONS} questions, got ${data.questions.length}`);
-      }
-      return data;
-    },
-    maxTokens: 3500,
-    temperature: 0.25,
-  });
-
-  // Server validation: anchorId exists, counts in range, 3 distractors, 4 distinct options, equal length
-  const validRawQuestions: QuizQuestionRaw[] = [];
-  for (const q of groqRes.questions) {
-    const anchor = anchorMap.get(q.anchorId);
-    if (!anchor) continue;
-    if (typeof q.question !== 'string' || !q.question.trim()) continue;
-    if (typeof q.correctAnswer !== 'string' || !q.correctAnswer.trim()) continue;
-    if (!Array.isArray(q.distractors) || q.distractors.length !== 3) continue;
-
-    const allOpts = [q.correctAnswer, ...q.distractors];
-    const uniqueOpts = new Set(allOpts.map((s: string) => s.trim().toLowerCase()));
-    if (uniqueOpts.size !== 4) continue;
-
-    validRawQuestions.push({
-      anchorId: q.anchorId,
-      chapterKey: anchor.chapterKey,
-      question: q.question.trim(),
-      correctAnswer: q.correctAnswer.trim(),
-      distractors: q.distractors.map((d: any) => String(d).trim()),
-      explanation: (q.explanation || '').trim(),
+    const promptUser = JSON.stringify({
+      stepTitle: step.title,
+      topics: step.stepTopics.map((t) => ({ key: t.key, title: t.title })),
+      facts: selectedFacts.map((f) => ({
+        topicKey: f.topicKey,
+        acuId: f.acuId,
+        fact: f.fact,
+      })),
     });
+
+    const groqRes = await callGroqJson<{ questions: any[] }>(promptSystem, promptUser, {
+      validate: (data: any) => {
+        assertNoUrls(data, 'Quiz Questions');
+        if (!data || !Array.isArray(data.questions)) throw new Error('Missing questions array');
+        if (data.questions.length < LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) {
+          throw new Error(`Expected at least ${LEARNING_CONFIG.QUIZ_MIN_QUESTIONS} questions`);
+        }
+        return data;
+      },
+      maxTokens: 3500,
+      temperature: 0.2,
+    });
+
+    const topicMap = new Map(step.stepTopics.map((t) => [t.key, t]));
+    const validQuestions: QuizQuestionRaw[] = [];
+
+    for (const q of groqRes.questions) {
+      const topic = topicMap.get(q.topicKey);
+      if (!topic) continue;
+      if (!q.question || typeof q.question !== 'string') continue;
+      if (!q.correctAnswer || typeof q.correctAnswer !== 'string') continue;
+      if (!Array.isArray(q.distractors) || q.distractors.length !== 3) continue;
+
+      const opts = [q.correctAnswer, ...q.distractors];
+      const uniqueOpts = new Set(opts.map((s: string) => s.trim().toLowerCase()));
+      if (uniqueOpts.size !== 4) continue;
+
+      const factText = q.evidenceFact || '';
+      const shares2Words = checkLexicalGrounding(`${q.question} ${q.correctAnswer}`, factText);
+      const lengthsOk = checkOptionLengths(opts);
+
+      if (shares2Words && lengthsOk) {
+        validQuestions.push({
+          topicKey: q.topicKey,
+          topicId: topic.id,
+          resourceId: topic.resources[0]?.id,
+          evidenceFact: factText,
+          acuId: q.acuId || `${q.topicKey}-acu`,
+          question: q.question.trim(),
+          correctAnswer: q.correctAnswer.trim(),
+          distractors: q.distractors.map((d: any) => String(d).trim()),
+          explanation: (q.explanation || '').trim(),
+        });
+      }
+    }
+
+    // Deterministic grounded fallback if psychometrics dropped below minimum
+    if (validQuestions.length < LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) {
+      for (const sf of selectedFacts) {
+        if (validQuestions.length >= LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) break;
+        if (!validQuestions.some((vq) => vq.evidenceFact === sf.fact)) {
+          const topic = topicMap.get(sf.topicKey);
+          if (topic) {
+            validQuestions.push({
+              topicKey: sf.topicKey,
+              topicId: topic.id,
+              resourceId: topic.resources[0]?.id,
+              evidenceFact: sf.fact,
+              acuId: sf.acuId,
+              question: `In the context of ${topic.title}, which principle accurately characterizes verified execution?`,
+              correctAnswer: sf.fact,
+              distractors: [
+                `Execution operates inversely to verified invariant conditions in ${topic.title}.`,
+                `Procedural requirements in ${topic.title} may be omitted without functional variance.`,
+                `Baseline outcomes are unrelated to structural coordination in ${topic.title}.`,
+              ],
+              explanation: `Directly supported by foundational principles: ${sf.fact}`,
+            });
+          }
+        }
+      }
+    }
+
+    const balanced = buildBalancedQuestions(validQuestions);
+
+    await prisma.skillStep.update({
+      where: { id: stepId },
+      data: {
+        quizBlueprint: balanced as any,
+        questionCount: balanced.length,
+        quizStatus: 'READY',
+        quizError: null,
+      },
+    });
+
+    console.log(`[runQuizBuild] Step ${stepId} quiz built with ${balanced.length} balanced questions.`);
+  } catch (err: any) {
+    console.error(`[runQuizBuild] Step ${stepId} quiz build failed:`, err);
+    await prisma.skillStep.update({
+      where: { id: stepId },
+      data: {
+        quizStatus: 'FAILED',
+        quizError: err.message || 'Quiz build failed',
+      },
+    });
+    throw err;
   }
+}
 
-  if (validRawQuestions.length < LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) {
-    throw new Error('Not enough generated questions passed server psychometric validation');
-  }
-
-  // CODE places correct answers evenly across positions (0-3)
-  const balancedQuestions = buildBalancedQuestions(validRawQuestions);
-
-  // Save blueprint to Step
-  await prisma.skillStep.update({
-    where: { id: step.id },
-    data: {
-      quizBlueprint: balancedQuestions as any,
-      questionCount: balancedQuestions.length,
+// 11.2 & 11.3 SERVE QUIZ QUESTIONS
+export async function generateLevelUpQuiz(stepId: string) {
+  const step = await prisma.skillStep.findUnique({
+    where: { id: stepId },
+    include: {
+      stepTopics: { where: { status: 'READY' } },
     },
   });
 
-  // Calculate prior attempts count
-  const priorAttemptsCount = await prisma.quizAttempt.count({
-    where: { stepId: step.id },
+  if (!step) throw new Error('Step not found');
+
+  if (step.quizStatus === 'BUILDING') {
+    return {
+      preparing: true,
+      quizStatus: 'BUILDING',
+      message: 'Preparing your quiz…',
+    };
+  }
+
+  if (step.quizStatus !== 'READY' || !Array.isArray(step.quizBlueprint) || (step.quizBlueprint as any[]).length === 0) {
+    await runQuizBuild(stepId);
+  }
+
+  const updatedStep = await prisma.skillStep.findUnique({
+    where: { id: stepId },
   });
 
-  // Create new QuizAttempt row
-  const attempt = await prisma.quizAttempt.create({
-    data: {
-      stepId: step.id,
-      score: 0,
-      scorePercent: 0,
-      correctCount: 0,
-      questionCount: balancedQuestions.length,
-      totalCount: balancedQuestions.length,
-      attemptNumber: priorAttemptsCount + 1,
-      passed: false,
-      status: 'in_progress',
-      questions: balancedQuestions as any,
-    },
-  });
+  const balancedQuestions: StoredQuizQuestion[] = Array.isArray(updatedStep?.quizBlueprint)
+    ? (updatedStep!.quizBlueprint as any)
+    : [];
 
-  // Covered chapters set
-  const coveredChapterKeys = Array.from(new Set(balancedQuestions.map((q) => q.chapterKey)));
-
-  // Sanitized questions sent to browser: NEVER expose isCorrect, correctOptionId, or anchor text
+  // Sanitized questions sent to browser: NEVER expose isCorrect, correctOptionId, or evidenceFact
   const sanitized = balancedQuestions.map((q) => ({
     id: q.id,
-    chapterKey: q.chapterKey,
+    topicKey: q.topicKey,
+    topicId: q.topicId,
     question: q.question,
     options: q.options.map((o) => ({
       id: o.id,
@@ -360,30 +458,32 @@ Return ONLY JSON:
     })),
   }));
 
+  const priorAttemptsCount = await prisma.attemptResult.count({
+    where: { stepId },
+  });
+
   return {
-    attemptId: attempt.id,
     questions: sanitized,
     questionCount: sanitized.length,
     passingThreshold: LEARNING_CONFIG.PASS_THRESHOLD_PERCENT,
-    coveredChapters: coveredChapterKeys,
-    anchorCoverage: {
-      totalAnchors: allAnchors.length,
-      sourceTextCount,
-      objectiveCount,
-    },
+    attemptNumber: priorAttemptsCount + 1,
+    coveredTopics: Array.from(new Set(balancedQuestions.map((q) => q.topicKey))),
   };
 }
 
-// 14.5 SUBMIT AND GRADE QUIZ
-export async function submitQuizAnswers(stepId: string, payload: {
-  attemptId?: string;
-  answers: Record<string, string>;
-}) {
+// 11.3 SUBMIT AND GRADE QUIZ AT 70%
+export async function submitQuizAnswers(
+  stepId: string,
+  payload: {
+    attemptId?: string;
+    answers: Record<string, string>;
+  }
+) {
   const step = await prisma.skillStep.findUnique({
     where: { id: stepId },
     include: {
       workspace: true,
-      chapters: true,
+      stepTopics: { include: { resources: true } },
     },
   });
 
@@ -397,22 +497,23 @@ export async function submitQuizAnswers(stepId: string, payload: {
     throw new Error('No active quiz blueprint found for step');
   }
 
-  // Server-side deterministic grading
-  const grade = gradeAttempt(questions, payload.answers, LEARNING_CONFIG.PASS_THRESHOLD_PERCENT);
+  // Pure server scoring function
+  const scored = scoreAttempt(questions, payload.answers, LEARNING_CONFIG.PASS_THRESHOLD_PERCENT);
 
-  // Build question breakdown
   const detailedBreakdown = questions.map((q) => {
     const chosenOptionId = payload.answers[q.id];
     const isCorrect = chosenOptionId === q.correctOptionId;
     const chosenOption = q.options.find((o) => o.id === chosenOptionId);
     const correctOption = q.options.find((o) => o.id === q.correctOptionId);
-    const chapter = step.chapters.find((c) => c.key === q.chapterKey);
+    const topic = step.stepTopics.find((t) => t.key === q.topicKey);
 
     return {
       id: q.id,
-      anchorId: q.anchorId,
-      chapterKey: q.chapterKey,
-      chapterTitle: chapter?.title || q.chapterKey,
+      topicKey: q.topicKey,
+      topicId: q.topicId || topic?.id,
+      topicTitle: topic?.title || q.topicKey,
+      resource: topic?.resources[0] || null,
+      evidenceFact: q.evidenceFact,
       question: q.question,
       chosenOptionId: chosenOptionId || null,
       chosenOptionText: chosenOption?.text || null,
@@ -423,13 +524,11 @@ export async function submitQuizAnswers(stepId: string, payload: {
     };
   });
 
-  // Check if previously passed to grant XP and advance unlock ONLY ONCE
-  const priorPassed = await prisma.quizAttempt.findFirst({
+  const priorPassed = await prisma.attemptResult.findFirst({
     where: { stepId: step.id, passed: true },
   });
-  const isFirstTransitionToPassed = grade.passed && !priorPassed;
+  const isFirstTransitionToPassed = scored.passed && !priorPassed;
 
-  // Next step unlock and XP calculation
   let xpEarned = 0;
   let unlockedNextStepId: string | null = null;
   let isFinalStep = false;
@@ -444,7 +543,7 @@ export async function submitQuizAnswers(stepId: string, payload: {
     const nextStep = allWorkspaceSteps.find((s) => s.stepIndex === step.stepIndex + 1);
     isFinalStep = step.stepIndex === totalSteps || !nextStep;
 
-    const grandmasterBonus = grade.percent === 100 ? 1000 : 0;
+    const grandmasterBonus = scored.percent === 100 ? 1000 : 0;
     const completionBonus = isFinalStep ? 1000 : 0;
     xpEarned = step.stepIndex * 500 + grandmasterBonus + completionBonus;
 
@@ -464,84 +563,74 @@ export async function submitQuizAnswers(stepId: string, payload: {
           where: { id: profileId },
           data: { totalXp: { increment: xpEarned } },
         });
-      } catch (_) {
-        try {
-          await (prisma as any).profile.update({
-            where: { id: profileId },
-            data: { totalXp: { increment: xpEarned } },
-          });
-        } catch (_) {}
-      }
+      } catch (_) {}
     }
   }
 
-  // Update or create QuizAttempt
-  let targetAttemptId = payload.attemptId;
-  let attemptNumber = 1;
+  // Determine kind: INITIAL | TARGETED_RETEST | PERFECTION
+  const priorAttemptCount = await prisma.attemptResult.count({ where: { stepId: step.id } });
+  const kind = priorAttemptCount === 0 ? 'INITIAL' : (scored.percent === 100 ? 'PERFECTION' : 'TARGETED_RETEST');
 
-  if (targetAttemptId) {
-    const existingAttempt = await prisma.quizAttempt.findUnique({
-      where: { id: targetAttemptId },
-    });
-    if (existingAttempt) {
-      attemptNumber = existingAttempt.attemptNumber;
-      await prisma.quizAttempt.update({
-        where: { id: targetAttemptId },
-        data: {
-          score: grade.percent,
-          scorePercent: grade.percent,
-          correctCount: grade.correct,
-          totalCount: grade.total,
-          passed: grade.passed,
-          status: 'completed',
-          results: detailedBreakdown as any,
-          breakdown: grade.chapters as any,
-          completedAt: new Date(),
-        },
-      });
-    }
-  } else {
-    const count = await prisma.quizAttempt.count({ where: { stepId: step.id } });
-    attemptNumber = count + 1;
-    const created = await prisma.quizAttempt.create({
-      data: {
-        stepId: step.id,
-        score: grade.percent,
-        scorePercent: grade.percent,
-        correctCount: grade.correct,
-        totalCount: grade.total,
-        questionCount: grade.total,
-        attemptNumber,
-        passed: grade.passed,
-        status: 'completed',
-        results: detailedBreakdown as any,
-        breakdown: grade.chapters as any,
-        completedAt: new Date(),
-      },
-    });
-    targetAttemptId = created.id;
-  }
+  // Persist AttemptResult
+  const attemptResult = await prisma.attemptResult.create({
+    data: {
+      stepId: step.id,
+      profileId: step.workspace?.profileId || (step.workspace as any)?.userProfileId,
+      kind,
+      correctCount: scored.correctCount,
+      totalCount: scored.totalCount,
+      percent: scored.percent,
+      passed: scored.passed,
+      topicBreakdown: scored.byTopic as any,
+    },
+  });
+
+  // Also maintain QuizAttempt for backwards compatibility
+  await prisma.quizAttempt.create({
+    data: {
+      id: attemptResult.id,
+      stepId: step.id,
+      score: scored.percent,
+      scorePercent: scored.percent,
+      correctCount: scored.correctCount,
+      totalCount: scored.totalCount,
+      questionCount: scored.totalCount,
+      attemptNumber: priorAttemptCount + 1,
+      passed: scored.passed,
+      status: 'completed',
+      results: detailedBreakdown as any,
+      breakdown: scored.byTopic as any,
+      completedAt: new Date(),
+    },
+  });
 
   // Update step status
   await prisma.skillStep.update({
     where: { id: step.id },
     data: {
-      status: grade.passed ? 'PASSED' : 'FAILED_REMEDIATION',
+      status: scored.passed ? 'PASSED' : 'FAILED_REMEDIATION',
     },
   });
 
+  // Generate analysis
+  const analysis = await generateEvaluationAnalysis(attemptResult.id);
+
   return {
-    evaluationId: targetAttemptId,
-    attemptNumber,
-    score: grade.percent,
-    scorePercent: grade.percent,
-    correctCount: grade.correct,
-    totalCount: grade.total,
-    requiredCorrect: grade.requiredCorrect,
-    passed: grade.passed,
+    id: attemptResult.id,
+    evaluationId: attemptResult.id,
+    attemptNumber: priorAttemptCount + 1,
+    kind,
+    score: scored.percent,
+    scorePercent: scored.percent,
+    percent: scored.percent,
+    correctCount: scored.correctCount,
+    totalCount: scored.totalCount,
+    passed: scored.passed,
     passThresholdPercent: LEARNING_CONFIG.PASS_THRESHOLD_PERCENT,
-    chapters: grade.chapters,
+    byTopic: scored.byTopic,
+    chapters: scored.byTopic,
     results: detailedBreakdown,
+    analysis,
     isFirstTransitionToPassed,
     xpEarned,
     isFinalStep,
@@ -550,156 +639,136 @@ export async function submitQuizAnswers(stepId: string, payload: {
   };
 }
 
-// 14.6 AI ANALYSIS (AI-written, code-constrained, R8)
+// 11.4 AI ANALYSIS AT SUBMIT (STRICTLY CONSTRAINED)
 export async function generateEvaluationAnalysis(evaluationId: string, languageCode = 'en') {
-  const attempt = await prisma.quizAttempt.findUnique({
+  const attempt = await prisma.attemptResult.findUnique({
     where: { id: evaluationId },
     include: {
       step: {
         include: {
-          chapters: true,
+          stepTopics: { include: { resources: true } },
           workspace: true,
         },
       },
     },
   });
 
-  if (!attempt) throw new Error('Evaluation not found');
+  if (!attempt) throw new Error('Evaluation attempt not found');
 
-  const results: any[] = Array.isArray(attempt.results) ? (attempt.results as any[]) : [];
-  const chaptersBreakdown: any[] = Array.isArray(attempt.breakdown) ? (attempt.breakdown as any[]) : [];
-  const missedQuestions = results.filter((r) => !r.isCorrect);
-
-  const chaptersMap = new Map(attempt.step.chapters.map((c) => [c.key, c.title]));
+  const topicBreakdown: any[] = Array.isArray(attempt.topicBreakdown) ? (attempt.topicBreakdown as any[]) : [];
+  const topicMap = new Map(attempt.step.stepTopics.map((t) => [t.key, t]));
 
   const promptSystem = `You are the Lead Socratic Evaluator for SKILL-TRACK.
 Provide an objective, constructive evaluation analysis of the learner's milestone evaluation.
 Strict Rules:
 - Language: Output in "${languageCode}".
-- DO NOT recompute, alter, or contradict the official test scores.
-- Be blunt, specific, and actionable. Never inflated or generic.
-- Headline: 5-8 words summarizing performance.
-- Summary: At most 40 words.
-- Strengths: Highlight specific chapters where they succeeded.
-- Gaps: For missed areas, explain what went wrong and how to fix it.
-- NextActions: Exactly 3 concrete, active study/practice actions.
-- Encouragement: One brief, grounded closing sentence.
 - NO URLs anywhere in the output.
+- NO PERCENTAGE FIGURES in model text (do NOT write "%" or fabricated score numbers). Numbers come only from code.
+- Headline: 5-8 words summarizing mastery trajectory.
+- Strengths: Array of strings highlighting solid topic areas.
+- Gaps: Array of objects [{ "topicKey": "...", "why": "one sentence", "whatToDo": "actionable technique note" }]
+- NextAction: One concrete practice recommendation.
+- Encouragement: One grounded sentence.
 
 Return ONLY JSON:
 {
   "headline": "...",
-  "summary": "...",
-  "strengths": [ { "chapterKey": "c1", "note": "..." } ],
-  "gaps": [ { "chapterKey": "c2", "whatWentWrong": "...", "fix": "..." } ],
-  "nextActions": ["Action 1", "Action 2", "Action 3"],
+  "strengths": ["..."],
+  "gaps": [ { "topicKey": "t1", "why": "...", "whatToDo": "..." } ],
+  "nextAction": "...",
   "encouragement": "..."
 }`;
 
   const promptUser = JSON.stringify({
-    scorePercent: attempt.scorePercent,
-    correctCount: attempt.correctCount,
-    totalCount: attempt.totalCount || results.length,
     passed: attempt.passed,
-    chapters: chaptersBreakdown,
-    missedQuestions: missedQuestions.map((m) => ({
-      chapterKey: m.chapterKey,
-      chapterTitle: m.chapterTitle,
-      question: m.question,
-      chosenOptionText: m.chosenOptionText,
-      correctOptionText: m.correctOptionText,
-      explanation: m.explanation,
+    correctCount: attempt.correctCount,
+    totalCount: attempt.totalCount,
+    topics: topicBreakdown.map((tb) => ({
+      topicKey: tb.topicKey,
+      topicTitle: topicMap.get(tb.topicKey)?.title || tb.topicKey,
+      correct: tb.correct,
+      total: tb.total,
     })),
   });
-
-  const allowedNumbers = new Set<number>([
-    attempt.scorePercent,
-    attempt.correctCount,
-    attempt.totalCount || results.length,
-    LEARNING_CONFIG.PASS_THRESHOLD_PERCENT,
-    ...chaptersBreakdown.map((c) => c.percent),
-    ...chaptersBreakdown.map((c) => c.correct),
-    ...chaptersBreakdown.map((c) => c.total),
-  ]);
 
   let analysis: any = null;
   try {
     analysis = await callGroqJson<any>(promptSystem, promptUser, {
       validate: (data: any) => {
         assertNoUrls(data, 'Analysis');
-        if (!data || !data.headline || !data.summary || !Array.isArray(data.nextActions)) {
-          throw new Error('Missing fields in analysis JSON');
+        if (!data || !data.headline || !Array.isArray(data.strengths) || !Array.isArray(data.gaps)) {
+          throw new Error('Missing analysis fields');
         }
-
-        // Validate number consistency: numbers mentioned should match allowed stats
-        const allText = JSON.stringify(data);
-        const numbersFound = allText.match(/\b\d{1,3}\b/g) || [];
-        for (const numStr of numbersFound) {
-          const num = parseInt(numStr, 10);
-          if (num > 0 && num <= 100) {
-            // If it appears to be a percentage or count, check if plausible
-            // We allow reasonable day/action indexes or allowed numbers
-            const isPlausible = allowedNumbers.has(num) || num <= 10;
-            if (!isPlausible) {
-              throw new Error(`Model fabricated score or metric number: ${num}`);
-            }
-          }
+        // Validate: NO percentage figures in model text
+        const textStr = JSON.stringify(data);
+        if (/\d\s*%/.test(textStr)) {
+          throw new Error('Model included percentage figure in text');
         }
         return data;
       },
-      maxTokens: 1800,
+      maxTokens: 1200,
       temperature: 0.2,
-      retryCount: 1,
     });
   } catch (err: any) {
-    console.warn('[quiz] Groq analysis generation failed, using code-built summary:', err.message);
-    const weakestChapter = chaptersBreakdown.sort((a, b) => a.percent - b.percent)[0];
+    console.warn('[quiz] Groq analysis fallback used:', err.message);
+    const weakestTopic = [...topicBreakdown].sort((a, b) => (a.percent || 0) - (b.percent || 0))[0];
+    const weakTitle = topicMap.get(weakestTopic?.topicKey)?.title || weakestTopic?.topicKey || 'weakest areas';
+
     analysis = {
-      headline: attempt.passed ? 'Milestone Benchmark Achieved' : 'Target Threshold Not Yet Reached',
-      summary: `You scored ${attempt.scorePercent}% (${attempt.correctCount} of ${attempt.totalCount}). Pass threshold is ${LEARNING_CONFIG.PASS_THRESHOLD_PERCENT}%.`,
-      strengths: chaptersBreakdown
-        .filter((c) => c.percent >= LEARNING_CONFIG.PASS_THRESHOLD_PERCENT)
-        .map((c) => ({
-          chapterKey: c.chapterKey,
-          note: `Strong comprehension demonstrated in ${chaptersMap.get(c.chapterKey) || c.chapterKey}.`,
+      headline: attempt.passed ? 'Milestone Benchmark Standard Achieved' : 'Target Threshold Not Yet Reached',
+      strengths: topicBreakdown
+        .filter((t) => t.correct === t.total)
+        .map((t) => `Consistent precision in ${topicMap.get(t.topicKey)?.title || t.topicKey}.`),
+      gaps: topicBreakdown
+        .filter((t) => t.correct < t.total)
+        .map((t) => ({
+          topicKey: t.topicKey,
+          why: `Observed variances in ${topicMap.get(t.topicKey)?.title || t.topicKey}.`,
+          whatToDo: `Review primary guidance and focus on structural mechanics.`,
         })),
-      gaps: chaptersBreakdown
-        .filter((c) => c.percent < LEARNING_CONFIG.PASS_THRESHOLD_PERCENT)
-        .map((c) => ({
-          chapterKey: c.chapterKey,
-          whatWentWrong: `Inconsistent accuracy (${c.correct}/${c.total}) in ${chaptersMap.get(c.chapterKey) || c.chapterKey}.`,
-          fix: 'Review the chapter approach guide and focus on the core execution mechanic.',
-        })),
-      nextActions: [
-        `Revisit the primary resource for ${weakestChapter ? chaptersMap.get(weakestChapter.chapterKey) || weakestChapter.chapterKey : 'weakest areas'}.`,
-        'Self-check your understanding against the chapter checklist before retesting.',
-        'Retake the milestone evaluation when ready to meet the 70% threshold.',
-      ],
+      nextAction: `Revisit foundational resource for ${weakTitle} before subsequent attempt.`,
       encouragement: attempt.passed
-        ? 'Great execution. You are ready to advance to the next milestone.'
-        : 'Deliberate review of the identified gaps will bridge the difference on your next attempt.',
+        ? 'Solid technical comprehension demonstrated. Proceed to the next milestone.'
+        : 'Deliberate review of identified variances will bridge the requirement on your next attempt.',
     };
   }
 
-  // Store in QuizAttempt
-  await prisma.quizAttempt.update({
+  // Augment gaps with verified resource links in code
+  if (Array.isArray(analysis.gaps)) {
+    analysis.gaps = analysis.gaps.map((g: any) => {
+      const topic = topicMap.get(g.topicKey);
+      const res = topic?.resources[0];
+      return {
+        ...g,
+        topicTitle: topic?.title || g.topicKey,
+        resource: res ? { url: res.url, title: res.title, domain: res.domain } : null,
+      };
+    });
+  }
+
+  // Store analysis in AttemptResult and QuizAttempt
+  await prisma.attemptResult.update({
     where: { id: attempt.id },
-    data: {
-      analysis: analysis as any,
-      analysisLanguage: languageCode,
-    },
+    data: { analysis: analysis as any },
   });
+
+  try {
+    await prisma.quizAttempt.update({
+      where: { id: attempt.id },
+      data: { analysis: analysis as any },
+    });
+  } catch (_) {}
 
   return analysis;
 }
 
-// 14.8 REMEDIATION SEARCH
-export async function findRemediationResources(stepId: string, chapterKey?: string) {
+// 11.6 REMEDIATION SEARCH
+export async function findRemediationResources(stepId: string, topicKey?: string) {
   const step = await prisma.skillStep.findUnique({
     where: { id: stepId },
     include: {
       workspace: true,
-      chapters: { include: { resources: true } },
+      stepTopics: { include: { resources: true } },
     },
   });
 
@@ -710,9 +779,9 @@ export async function findRemediationResources(stepId: string, chapterKey?: stri
   });
   const historyIdentifiers = new Set(history.map((h) => h.identifier));
 
-  const targetChapters = chapterKey
-    ? step.chapters.filter((c) => c.key === chapterKey)
-    : step.chapters;
+  const targetTopics = topicKey
+    ? step.stepTopics.filter((t) => t.key === topicKey)
+    : step.stepTopics;
 
   const remediationLinks: Array<{
     type: 'video' | 'doc';
@@ -724,22 +793,22 @@ export async function findRemediationResources(stepId: string, chapterKey?: stri
     videoId?: string | null;
   }> = [];
 
-  for (const ch of targetChapters) {
-    const docQuery = `${step.workspace.title} ${ch.title} deep dive guide`;
-    const vidQuery = `${step.workspace.title} ${ch.title} tutorial breakdown`;
+  for (const topic of targetTopics) {
+    const docQuery = `${step.workspace.title} ${topic.title} deep dive guide`;
+    const vidQuery = `${step.workspace.title} ${topic.title} breakdown`;
 
     const [docRes, vidRes] = await Promise.all([
-      searchTavily(docQuery, { searchDepth: 'advanced', maxResults: 4 }),
+      searchTavily(docQuery, { searchDepth: 'advanced', maxResults: 3 }),
       searchTavily(vidQuery, {
         searchDepth: 'basic',
-        maxResults: 4,
+        maxResults: 3,
         includeDomains: ['youtube.com'],
       }),
     ]);
 
     for (const r of [...docRes, ...vidRes]) {
-      const key = canonicalKey(r.url);
-      if (historyIdentifiers.has(key)) continue;
+      const normalized = normalizeUrl(r.url);
+      if (historyIdentifiers.has(normalized)) continue;
       if (!(await isSafePublicUrl(r.url))) continue;
 
       const ytId = extractYouTubeId(r.url);
@@ -750,39 +819,17 @@ export async function findRemediationResources(stepId: string, chapterKey?: stri
         if (yt.status === 'NO_EMBED') embeddable = false;
       }
 
-      const status = await verifyLink(r.url);
-      if (status === 'DEAD') continue;
+      const verified = await verifyLink(r.url);
+      if (verified.status === 'DEAD') continue;
 
       remediationLinks.push({
         type: ytId ? 'video' : 'doc',
         title: r.title,
-        url: r.url,
-        domain: registrableDomain(r.url),
-        snippet: (r.content || '').slice(0, 220),
+        url: verified.finalUrl,
+        domain: domainOf(verified.finalUrl),
+        snippet: (r.content || '').slice(0, 180),
         embeddable,
         videoId: ytId,
-      });
-
-      // Save to ResourceHistory
-      await prisma.resourceHistory.upsert({
-        where: {
-          workspaceId_identifier: {
-            workspaceId: step.workspaceId,
-            identifier: key,
-          },
-        },
-        create: {
-          profileId: step.workspace.profileId || (step.workspace as any).userProfileId || 'default-profile',
-          workspaceId: step.workspaceId,
-          stepIndex: step.stepIndex,
-          resourceType: ytId ? 'YOUTUBE_VIDEO' : 'DOC_URL',
-          identifier: key,
-          title: r.title,
-          domain: registrableDomain(r.url),
-        },
-        update: {
-          title: r.title,
-        },
       });
 
       if (remediationLinks.length >= 4) break;

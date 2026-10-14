@@ -1,9 +1,20 @@
+import { createHash } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import net from 'node:net';
 import { getEffectiveKeys } from '../../lib/keyManager';
-import { LEARNING_CONFIG } from '../../config/learning';
+import {
+  LEARNING_CONFIG,
+  BLOCKED_DOMAINS,
+  DIFFICULTY_TIERS,
+  DifficultyTier,
+} from '../../config/learning';
 
 export type LinkStatus = 'VERIFIED' | 'UNCHECKED' | 'DEAD';
+export type YouTubeCheck = {
+  status: 'EMBEDDABLE' | 'NO_EMBED' | 'GONE' | 'UNKNOWN';
+  title?: string;
+  channel?: string;
+};
 
 export class GroqValidationError extends Error {
   constructor(message: string) {
@@ -19,11 +30,14 @@ export class TavilyAuthError extends Error {
   }
 }
 
-// 7.1 GROQ CALL WITH JSON VALIDATION AND RETRY
+// 6.1 GROQ CALL WITH JSON VALIDATION AND RETRY
 let cachedGroqModel: string | null = null;
 let cachedGroqModelExpires = 0;
 
-async function getBestGroqModel(apiKey: string): Promise<string> {
+export async function getBestGroqModel(apiKey: string): Promise<string> {
+  if (process.env.GROQ_MODEL && process.env.GROQ_MODEL.trim()) {
+    return process.env.GROQ_MODEL.trim();
+  }
   if (cachedGroqModel && Date.now() < cachedGroqModelExpires) {
     return cachedGroqModel;
   }
@@ -35,17 +49,11 @@ async function getBestGroqModel(apiKey: string): Promise<string> {
     if (res.ok) {
       const data: any = await res.json();
       const ids: string[] = (data?.data || []).map((m: { id: string }) => m.id);
-      if (process.env.GROQ_MODEL && ids.includes(process.env.GROQ_MODEL.trim())) {
-        cachedGroqModel = process.env.GROQ_MODEL.trim();
-        cachedGroqModelExpires = Date.now() + 30 * 60 * 1000;
-        return cachedGroqModel;
-      }
       const preferred = [
         'llama-3.3-70b-versatile',
+        'llama-3.1-70b-versatile',
         'openai/gpt-oss-120b',
         'openai/gpt-oss-20b',
-        'qwen/qwen3.8-27b',
-        'llama-3.1-70b-versatile',
         'llama-3.1-8b-instant',
       ];
       for (const p of preferred) {
@@ -59,7 +67,7 @@ async function getBestGroqModel(apiKey: string): Promise<string> {
   } catch {
     // fallback
   }
-  return 'openai/gpt-oss-120b';
+  return 'llama-3.3-70b-versatile';
 }
 
 function cleanJsonCodeFences(text: string): string {
@@ -169,7 +177,7 @@ export async function callGroqJson<T>(
   throw new GroqValidationError('Groq calls exhausted without valid response');
 }
 
-// 7.2 TAVILY SEARCH
+// 6.2 TAVILY SEARCH
 export interface TavilySearchResult {
   title: string;
   url: string;
@@ -196,13 +204,13 @@ export async function searchTavily(
   const isVideo = opts?.includeDomains?.some((d) => d.includes('youtube.com'));
   const excludeDomains = isVideo
     ? undefined
-    : (opts?.excludeDomains ?? [...LEARNING_CONFIG.EXCLUDE_DOMAINS]);
+    : (opts?.excludeDomains ?? [...BLOCKED_DOMAINS]);
 
   const body: any = {
     api_key: tavilyKey,
     query,
     search_depth: opts?.searchDepth ?? (isVideo ? 'basic' : 'advanced'),
-    max_results: opts?.maxResults ?? 6,
+    max_results: opts?.maxResults ?? 8,
     include_raw_content: opts?.includeRawContent ?? true,
   };
 
@@ -243,7 +251,7 @@ export async function searchTavily(
   }
 }
 
-// 7.3 URL IDENTITY AND SAFETY
+// 6.3 IDENTITY AND SAFETY HELPERS
 export function extractYouTubeId(raw: string): string | null {
   try {
     const u = new URL(raw);
@@ -260,45 +268,40 @@ export function extractYouTubeId(raw: string): string | null {
   }
 }
 
-export function canonicalKey(raw: string): string {
+export function normalizeUrl(raw: string): string {
   try {
-    const yt = extractYouTubeId(raw);
-    if (yt) return `yt:${yt}`;
     const u = new URL(raw);
-    const host = u.hostname.toLowerCase().replace(/^(www|m|amp)\./, '');
-    if (/(^|\.)wikipedia\.org$/.test(host) && u.pathname.startsWith('/wiki/')) {
-      return `wiki:${decodeURIComponent(u.pathname.slice(6)).toLowerCase().replace(/_/g, ' ')}`;
-    }
-    const path = u.pathname.toLowerCase().replace(/\/(index\.(html?|php)|amp)$/, '').replace(/\/+$/, '');
-    const keep = ['v', 'id', 'p', 'article'];
-    const qs = [...u.searchParams].filter(([k]) => keep.includes(k)).map(([k, v]) => `${k}=${v}`).sort().join('&');
+    u.hash = '';
+    ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'fbclid', 'gclid', 'si'].forEach(
+      (p) => u.searchParams.delete(p)
+    );
+    const host = u.hostname.replace(/^(www|m)\./, '').toLowerCase();
+    const path = u.pathname.replace(/\/+$/, '').replace(/\/(amp|index\.(html?|php))$/i, '');
+    const qs = u.searchParams.toString();
     return `${host}${path}${qs ? '?' + qs : ''}`;
-  } catch {
-    return raw.toLowerCase();
-  }
-}
-
-export function registrableDomain(raw: string): string {
-  try {
-    const parts = new URL(raw).hostname.toLowerCase().replace(/^www\./, '').split('.');
-    const sld = ['co', 'com', 'org', 'ac', 'gov', 'net'];
-    return parts.length >= 3 && parts[parts.length - 1].length === 2 && sld.includes(parts[parts.length - 2])
-      ? parts.slice(-3).join('.')
-      : parts.slice(-2).join('.');
   } catch {
     return raw;
   }
 }
 
-export function titleSimilarity(a: string, b: string): number {
-  const t = (s: string) => new Set(s.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
-  const A = t(a), B = t(b);
-  if (!A.size || !B.size) return 0;
-  let inter = 0;
-  A.forEach((w) => {
-    if (B.has(w)) inter++;
-  });
-  return inter / (A.size + B.size - inter);
+export const domainOf = (raw: string): string => {
+  try {
+    return new URL(raw).hostname.replace(/^(www|m|amp)\./, '').toLowerCase();
+  } catch {
+    return 'unknown';
+  }
+};
+
+export function contentFingerprint(title: string, text: string): string {
+  const n = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  return createHash('sha1')
+    .update(n(title).slice(0, 80) + '|' + n(text).slice(0, 400))
+    .digest('hex');
 }
 
 function isPrivateIp(ip: string): boolean {
@@ -343,48 +346,83 @@ export async function mapWithLimit<T, R>(items: T[], limit: number, fn: (x: T) =
 
 export function assertNoUrls(value: unknown, label: string): void {
   if (/https?:\/\/|www\./i.test(JSON.stringify(value))) {
-    throw new Error(`${label}: model output contained a URL (URLs may only come from Tavily)`);
+    throw new Error(`${label}: model output contained a URL (URLs only come from Tavily)`);
   }
 }
 
-// 7.4 LINK HEALTH
-export async function checkYouTube(id: string): Promise<{
-  status: 'EMBEDDABLE' | 'NO_EMBED' | 'GONE' | 'UNKNOWN';
-  title?: string;
-  channel?: string;
-}> {
+export function hasVerbatimRun(
+  generated: string,
+  source: string,
+  run = LEARNING_CONFIG.VERBATIM_RUN_WORDS
+): boolean {
+  const clean = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const words = clean(generated).split(' ').filter(Boolean);
+  const src = ' ' + clean(source) + ' ';
+  for (let i = 0; i + run <= words.length; i++) {
+    if (src.includes(' ' + words.slice(i, i + run).join(' ') + ' ')) return true;
+  }
+  return false;
+}
+
+// 6.4 LINK HEALTH AND THE NO-LOGIN RULE
+const LOGIN_PATH =
+  /(^|\/)(login|log-in|signin|sign-in|signup|sign-up|register|subscribe|paywall)(\/|$)/i;
+const WALL_TEXT =
+  /(sign in to (continue|read|view)|log in to (continue|read|view)|create (a|your) (free )?account|subscribe to (read|continue)|members[- ]only|premium content|reached your (free )?(article|reading) limit)/i;
+const SOFT_404 =
+  /(page not found|404 not found|no longer available|this video is unavailable|content (has been )?removed)/i;
+
+export const isBlockedDomain = (url: string) =>
+  BLOCKED_DOMAINS.some((d) => domainOf(url) === d || domainOf(url).endsWith('.' + d));
+
+export function looksWalled(finalUrl: string, text?: string): boolean {
   try {
-    const r = await fetch(
+    if (LOGIN_PATH.test(new URL(finalUrl).pathname)) return true;
+  } catch {
+    return true;
+  }
+  if (isBlockedDomain(finalUrl)) return true;
+  return !!text && (WALL_TEXT.test(text.slice(0, 3000)) || SOFT_404.test(text.slice(0, 600)));
+}
+
+export async function checkYouTube(videoId: string): Promise<YouTubeCheck> {
+  try {
+    const res = await fetch(
       'https://www.youtube.com/oembed?format=json&url=' +
-        encodeURIComponent('https://www.youtube.com/watch?v=' + id),
+        encodeURIComponent('https://www.youtube.com/watch?v=' + videoId),
       { signal: AbortSignal.timeout(4000) }
     );
-    if (r.ok) {
-      const j: any = await r.json();
-      return {
-        status: 'EMBEDDABLE',
-        title: j.title as string,
-        channel: j.author_name as string,
-      };
+    if (res.ok) {
+      const j: any = await res.json();
+      return { status: 'EMBEDDABLE', title: j.title, channel: j.author_name };
     }
-    if (r.status === 401 || r.status === 403) return { status: 'NO_EMBED' };
-    if (r.status === 404 || r.status === 400) return { status: 'GONE' };
+    if (res.status === 401 || res.status === 403) return { status: 'NO_EMBED' };
+    if (res.status === 404 || res.status === 400) return { status: 'GONE' };
     return { status: 'UNKNOWN' };
   } catch {
     return { status: 'UNKNOWN' };
   }
 }
 
-const SOFT_404 =
-  /(page not found|404 not found|no longer available|this video is unavailable|content (has been )?removed|does not exist)/i;
-
-export async function verifyLink(url: string, sampleText?: string): Promise<LinkStatus> {
-  if (!(await isSafePublicUrl(url))) return 'DEAD';
-  if (sampleText && SOFT_404.test(sampleText.slice(0, 600))) return 'DEAD';
-  const id = extractYouTubeId(url);
-  if (id) {
-    const y = await checkYouTube(id);
-    return y.status === 'GONE' ? 'DEAD' : y.status === 'UNKNOWN' ? 'UNCHECKED' : 'VERIFIED';
+export async function verifyLink(
+  url: string,
+  sampleText?: string
+): Promise<{ status: LinkStatus; finalUrl: string }> {
+  if (!(await isSafePublicUrl(url)) || looksWalled(url, sampleText)) {
+    return { status: 'DEAD', finalUrl: url };
+  }
+  const yt = extractYouTubeId(url);
+  if (yt) {
+    const c = await checkYouTube(yt);
+    return {
+      status: c.status === 'GONE' ? 'DEAD' : c.status === 'UNKNOWN' ? 'UNCHECKED' : 'VERIFIED',
+      finalUrl: url,
+    };
   }
   const headers = {
     'User-Agent': 'Mozilla/5.0 (compatible; SkillTrackLinkCheck/1.0)',
@@ -399,39 +437,51 @@ export async function verifyLink(url: string, sampleText?: string): Promise<Link
         signal: AbortSignal.timeout(LEARNING_CONFIG.LINK_CHECK_TIMEOUT_MS),
       });
       await res.body?.cancel();
-      if (res.status === 404 || res.status === 410) return 'DEAD';
-      if (res.ok) return 'VERIFIED';
+      const finalUrl = res.url || url;
+      if (res.status === 401 || res.status === 404 || res.status === 410 || looksWalled(finalUrl)) {
+        return { status: 'DEAD', finalUrl };
+      }
+      if (res.ok) return { status: 'VERIFIED', finalUrl };
       if (res.status === 405 || res.status === 501) continue;
-      return 'UNCHECKED';
+      return { status: 'UNCHECKED', finalUrl };
     } catch {
-      // timeout/network: try next method
+      /* timeout/network: try next method */
     }
   }
-  return 'UNCHECKED';
+  return { status: 'UNCHECKED', finalUrl: url };
 }
 
-// 7.5 PARAPHRASE GUARD
-export function sharesLongRun(
-  source: string,
-  output: string,
-  maxRun = LEARNING_CONFIG.MAX_SHARED_RUN_WORDS
-): boolean {
-  const norm = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
-      .split(/\s+/)
-      .filter(Boolean);
-  const src = norm(source),
-    out = norm(output),
-    n = maxRun + 1;
-  const grams = new Set<string>();
-  for (let i = 0; i + n <= src.length; i++) grams.add(src.slice(i, i + n).join(' '));
-  for (let i = 0; i + n <= out.length; i++) if (grams.has(out.slice(i, i + n).join(' '))) return true;
-  return false;
+// 6.5 LEVEL FIT
+const BEGINNER_HINT =
+  /\b(beginner|beginners|intro|introduction|101|basics|basic|getting started|for dummies|crash course)\b/i;
+const ADVANCED_HINT =
+  /\b(advanced|expert|masterclass|in[- ]depth|deep dive|research|elite)\b/i;
+
+export function levelFitScore(tier: DifficultyTier, text: string): number {
+  const i = DIFFICULTY_TIERS.indexOf(tier);
+  let s = 0;
+  if (BEGINNER_HINT.test(text)) s += i <= 1 ? 1 : i === 2 ? -1 : -3;
+  if (ADVANCED_HINT.test(text)) s += i >= 3 ? 1 : i === 2 ? 0 : -3;
+  return s;
 }
 
-// 7.6 WIKIPEDIA FALLBACK
+// Legacy helper aliases for smooth integration
+export const canonicalKey = normalizeUrl;
+export const registrableDomain = domainOf;
+export function titleSimilarity(a: string, b: string): number {
+  const t = (s: string) => new Set(s.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
+  const A = t(a),
+    B = t(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  A.forEach((w) => {
+    if (B.has(w)) inter++;
+  });
+  return inter / (A.size + B.size - inter);
+}
+export const sharesLongRun = (source: string, output: string) => hasVerbatimRun(output, source);
+
+// Wikipedia API helper for last-resort recovery (P6)
 export async function fetchWikipediaExtract(query: string): Promise<{
   title: string;
   url: string;
@@ -439,7 +489,7 @@ export async function fetchWikipediaExtract(query: string): Promise<{
 } | null> {
   try {
     const headers = {
-      'User-Agent': `SkillTrack/1.0 (${process.env.WIKI_CONTACT ?? 'educational-app'})`,
+      'User-Agent': 'SkillTrack/1.0 (educational-app)',
       Accept: 'application/json',
     };
     const s = await fetch(

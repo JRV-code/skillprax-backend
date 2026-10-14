@@ -9,6 +9,37 @@ const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 const oauth2Client = new OAuth2Client(googleClientId, googleClientSecret);
 const JWT_SECRET = process.env.JWT_SECRET || "skilltrack_enterprise_jwt_secret_2026";
 
+export function emailKey(raw: string): string {
+  const e = raw.trim().toLowerCase();
+  const [local, domainRaw] = e.split('@');
+  if (!local || !domainRaw) return e;
+  const domain = domainRaw === 'googlemail.com' ? 'gmail.com' : domainRaw;
+  return domain === 'gmail.com' ? `${local.replace(/\./g, '')}@${domain}` : `${local}@${domain}`;
+}
+
+const ipRateMap = new Map<string, { count: number; resetAt: number }>();
+const emailFailMap = new Map<string, { failedCount: number; lockedUntil: number }>();
+
+function checkRateLimit(ip: string, email: string): { allowed: boolean; message?: string } {
+  const now = Date.now();
+  const ipEntry = ipRateMap.get(ip);
+  if (ipEntry && ipEntry.resetAt > now) {
+    if (ipEntry.count >= 10) {
+      return { allowed: false, message: 'Too many authentication attempts. Please try again in 1 minute.' };
+    }
+    ipEntry.count++;
+  } else {
+    ipRateMap.set(ip, { count: 1, resetAt: now + 60000 });
+  }
+
+  const eEntry = emailFailMap.get(emailKey(email));
+  if (eEntry && eEntry.lockedUntil > now) {
+    return { allowed: false, message: 'Account temporarily locked due to multiple failed attempts. Please try again in 5 minutes.' };
+  }
+
+  return { allowed: true };
+}
+
 function getTodayString(): string {
   return new Date().toISOString().split("T")[0];
 }
@@ -135,13 +166,20 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
 
       const cleanEmail = email.trim().toLowerCase();
       const cleanPassword = (password || "").trim();
+      const targetEmailKey = emailKey(cleanEmail);
+      const clientIp = req.ip || "127.0.0.1";
 
-      // Check if user exists in users table
+      const rateCheck = checkRateLimit(clientIp, cleanEmail);
+      if (!rateCheck.allowed) {
+        return reply.status(429).send({ error: rateCheck.message });
+      }
+
+      // Check if user exists in users table by email_key OR email
       let dbUser: any = null;
       try {
         const rows: any[] = await prisma.$queryRawUnsafe(`
-          SELECT * FROM users WHERE LOWER(email) = $1 LIMIT 1;
-        `, cleanEmail);
+          SELECT * FROM users WHERE email_key = $1 OR LOWER(email) = $2 LIMIT 1;
+        `, targetEmailKey, cleanEmail);
         if (rows && rows.length > 0) {
           dbUser = rows[0];
         }
@@ -157,11 +195,20 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
           }
           const isValid = verifyPassword(cleanPassword, dbUser.password_hash);
           if (!isValid) {
+            const cur = emailFailMap.get(targetEmailKey) || { failedCount: 0, lockedUntil: 0 };
+            cur.failedCount++;
+            if (cur.failedCount >= 5) {
+              cur.lockedUntil = Date.now() + 5 * 60 * 1000;
+            }
+            emailFailMap.set(targetEmailKey, cur);
+
             return reply.status(401).send({
-              error: "Incorrect password for this account. Please try again or sign in with Google.",
-              code: "INCORRECT_PASSWORD",
+              error: "Invalid credentials. Please verify your email and password, or sign in with Google.",
+              code: "INCORRECT_CREDENTIALS",
             });
           }
+          // Reset failed attempts on success
+          emailFailMap.delete(targetEmailKey);
         } else {
           // User exists but password_hash is NULL (signed up via Google previously but hasn't set password)
           return reply.status(400).send({
@@ -173,7 +220,12 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
 
         // Fetch or sync UserProfile
         let profile = await prisma.userProfile.findFirst({
-          where: { email: { equals: cleanEmail, mode: "insensitive" } },
+          where: {
+            OR: [
+              { emailKey: targetEmailKey },
+              { email: { equals: cleanEmail, mode: "insensitive" } },
+            ],
+          },
         });
 
         if (!profile) {
@@ -181,6 +233,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
             data: {
               name: dbUser.name || cleanEmail.split("@")[0],
               email: cleanEmail,
+              emailKey: targetEmailKey,
               gender: dbUser.gender || "Prefer not to say",
               profession: dbUser.profession || "Student",
               city: dbUser.city || "Ahmedabad",
@@ -196,6 +249,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
             userId: dbUser.id || profile.id,
             id: profile.id,
             email: cleanEmail,
+            emailKey: targetEmailKey,
             name: profile.name,
           },
           JWT_SECRET,
@@ -217,9 +271,9 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         });
       }
 
-      // Case B: User does NOT exist -> Automatically create new user record & UserProfile
-      if (!cleanPassword || cleanPassword.length < 6) {
-        return reply.status(400).send({ error: "Password must be at least 6 characters long." });
+      // Case B: User does NOT exist -> Create new user record & UserProfile
+      if (!cleanPassword || cleanPassword.length < 8) {
+        return reply.status(400).send({ error: "Password must be at least 8 characters long." });
       }
 
       const userName = name && name.trim() ? name.trim() : cleanEmail.split("@")[0];
@@ -228,18 +282,18 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       try {
         const rows: any[] = await prisma.$queryRawUnsafe(`
           INSERT INTO users (
-            email, name, password_hash, is_email_verified,
+            email, email_key, name, password_hash, is_email_verified,
             gender, profession, city, state, dietary_preference,
             medical_conditions, preferred_language, daily_reminder_enabled,
             preferred_reminder_time, last_active_date, created_at, updated_at
           ) VALUES (
-            $1, $2, $3, TRUE,
+            $1, $2, $3, $4, TRUE,
             'Prefer not to say', 'Student', 'Ahmedabad', 'Gujarat', 'Vegetarian',
             'None', 'en', TRUE,
             '19:00', CURRENT_DATE, NOW(), NOW()
           )
           RETURNING *;
-        `, cleanEmail, userName, passwordHash);
+        `, cleanEmail, targetEmailKey, userName, passwordHash);
         dbUser = rows && rows.length > 0 ? rows[0] : null;
       } catch (insertErr) {
         fastify.log.warn({ err: insertErr }, "[UniversalAuth] Raw insert warning");
@@ -249,6 +303,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         data: {
           name: userName,
           email: cleanEmail,
+          emailKey: targetEmailKey,
           gender: "Prefer not to say",
           profession: "Student",
           city: "Ahmedabad",
@@ -263,6 +318,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
           userId: dbUser?.id || profile.id,
           id: profile.id,
           email: cleanEmail,
+          emailKey: targetEmailKey,
           name: userName,
         },
         JWT_SECRET,
@@ -305,10 +361,10 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       let verifiedEmail = body.email ? body.email.trim().toLowerCase() : "";
       let verifiedName = body.name ? body.name.trim() : "";
       let verifiedPicture = body.avatarUrl ? body.avatarUrl.trim() : "";
-      let googleId: string | null = null;
-      let emailVerified = true;
+      let googleSub: string | null = null;
+      let emailVerified = false;
 
-      // Verify Google ID Token / credential
+      // Verify Google ID Token / credential server-side
       const tokenToVerify = body.credential || body.idToken || (body.googleToken && body.googleToken.length > 100 ? body.googleToken : null);
       if (tokenToVerify) {
         let verifiedSuccessfully = false;
@@ -323,8 +379,8 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
               verifiedEmail = payload.email.toLowerCase();
               verifiedName = payload.name || verifiedName;
               verifiedPicture = payload.picture || verifiedPicture;
-              googleId = payload.sub || null;
-              emailVerified = payload.email_verified ?? true;
+              googleSub = payload.sub || null;
+              emailVerified = payload.email_verified === true;
               verifiedSuccessfully = true;
             }
           } catch (tokenErr) {
@@ -341,7 +397,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
                 verifiedEmail = payload.email.toLowerCase();
                 verifiedName = payload.name || verifiedName;
                 verifiedPicture = payload.picture || verifiedPicture;
-                googleId = payload.sub || null;
+                googleSub = payload.sub || null;
                 emailVerified = payload.email_verified === "true" || payload.email_verified === true;
               }
             }
@@ -355,6 +411,13 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         return reply.status(400).send({ error: "Verified email address is required for Google Sign-In." });
       }
 
+      const clientIp = req.ip || "127.0.0.1";
+      const rateCheck = checkRateLimit(clientIp, verifiedEmail);
+      if (!rateCheck.allowed) {
+        return reply.status(429).send({ error: rateCheck.message });
+      }
+
+      const targetEmailKey = emailKey(verifiedEmail);
       const gender = body.gender || "Prefer not to say";
       const profession = body.profession || "Student";
       const educationBoard = body.studentDetails?.educationBoard || "CBSE";
@@ -363,51 +426,76 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       const medicalConditions = (body as any).medicalConditions || "None";
       const preferredLanguage = (body as any).preferredLanguage || "en";
 
-      // Module 1 & 2: Neon PostgreSQL User Record Sync (Raw SQL upsert on users table)
+      // Find user by google_sub or email_key
       let dbUser: any = null;
       try {
         const rows: any[] = await prisma.$queryRawUnsafe(`
-          INSERT INTO users (
-            email, 
-            name, 
-            avatar_url, 
-            google_id, 
-            is_email_verified, 
-            gender, 
-            profession, 
-            dietary_preference,
-            medical_conditions,
-            preferred_language,
-            daily_reminder_enabled,
-            preferred_reminder_time,
-            last_active_date,
-            created_at, 
-            updated_at
-          )
-          VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, $8, $9, TRUE, '19:00', CURRENT_DATE, NOW(), NOW())
-          ON CONFLICT (email) DO UPDATE SET 
-            name = COALESCE(NULLIF(EXCLUDED.name, ''), users.name),
-            avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
-            google_id = COALESCE(EXCLUDED.google_id, users.google_id),
-            is_email_verified = TRUE,
-            gender = COALESCE(EXCLUDED.gender, users.gender),
-            profession = COALESCE(EXCLUDED.profession, users.profession),
-            dietary_preference = COALESCE(EXCLUDED.dietary_preference, users.dietary_preference),
-            medical_conditions = COALESCE(EXCLUDED.medical_conditions, users.medical_conditions),
-            preferred_language = COALESCE(EXCLUDED.preferred_language, users.preferred_language),
-            last_active_date = CURRENT_DATE,
-            updated_at = NOW()
-          RETURNING *;
-        `, verifiedEmail, verifiedName || verifiedEmail.split('@')[0], verifiedPicture || null, googleId || null, gender, profession, dietaryPreference, medicalConditions, preferredLanguage);
-
-        dbUser = rows && rows.length > 0 ? rows[0] : null;
-      } catch (rawSqlErr) {
-        fastify.log.warn({ err: rawSqlErr }, "[GoogleAuth] Raw users table sync notice; falling back to prisma UserProfile.");
+          SELECT * FROM users WHERE google_sub = $1 OR email_key = $2 OR LOWER(email) = $3 LIMIT 1;
+        `, googleSub || "non-existent-sub", targetEmailKey, verifiedEmail);
+        if (rows && rows.length > 0) {
+          dbUser = rows[0];
+        }
+      } catch (sqlErr) {
+        fastify.log.warn({ err: sqlErr }, "[GoogleAuth] Error finding user");
       }
 
-      // Upsert UserProfile record (keeps all roadmap, telemetry & quiz relations linked)
+      // Safeguard: When Google (verified email) links into an existing account whose email was never verified,
+      // invalidate that account's password so a pre-registered password cannot be used to take over the account.
+      if (dbUser) {
+        const wasUnverified = !dbUser.is_email_verified;
+        try {
+          const rows: any[] = await prisma.$queryRawUnsafe(`
+            UPDATE users SET
+              name = COALESCE(NULLIF($1, ''), users.name),
+              avatar_url = COALESCE($2, users.avatar_url),
+              google_id = COALESCE($3, users.google_id),
+              google_sub = COALESCE($3, users.google_sub),
+              email_key = $4,
+              is_email_verified = TRUE,
+              password_hash = CASE WHEN $5 = TRUE THEN NULL ELSE users.password_hash END,
+              gender = COALESCE($6, users.gender),
+              profession = COALESCE($7, users.profession),
+              dietary_preference = COALESCE($8, users.dietary_preference),
+              medical_conditions = COALESCE($9, users.medical_conditions),
+              preferred_language = COALESCE($10, users.preferred_language),
+              last_login_at = NOW(),
+              last_active_date = CURRENT_DATE,
+              updated_at = NOW()
+            WHERE id = $11
+            RETURNING *;
+          `, verifiedName || verifiedEmail.split('@')[0], verifiedPicture || null, googleSub || null, targetEmailKey, wasUnverified, gender, profession, dietaryPreference, medicalConditions, preferredLanguage, dbUser.id);
+          dbUser = rows && rows.length > 0 ? rows[0] : dbUser;
+        } catch (rawSqlErr) {
+          fastify.log.warn({ err: rawSqlErr }, "[GoogleAuth] Raw users update notice.");
+        }
+      } else {
+        // Create new user in users table
+        try {
+          const rows: any[] = await prisma.$queryRawUnsafe(`
+            INSERT INTO users (
+              email, email_key, name, avatar_url, google_id, google_sub,
+              is_email_verified, gender, profession, dietary_preference,
+              medical_conditions, preferred_language, daily_reminder_enabled,
+              preferred_reminder_time, last_active_date, created_at, updated_at, last_login_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $5, TRUE, $6, $7, $8, $9, $10, TRUE, '19:00', CURRENT_DATE, NOW(), NOW(), NOW())
+            RETURNING *;
+          `, verifiedEmail, targetEmailKey, verifiedName || verifiedEmail.split('@')[0], verifiedPicture || null, googleSub || null, gender, profession, dietaryPreference, medicalConditions, preferredLanguage);
+          dbUser = rows && rows.length > 0 ? rows[0] : null;
+        } catch (rawSqlErr) {
+          fastify.log.warn({ err: rawSqlErr }, "[GoogleAuth] Raw users insert notice.");
+        }
+      }
+
+      // Upsert UserProfile record
       let profile = await prisma.userProfile.findFirst({
-        where: { email: { equals: verifiedEmail, mode: "insensitive" } },
+        where: {
+          OR: [
+            { googleSub: googleSub || undefined },
+            { emailKey: targetEmailKey },
+            { email: { equals: verifiedEmail, mode: "insensitive" } },
+          ],
+        },
       });
 
       if (!profile) {
@@ -415,9 +503,11 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
           data: {
             name: verifiedName || verifiedEmail.split("@")[0] || "Learner",
             email: verifiedEmail,
+            emailKey: targetEmailKey,
+            googleSub: googleSub || null,
             avatarUrl: verifiedPicture || null,
-            googleId: googleId || null,
-            isEmailVerified: emailVerified,
+            googleId: googleSub || null,
+            isEmailVerified: true,
             gender,
             profession,
             educationBoard,
@@ -440,8 +530,10 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
           where: { id: profile.id },
           data: {
             name: verifiedName || profile.name,
+            emailKey: targetEmailKey,
+            googleSub: googleSub || profile.googleSub,
             avatarUrl: verifiedPicture || profile.avatarUrl,
-            googleId: googleId || profile.googleId,
+            googleId: googleSub || profile.googleId,
             isEmailVerified: true,
             gender: gender !== "Prefer not to say" ? gender : profile.gender,
             profession: profession || profile.profession,

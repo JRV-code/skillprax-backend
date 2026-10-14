@@ -55,7 +55,11 @@ model UserProfile {
   currentStreak         Int                @default(1)
   longestStreak         Int                @default(1)
   streakFreezes         Int                @default(0)
-  lastActiveDate        String?
+  emailKey              String?            @unique @map("email_key")
+  googleSub             String?            @unique @map("google_sub")
+  passwordHash          String?            @map("password_hash")
+  lastLoginAt           DateTime?          @map("last_login_at")
+  preferredLanguage     String             @default("en") @map("preferred_language")
   createdAt             DateTime           @default(now())
   updatedAt             DateTime           @updatedAt
   workspaces            Workspace[]
@@ -123,10 +127,16 @@ model Workspace {
   id                  String       @id @default(cuid())
   title               String
   subTitle            String       @default("")
-  subGenre            String?
+  subGenre            String?      @map("sub_genre")
+  domain              String?
+  skillName           String?      @map("skill_name")
   domainCategory      String       @default("General Knowledge")
   targetGoal          String       @default("Full Mastery")
   level               String       @default("Beginner")
+  desiredLevel        String?      @map("desired_level")
+  dailyMinutes        Int?         @map("daily_minutes")
+  experienceLevel     String?      @map("experience_level")
+  stepCountReason     String?      @map("step_count_reason")
   currentStep         Int          @default(1)
   totalPlannedSteps   Int          @default(5)
   progress            Float        @default(0)
@@ -150,7 +160,16 @@ model SkillStep {
   title           String
   description     String        @default("")
   status          String        @default("IN_PROGRESS")
-  difficultyTier   String?
+  difficultyTier   String?          @map("difficulty_tier")
+  intro            Json?
+  packStatus       String           @default("NOT_BUILT") @map("pack_status")
+  packStage        String?          @map("pack_stage")
+  packStartedAt    DateTime?        @map("pack_started_at")
+  packError        String?          @map("pack_error")
+  quizStatus       String           @default("NOT_BUILT") @map("quiz_status")
+  quizStartedAt    DateTime?        @map("quiz_started_at")
+  quizError        String?          @map("quiz_error")
+  engagedAt        DateTime?        @map("engaged_at")
   approachBrief    Json?
   approachViewedAt DateTime?
   assessableUnits  Json             @default("[]")
@@ -158,8 +177,12 @@ model SkillStep {
   questionCount    Int              @default(0)
   resources        Json             @default("[]")
   chapters         Chapter[]
+  stepChapters     StepChapter[]
+  stepTopics       StepTopic[]
   stepResources    Resource[]
   attempts         QuizAttempt[]
+  attemptResults   AttemptResult[]
+  stepTranslations StepTranslation[]
   contentDocument  ContentDocument?
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
@@ -238,10 +261,14 @@ model Review {
 model User {
   id                    String    @id @default(cuid())
   email                 String    @unique
+  emailKey              String?   @unique @map("email_key")
   name                  String
+  passwordHash          String?   @map("password_hash")
   avatarUrl             String?   @map("avatar_url")
   googleId              String?   @map("google_id")
+  googleSub             String?   @unique @map("google_sub")
   isEmailVerified       Boolean   @default(true) @map("is_email_verified")
+  lastLoginAt           DateTime? @map("last_login_at")
   gender                String?
   profession            String?
   dailyReminderEnabled  Boolean   @default(true) @map("daily_reminder_enabled")
@@ -422,10 +449,13 @@ model ResourceHistory {
   identifier   String
   title        String?
   domain       String?
+  fingerprint  String?
   createdAt    DateTime @default(now()) @map("created_at")
 
   @@unique([workspaceId, identifier])
   @@index([profileId])
+  @@index([workspaceId, domain])
+  @@index([workspaceId, fingerprint])
   @@map("resource_histories")
 }
 
@@ -455,12 +485,14 @@ model Resource {
   id           String    @id @default(uuid())
   chapterId    String?   @map("chapter_id")
   stepId       String?   @map("step_id")
+  topicId      String?   @map("topic_id")
   type         String    @default("doc")
   title        String
   url          String
   domain       String?
   videoId      String?   @map("video_id")
   channelName  String?   @map("channel_name")
+  videoType    String?   @map("video_type")
   canonicalKey String?   @map("canonical_key")
   snippet      String?
   embeddable   Boolean   @default(true)
@@ -471,8 +503,98 @@ model Resource {
 
   chapter Chapter?   @relation(fields: [chapterId], references: [id], onDelete: Cascade)
   step    SkillStep? @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  topic   StepTopic? @relation(fields: [topicId], references: [id], onDelete: Cascade)
 
   @@map("resources")
+}
+
+model StepChapter {
+  id        String      @id @default(uuid())
+  stepId    String      @map("step_id")
+  order     Int
+  title     String
+  summary   String      @default("")
+  createdAt DateTime    @default(now()) @map("created_at")
+  step      SkillStep   @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  topics    StepTopic[]
+
+  @@map("step_chapters")
+}
+
+model StepTopic {
+  id         String       @id @default(uuid())
+  stepId     String       @map("step_id")
+  chapterId  String?      @map("chapter_id")
+  key        String
+  order      Int
+  title      String
+  covers     String       @default("")
+  minutes    Int          @default(5)
+  acuIds     Json         @default("[]")
+  guide      Json?
+  facts      Json?        // INTERNAL, never in any API response
+  status     String       @default("READY") // READY | NO_VERIFIED_LINK
+  createdAt  DateTime     @default(now()) @map("created_at")
+  step       SkillStep    @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  chapter    StepChapter? @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  resources  Resource[]
+
+  @@unique([stepId, key])
+  @@map("step_topics")
+}
+
+model AttemptResult {
+  id                   String    @id @default(uuid())
+  stepId               String    @map("step_id")
+  profileId            String?   @map("profile_id")
+  kind                 String    @default("INITIAL") // INITIAL | TARGETED_RETEST | PERFECTION
+  correctCount         Int       @default(0) @map("correct_count")
+  totalCount           Int       @default(0) @map("total_count")
+  percent              Int       @default(0)
+  passed               Boolean   @default(false)
+  topicBreakdown       Json      @default("[]") @map("topic_breakdown")
+  analysis             Json?
+  analysisTranslations Json?     @map("analysis_translations")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  step                 SkillStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@map("attempt_results")
+}
+
+model StepTranslation {
+  id           String    @id @default(uuid())
+  stepId       String    @map("step_id")
+  languageCode String    @map("language_code")
+  payload      Json
+  createdAt    DateTime  @default(now()) @map("created_at")
+  step         SkillStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@unique([stepId, languageCode])
+  @@map("step_translations")
+}
+
+model QuizTranslation {
+  id           String   @id @default(uuid())
+  evaluationId String   @map("evaluation_id")
+  languageCode String   @map("language_code")
+  payload      Json
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([evaluationId, languageCode])
+  @@map("quiz_translations")
+}
+
+model VideoProgress {
+  id         String   @id @default(uuid())
+  profileId  String   @map("profile_id")
+  resourceId String   @map("resource_id")
+  seconds    Int      @default(0)
+  duration   Int?
+  watched    Boolean  @default(false)
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@unique([profileId, resourceId])
+  @@map("video_progress")
 }
 
 model TranslationCache {

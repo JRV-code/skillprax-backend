@@ -676,6 +676,130 @@ export async function ensureDatabaseSchema() {
       );
     `);
 
+    // Module v4 additive tables and columns
+    const v4Statements = [
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS email_key VARCHAR(255)`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub VARCHAR(255)`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)`,
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP`,
+
+      `ALTER TABLE "UserProfile" ADD COLUMN IF NOT EXISTS email_key TEXT`,
+      `ALTER TABLE "UserProfile" ADD COLUMN IF NOT EXISTS google_sub TEXT`,
+      `ALTER TABLE "UserProfile" ADD COLUMN IF NOT EXISTS password_hash TEXT`,
+      `ALTER TABLE "UserProfile" ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP`,
+      `ALTER TABLE "UserProfile" ADD COLUMN IF NOT EXISTS preferred_language TEXT DEFAULT 'en'`,
+
+      `ALTER TABLE "Workspace" ADD COLUMN IF NOT EXISTS domain TEXT`,
+      `ALTER TABLE "Workspace" ADD COLUMN IF NOT EXISTS skill_name TEXT`,
+      `ALTER TABLE "Workspace" ADD COLUMN IF NOT EXISTS sub_genre TEXT`,
+      `ALTER TABLE "Workspace" ADD COLUMN IF NOT EXISTS desired_level TEXT`,
+      `ALTER TABLE "Workspace" ADD COLUMN IF NOT EXISTS daily_minutes INT`,
+      `ALTER TABLE "Workspace" ADD COLUMN IF NOT EXISTS experience_level TEXT`,
+      `ALTER TABLE "Workspace" ADD COLUMN IF NOT EXISTS step_count_reason TEXT`,
+
+      `ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS difficulty_tier TEXT`,
+      `ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS intro JSONB`,
+      `ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS pack_status TEXT DEFAULT 'NOT_BUILT'`,
+      `ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS pack_stage TEXT`,
+      `ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS pack_started_at TIMESTAMP`,
+      `ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS pack_error TEXT`,
+      `ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS quiz_status TEXT DEFAULT 'NOT_BUILT'`,
+      `ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS quiz_started_at TIMESTAMP`,
+      `ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS quiz_error TEXT`,
+      `ALTER TABLE "SkillStep" ADD COLUMN IF NOT EXISTS engaged_at TIMESTAMP`,
+
+      `ALTER TABLE resources ADD COLUMN IF NOT EXISTS topic_id TEXT`,
+      `ALTER TABLE resources ADD COLUMN IF NOT EXISTS video_type TEXT`,
+
+      `ALTER TABLE resource_histories ADD COLUMN IF NOT EXISTS fingerprint TEXT`,
+      `CREATE INDEX IF NOT EXISTS idx_res_hist_ws_domain ON resource_histories(workspace_id, domain)`,
+      `CREATE INDEX IF NOT EXISTS idx_res_hist_ws_fingerprint ON resource_histories(workspace_id, fingerprint)`,
+
+      `CREATE TABLE IF NOT EXISTS step_chapters (
+        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        step_id TEXT NOT NULL REFERENCES "SkillStep"(id) ON DELETE CASCADE,
+        "order" INT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT DEFAULT '',
+        created_at TIMESTAMP DEFAULT NOW()
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS step_topics (
+        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        step_id TEXT NOT NULL REFERENCES "SkillStep"(id) ON DELETE CASCADE,
+        chapter_id TEXT REFERENCES step_chapters(id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        "order" INT NOT NULL,
+        title TEXT NOT NULL,
+        covers TEXT DEFAULT '',
+        minutes INT DEFAULT 5,
+        acu_ids JSONB DEFAULT '[]',
+        guide JSONB,
+        facts JSONB,
+        status TEXT DEFAULT 'READY',
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(step_id, key)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS attempt_results (
+        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        step_id TEXT NOT NULL REFERENCES "SkillStep"(id) ON DELETE CASCADE,
+        profile_id TEXT,
+        kind TEXT DEFAULT 'INITIAL',
+        correct_count INT DEFAULT 0,
+        total_count INT DEFAULT 0,
+        percent INT DEFAULT 0,
+        passed BOOLEAN DEFAULT FALSE,
+        topic_breakdown JSONB DEFAULT '[]',
+        analysis JSONB,
+        analysis_translations JSONB,
+        created_at TIMESTAMP DEFAULT NOW()
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS step_translations (
+        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        step_id TEXT NOT NULL REFERENCES "SkillStep"(id) ON DELETE CASCADE,
+        language_code TEXT NOT NULL,
+        payload JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(step_id, language_code)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS quiz_translations (
+        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        evaluation_id TEXT NOT NULL,
+        language_code TEXT NOT NULL,
+        payload JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(evaluation_id, language_code)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS video_progress (
+        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        profile_id TEXT NOT NULL,
+        resource_id TEXT NOT NULL,
+        seconds INT DEFAULT 0,
+        duration INT,
+        watched BOOLEAN DEFAULT FALSE,
+        updated_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(profile_id, resource_id)
+      )`,
+
+      `CREATE TABLE IF NOT EXISTS ui_translations (
+        language_code TEXT PRIMARY KEY,
+        strings JSONB NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      )`,
+    ];
+
+    for (const sql of v4Statements) {
+      try {
+        await prisma.$executeRawUnsafe(sql);
+      } catch (e: any) {
+        console.warn('[Schema] Individual statement notice:', e.message);
+      }
+    }
+
     console.log('[Schema] All Master Blueprint, Step Book & Maidan Sports schemas verified successfully.');
   } catch (err) {
     console.warn('[Schema] Schema initialization warning (remote DB may differ):', err);

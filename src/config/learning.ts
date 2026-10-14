@@ -1,49 +1,47 @@
+export const BLOCKED_DOMAINS = [
+  'linkedin.com', 'facebook.com', 'instagram.com', 'pinterest.com', 'quora.com',
+  'scribd.com', 'researchgate.net', 'academia.edu', 'udemy.com', 'coursera.org',
+  'skillshare.com', 'masterclass.com', 'medium.com', 'nytimes.com', 'wsj.com',
+  'ft.com', 'bloomberg.com', 'tiktok.com', 'x.com', 'twitter.com', 'reddit.com',
+] as const;
+
 export const LEARNING_CONFIG = {
-  PASS_THRESHOLD_PERCENT: 70,          // THE one place for the pass mark
-  QUIZ_MIN_QUESTIONS: 8,
-  QUIZ_MAX_QUESTIONS: 12,
-  QUIZ_MAX_OBJECTIVE_RATIO: 0.4,       // max share of questions from CHAPTER_OBJECTIVE anchors
-  CHAPTERS_MIN: 3,
-  CHAPTERS_MAX: 6,
-  ANCHORS_MIN_PER_CHAPTER: 3,
-  ANCHORS_MAX_PER_CHAPTER: 5,
-  SOURCE_CHARS_PER_CHAPTER: 2000,      // transient text sent to Groq per chapter
-  MIN_ANCHOR_SOURCE_CHARS: 400,        // below this a resource gives no source text
-  SNIPPET_MAX_CHARS: 220,              // the only third-party text we persist
-  MAX_SHARED_RUN_WORDS: 8,             // paraphrase guard (section 7.5)
-  TOPICS_MIN: 3,
-  TOPICS_MAX: 6,
-  MAX_EXTRA_TOPIC_SEARCHES: 2,
-  MIN_SOURCE_TEXT_CHARS: 400,
-  MIN_GROUNDED_TEXT_CHARS: 400,
-  MAX_PER_DOMAIN_PER_STEP: 2,          // non-YouTube
-  MAX_PER_CHANNEL_PER_STEP: 2,         // YouTube
-  TITLE_SIMILARITY_DUP: 0.8,           // Jaccard; mirrors/reposts count as duplicates
-  MAX_REPLACEMENTS_PER_CHAPTER: 3,
-  SEARCH_CONCURRENCY: 3,
+  PASS_THRESHOLD_PERCENT: 70,          // the ONE place for the pass mark
+  STEPS_MIN: 3, STEPS_MAX: 8,          // matches the "3-8 MILESTONES" badge
+  QUIZ_MIN_QUESTIONS: 8, QUIZ_MAX_QUESTIONS: 12,
+  CHAPTERS_MIN: 2, CHAPTERS_MAX: 4,
+  TOPICS_TOTAL_MIN: 3, TOPICS_TOTAL_MAX: 8,
+  FACTS_PER_TOPIC_MIN: 3, FACTS_PER_TOPIC_MAX: 5,
+  VERBATIM_RUN_WORDS: 8,
+  MIN_EXTRACTABLE_CHARS: 1200,
+  SOURCE_CHARS_PER_TOPIC: 2500,
+  MAX_LINKS_PER_DOMAIN_PER_STEP: 1,
+  MAX_LINKS_PER_DOMAIN_PER_WORKSPACE: 3,
+  LOOKAHEAD_STEPS: 1,                  // silent prefetch never goes beyond step N+1
+  ENGAGEMENT_SECONDS: 20,              // active reading time that counts as "reading"
+  PACK_STALE_AFTER_MS: 300000,
+  MAX_EXTRA_TOPIC_SEARCHES: 3,
   LINK_CHECK_TIMEOUT_MS: 5000,
   LINK_CHECK_CONCURRENCY: 5,
-  SUBGENRE_MIN: 4,
-  SUBGENRE_MAX: 6,
-  LANGUAGES: ['en', 'hi', 'gu', 'mr', 'kn', 'ta', 'te', 'fr', 'es', 'de'],
-  EXCLUDE_DOMAINS: [
-    'youtube.com',
-    'youtu.be',
-    'm.youtube.com',
-    'vimeo.com',
-    'dailymotion.com',
-    'pinterest.com',
-    'facebook.com',
-    'instagram.com',
-    'tiktok.com',
-    'twitter.com',
-    'x.com',
-    'quora.com',
-    'scribd.com',
-    'slideshare.net',
-    'coursehero.com',
-    'chegg.com',
-  ],
+  SUBGENRE_MIN: 4, SUBGENRE_MAX: 6,
+  LANGUAGES: ['en', 'hi', 'gu', 'mr', 'kn', 'ta', 'te', 'fr', 'es', 'de'] as const,
+
+  // Compatibility aliases for legacy helper modules
+  MAX_SHARED_RUN_WORDS: 8,
+  TOPICS_MIN: 3,
+  TOPICS_MAX: 8,
+  MIN_SOURCE_TEXT_CHARS: 1200,
+  MIN_ANCHOR_SOURCE_CHARS: 400,
+  SOURCE_CHARS_PER_CHAPTER: 2500,
+  ANCHORS_MIN_PER_CHAPTER: 3,
+  ANCHORS_MAX_PER_CHAPTER: 5,
+  MAX_PER_DOMAIN_PER_STEP: 1,
+  MAX_PER_CHANNEL_PER_STEP: 1,
+  SEARCH_CONCURRENCY: 5,
+  TITLE_SIMILARITY_DUP: 0.8,
+  SNIPPET_MAX_CHARS: 220,
+  QUIZ_MAX_OBJECTIVE_RATIO: 0.4,
+  EXCLUDE_DOMAINS: BLOCKED_DOMAINS,
 } as const;
 
 export const DIFFICULTY_TIERS = [
@@ -55,11 +53,52 @@ export const DIFFICULTY_TIERS = [
 ] as const;
 export type DifficultyTier = (typeof DIFFICULTY_TIERS)[number];
 
-// stepIndex is 1-based; roadmaps have 3-8 steps, so map proportionally.
+// Desired mastery level -> END tier index. Experience level -> START tier index.
+// Real dropdown labels from EnrollSkillModal.tsx
+export const MASTERY_END_TIER: Record<string, number> = {
+  Beginner: 1,
+  Intermediate: 2,
+  Advanced: 3,
+  'Professional Mastery': 4,
+};
+
+export const EXPERIENCE_START_TIER: Record<string, number> = {
+  'Absolute Beginner': 0,
+  'No Prior Knowledge': 0,
+  'Some Foundational Knowledge': 1,
+  'Intermediate Practitioner': 2,
+  'Working Proficiency': 2,
+  'Experienced / Advanced': 3,
+  'Advanced Practitioner': 3,
+};
+
+// Step tiers climb from where the learner IS to where they WANT to be.
+export function tierForStepRange(
+  stepIndex: number,
+  total: number,
+  startIdx: number,
+  endIdx: number
+): DifficultyTier {
+  const end = Math.max(endIdx, startIdx); // never ask for less than they know
+  if (total <= 1) return DIFFICULTY_TIERS[end];
+  const idx = Math.round(startIdx + (end - startIdx) * ((stepIndex - 1) / (total - 1)));
+  return DIFFICULTY_TIERS[Math.max(0, Math.min(4, idx))];
+}
+
+// Legacy helper compatibility
 export function tierForStep(stepIndex: number, totalSteps: number): DifficultyTier {
-  if (totalSteps <= 1) return DIFFICULTY_TIERS[0];
-  const ratio = (stepIndex - 1) / (totalSteps - 1);
-  return DIFFICULTY_TIERS[Math.min(4, Math.round(ratio * 4))];
+  return tierForStepRange(stepIndex, totalSteps, 0, 4);
+}
+
+// Advisory range handed to Groq (it still decides within STEPS_MIN..STEPS_MAX).
+export function stepRangeHint(gap: number, dailyMinutes: number): [number, number] {
+  let lo = 3 + Math.floor(gap * 0.75); // gap 0..4 -> 3..6
+  let hi = lo + 2;
+  if (dailyMinutes < 45) {
+    lo += 1;
+    hi += 1;
+  } // smaller milestones for short sessions
+  return [Math.min(lo, 7), Math.min(hi, 8)];
 }
 
 export const TIER_QUERY_MODIFIERS: Record<DifficultyTier, string> = {

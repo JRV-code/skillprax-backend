@@ -325,14 +325,14 @@ Return ONLY JSON:
       }
 
       // Link verification
-      const status = await verifyLink(c.url, (c.rawContent || c.content).slice(0, 600));
-      if (status === 'DEAD') {
+      const verified = await verifyLink(c.url, (c.rawContent || c.content).slice(0, 600));
+      if (verified.status === 'DEAD') {
         continue;
       }
 
       assigned = {
-        candidate: c,
-        linkStatus: status,
+        candidate: { ...c, url: verified.finalUrl },
+        linkStatus: verified.status,
         embeddable,
         channelName,
       };
@@ -830,8 +830,8 @@ export async function retryChapterResource(chapterId: string) {
       channelName = yt.channel;
     }
 
-    const linkStatus = await verifyLink(r.url, (r.rawContent || r.content).slice(0, 600));
-    if (linkStatus === 'DEAD') continue;
+    const verified = await verifyLink(r.url, (r.rawContent || r.content).slice(0, 600));
+    if (verified.status === 'DEAD') continue;
 
     // Delete existing resources on this chapter
     await prisma.resource.deleteMany({
@@ -845,14 +845,14 @@ export async function retryChapterResource(chapterId: string) {
         chapterId: chapter.id,
         type: ytId ? 'video' : 'doc',
         title: r.title,
-        url: r.url,
+        url: verified.finalUrl,
         domain: registrableDomain(r.url),
         videoId: ytId || null,
         channelName: channelName || null,
         canonicalKey: key,
         snippet: (r.content || '').slice(0, LEARNING_CONFIG.SNIPPET_MAX_CHARS),
         embeddable,
-        linkStatus,
+        linkStatus: verified.status,
         isPrimary: true,
         checkedAt: new Date(),
       },

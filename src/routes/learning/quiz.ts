@@ -1,4 +1,5 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
+import prisma from '../../lib/prisma';
 import {
   generateLevelUpQuiz,
   submitQuizAnswers,
@@ -8,10 +9,30 @@ import {
 import { translateEvaluation } from '../../services/learning/translation';
 
 export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
+  // GET /api/steps/:stepId/level-up-quiz
+  fastify.get('/api/steps/:stepId/level-up-quiz', async (req, reply) => {
+    const { stepId } = req.params as { stepId: string };
+    try {
+      const step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { status: true } });
+      if (!step) return reply.status(404).send({ error: 'Step not found' });
+      if (step.status === 'LOCKED') return reply.send({ locked: true });
+      const quiz = await generateLevelUpQuiz(stepId);
+      return reply.send(quiz);
+    } catch (err: any) {
+      fastify.log.error(err, '[GetQuiz] Failed');
+      return reply.status(err.statusCode || 500).send({
+        error: err.message || 'Failed to retrieve quiz',
+      });
+    }
+  });
+
   // POST /api/steps/:stepId/level-up-quiz — Grounded Socratic Quiz Generation
   fastify.post('/api/steps/:stepId/level-up-quiz', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
     try {
+      const step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { status: true } });
+      if (!step) return reply.status(404).send({ error: 'Step not found' });
+      if (step.status === 'LOCKED') return reply.send({ locked: true });
       const quiz = await generateLevelUpQuiz(stepId);
       return reply.send(quiz);
     } catch (err: any) {

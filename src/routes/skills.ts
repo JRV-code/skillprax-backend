@@ -26,7 +26,7 @@ const stepResourceMemoryCache = new Map<string, { data: any; cachedAt: number }>
 export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
   // POST /api/skills/suggest-subgenres — Dynamic Sub-Genre Engine
   fastify.post('/api/skills/suggest-subgenres', async (req, reply) => {
-    const { skill } = (req.body || {}) as { skill?: string };
+    const { skill, domain = 'General Knowledge' } = (req.body || {}) as { skill?: string; domain?: string };
     if (!skill || typeof skill !== 'string') {
       return reply.status(400).send({ error: 'skill is required' });
     }
@@ -47,7 +47,7 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
         return reply.send({ subgenres: cached.subgenres, cached: true });
       }
 
-      const prompt = `You are a Principal Curriculum Taxonomist. A user wants to learn the skill: "${trimmed}". Return 4 to 6 specific professional sub-genres or specializations of THIS skill. Do not return levels like Beginner/Advanced/Intermediate. Return JSON: {"subgenres": ["..."]}`;
+      const prompt = `You are a Principal Curriculum Taxonomist. A user wants to learn "${trimmed}" in the domain "${domain}". Return 4 to 6 specific professional sub-genres of THIS skill; never levels like Beginner/Advanced. Return JSON: {"subgenres": ["..."]}`;
 
       const res = await callGroqJson<{ subgenres: string[] }>(
         'You are a Principal Curriculum Taxonomist. Return strictly JSON.',

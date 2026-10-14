@@ -10,6 +10,7 @@ import {
   PipelineExhaustionError,
   GroqConfigError,
 } from "../lib/ai/pipeline";
+import { generateMasteryTrajectory } from "../services/learning/trajectory";
 
 const ADMIN_CONFIG_ID = "global";
 
@@ -200,174 +201,72 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
   });
 
   // ============================================================
-  // 1B. POST /api/workspaces — Dynamic Sizing (3-8 steps) & Sub-Genre
+  // 1B. POST /api/workspaces — Module 1 Custom Groq Trajectory (Titles Only)
   // ============================================================
   fastify.post("/api/workspaces", async (request, reply) => {
     try {
       const body: any = request.body || {};
-      const cleanTitle = sanitizeInput((body.title ?? body.topic ?? "").trim()).slice(0, 140);
-      if (!cleanTitle) {
-        return reply.status(400).send({ error: "Title parameter is required." });
+      const cleanTitle = sanitizeInput((body.title ?? body.skill ?? body.topic ?? "").trim()).slice(0, 140);
+      if (!cleanTitle || cleanTitle.length < 3) {
+        return reply.status(400).send({ error: "Skill name must be at least 3 characters." });
       }
 
       const cleanDomain = sanitizeInput((body.domain ?? body.domainCategory ?? body.category ?? "General Knowledge").trim());
-      const cleanSubGenre = body.subGenre ? sanitizeInput(String(body.subGenre).trim()) : null;
+      const cleanSubGenre = sanitizeInput(String(body.subGenre || "").trim());
+      if (!cleanSubGenre || cleanSubGenre.length < 3) {
+        return reply.status(400).send({ error: "Sub-genre must be at least 3 characters." });
+      }
+
+      const desiredLevel = body.desiredMastery || body.targetGoal || body.desiredLevel || "Intermediate";
+      const experienceLevel = body.experienceLevel || body.currentExperience || "Some Foundational Knowledge";
+
+      let dailyMinutes = 90;
+      if (typeof body.dailyMinutes === "number" && !isNaN(body.dailyMinutes)) {
+        dailyMinutes = body.dailyMinutes;
+      } else if (typeof body.dailyHours === "string") {
+        const hMatch = body.dailyHours.match(/(\d+)\s*h/i);
+        const mMatch = body.dailyHours.match(/(\d+)\s*m/i);
+        const h = hMatch ? parseInt(hMatch[1], 10) : 1;
+        const m = mMatch ? parseInt(mMatch[1], 10) : 0;
+        dailyMinutes = h * 60 + m;
+      } else if (typeof body.hours === "number" || typeof body.minutes === "number") {
+        dailyMinutes = (Number(body.hours) || 0) * 60 + (Number(body.minutes) || 0);
+      }
+
+      dailyMinutes = Math.max(15, Math.min(960, dailyMinutes)); // between 15 mins and 16 hours
+
       const profileId = body.profileId || body.userProfileId || "default-profile";
+      const section = cleanDomain.toLowerCase().includes("athletic") || cleanDomain.toLowerCase().includes("sport") || body.section === "SPORTS"
+        ? "SPORTS"
+        : "SKILL";
 
-      let apiKeys;
-      try {
-        apiKeys = await getApiKeys();
-      } catch (err) {
-        if (err instanceof GroqConfigError) {
-          return reply.status(503).send({ error: `AI configuration error: ${(err as Error).message}` });
-        }
-        throw err;
-      }
-
-      // Fetch profile context if available
-      const profile = await prisma.userProfile.findUnique({ where: { id: profileId } });
-      const eduContext = profile ? `${profile.educationBoard} ${profile.grade}` : "Standard Track";
-
-      const systemPrompt = `You are the SKILL-TRACK Mastery Curriculum Engine.
-Domain: "${cleanDomain}"
-Target Skill: "${cleanTitle}"
-${cleanSubGenre ? `Specialized Sub-Genre: "${cleanSubGenre}"` : ''}
-Target Goal: "${body.desiredMastery || body.targetGoal || 'Mastery'}". Experience: "${body.experienceLevel || 'Beginner'}". Daily Commitment: "${body.dailyHours || '1h 30m'}".
-Learner Educational Context: "${eduContext}".
-
-TASK:
-Determine the exact number of progression steps (between 3 and 8) necessary to take this learner from their current level to mastery.
-Design a custom heading and distinct progression style for each step, ensuring each step gets progressively more advanced, teaching and introducing new techniques and first principles.
-Be fast, rigorous, and specific to "${cleanTitle}". DO NOT fetch or include URLs, videos, or quizzes.
-
-RETURN ONLY VALID JSON (no markdown wrapping, no extra keys):
-{
-  "title": "${cleanTitle}",
-  "subTitle": "Authoritative subtitle tailored to ${cleanTitle}",
-  "progressionStyle": "e.g. Dynamic Scaffolding / Non-linear Spiral / Applied Biomechanical Ascent",
-  "steps": [
-    {
-      "stepIndex": 1,
-      "title": "Unique Foundational Milestone Title",
-      "progressionHeading": "Stage 1: Core Fundamentals & First Principles",
-      "summary": "Clear summary of new concepts and techniques taught in this step",
-      "acus": [
-        { "title": "Competency Unit Name", "description": "Specific measurable skill tested" },
-        { "title": "Competency Unit Name", "description": "Specific measurable skill tested" }
-      ]
-    }
-  ]
-}`;
-
-      let generatedData: any = null;
-      try {
-        const aiRes = await callGroqWithFallback(
-          [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: `Generate dynamic 3-8 step mastery trajectory for "${cleanTitle}" ${cleanSubGenre ? `(${cleanSubGenre})` : ''}` }
-          ],
-          { apiKey: apiKeys.groqApiKey, jsonMode: true, model: "llama-3.3-70b-versatile", maxTokens: 1400 }
-        );
-        const cleaned = aiRes.content.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '');
-        generatedData = JSON.parse(cleaned);
-      } catch (aiErr) {
-        fastify.log.warn(`[POST /api/workspaces] Groq fallback used: ${(aiErr as Error).message}`);
-        generatedData = {
-          title: cleanTitle,
-          subTitle: `${cleanSubGenre ? `${cleanSubGenre} ` : ''}${cleanDomain} Mastery Track`,
-          progressionStyle: "Dynamic Step-by-Step Mastery",
-          steps: [
-            {
-              stepIndex: 1,
-              title: `${cleanTitle}: Foundational Principles`,
-              progressionHeading: "Stage 1: Core Invariants & Mechanics",
-              summary: "Master baseline principles, foundational invariants, and terminology.",
-              acus: [
-                { title: `Foundational ${cleanTitle} Baseline`, description: "Verify baseline principles" },
-                { title: "Boundary Conditions", description: "First-principles verification" }
-              ]
-            },
-            {
-              stepIndex: 2,
-              title: `${cleanTitle}: Applied Mechanics`,
-              progressionHeading: "Stage 2: Operational Flow & Applied Execution",
-              summary: "Learn sequential execution, operational mechanics, and standard patterns.",
-              acus: [
-                { title: "Procedural Execution", description: "Applied synthesis and operational steps" }
-              ]
-            },
-            {
-              stepIndex: 3,
-              title: `${cleanTitle}: Advanced Optimization`,
-              progressionHeading: "Stage 3: Edge Cases & Non-linear Stress Testing",
-              summary: "Explore complex variations, edge case handling, and diagnostic stress tests.",
-              acus: [
-                { title: "Non-linear edge cases", description: "Cross-domain synthesis verification" }
-              ]
-            },
-            {
-              stepIndex: 4,
-              title: `${cleanTitle}: Apex Mastery`,
-              progressionHeading: "Stage 4: Autonomous Apex Synthesis",
-              summary: "Achieve deep creative mastery, cross-discipline integration, and independent intuition.",
-              acus: [
-                { title: "Apex Competency Clearance", description: "Comprehensive Socratic verification" }
-              ]
-            }
-          ]
-        };
-      }
-
-      // Dynamic sizing between 3 and 8 steps decided by Groq
-      const rawSteps = Array.isArray(generatedData.steps) ? generatedData.steps : [];
-      const clampedSteps = rawSteps.slice(0, 8);
-      if (clampedSteps.length < 3) {
-        while (clampedSteps.length < 3) {
-          const idx = clampedSteps.length + 1;
-          clampedSteps.push({
-            stepIndex: idx,
-            title: `Milestone ${idx}: Applied Synthesis`,
-            progressionHeading: `Stage ${idx}: Applied Synthesis`,
-            summary: `Practical execution and verification under scenario constraints`,
-            acus: [{ title: 'Applied Verification', description: 'Practical execution under scenario constraints' }]
-          });
-        }
-      }
-
-      // Create Workspace + Steps in Prisma transaction
-      const newWorkspace = await prisma.workspace.create({
-        data: {
-          title: generatedData.title || cleanTitle,
-          domainCategory: cleanDomain,
-          subGenre: cleanSubGenre,
-          targetGoal: body.targetGoal || "Full Mastery",
-          level: body.level || "Beginner",
-          aiEngine: "llama-3.3-70b-versatile",
-          userProfileId: profileId,
-          totalPlannedSteps: clampedSteps.length,
-          steps: {
-            create: clampedSteps.map((s: any, idx: number) => ({
-              stepIndex: idx + 1,
-              title: s.title || `Step ${idx + 1}`,
-              description: s.summary || s.progressionHeading || `Mastery gate for step ${idx + 1}`,
-              status: idx === 0 ? "STUDY_UNGENERATED" : "LOCKED",
-              assessableUnits: (s.acus || []).map((a: any) => ({
-                title: typeof a === "string" ? a : a.title || "Competency Unit",
-                description: typeof a === "string" ? a : a.description || "Specific skill tested"
-              })) as any
-            }))
-          }
-        },
-        include: {
-          steps: { orderBy: { stepIndex: "asc" } }
-        }
+      const result = await generateMasteryTrajectory({
+        section: section as 'SKILLS' | 'SPORTS',
+        domain: cleanDomain,
+        skill: cleanTitle,
+        subGenre: cleanSubGenre,
+        desiredLevel,
+        currentExperience: experienceLevel,
+        dailyMinutes,
+        profileId,
       });
 
-      const formatted = formatWorkspaceClientSafe(newWorkspace);
-      return reply.status(201).send({ workspace: formatted, id: newWorkspace.id });
+      const fullWorkspace = await prisma.workspace.findUnique({
+        where: { id: result.workspaceId },
+        include: { steps: { orderBy: { stepIndex: "asc" } } },
+      });
+
+      const formatted = formatWorkspaceClientSafe(fullWorkspace);
+      return reply.status(201).send({
+        id: result.workspaceId,
+        workspace: formatted,
+        stepCount: result.stepCount,
+        stepCountReason: result.stepCountReason,
+        steps: result.steps,
+      });
     } catch (err: any) {
       fastify.log.error(err, "[POST /api/workspaces] Failed");
-      return reply.status(500).send({ error: err.message || "Failed to create workspace" });
+      return reply.status(500).send({ error: err.message || "Failed to create trajectory" });
     }
   });
 
