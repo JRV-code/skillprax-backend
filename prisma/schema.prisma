@@ -59,6 +59,7 @@ model UserProfile {
   googleSub             String?            @unique @map("google_sub")
   passwordHash          String?            @map("password_hash")
   lastLoginAt           DateTime?          @map("last_login_at")
+  lastActiveDate        DateTime?
   preferredLanguage     String             @default("en") @map("preferred_language")
   createdAt             DateTime           @default(now())
   updatedAt             DateTime           @updatedAt
@@ -127,7 +128,7 @@ model Workspace {
   id                  String       @id @default(cuid())
   title               String
   subTitle            String       @default("")
-  subGenre            String?      @map("sub_genre")
+  subGenre            String?
   domain              String?
   skillName           String?      @map("skill_name")
   domainCategory      String       @default("General Knowledge")
@@ -160,8 +161,8 @@ model SkillStep {
   title           String
   description     String        @default("")
   status          String        @default("IN_PROGRESS")
-  difficultyTier   String?          @map("difficulty_tier")
-  intro            Json?
+  difficultyTier  String?       @default("FOUNDATIONS")
+  intro           Json?
   packStatus       String           @default("NOT_BUILT") @map("pack_status")
   packStage        String?          @map("pack_stage")
   packStartedAt    DateTime?        @map("pack_started_at")
@@ -271,6 +272,8 @@ model User {
   lastLoginAt           DateTime? @map("last_login_at")
   gender                String?
   profession            String?
+  city                  String?   @default("Ahmedabad")
+  state                 String?   @default("Gujarat")
   dailyReminderEnabled  Boolean   @default(true) @map("daily_reminder_enabled")
   preferredReminderTime String    @default("19:00") @map("preferred_reminder_time")
   timezone              String    @default("UTC")
