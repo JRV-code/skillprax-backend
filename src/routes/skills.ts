@@ -13,7 +13,7 @@ import {
 } from '../services/documentationService';
 import { fetchVerifiedStepVideos } from '../services/videoService';
 import { generateAthleticFuelingPlan } from '../services/nutritionEngine';
-import { sourceStepContent } from '../services/resourceSourcingService';
+import { sourceStepContent, sourceStepContentFast } from '../services/resourceSourcingService';
 
 import { callGroqJson } from '../lib/foundation';
 import { LEARNING_CONFIG } from '../config/learning';
@@ -146,21 +146,12 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
       const userSkill = skillRows[0];
       const skillId = userSkill.id;
 
-      // Stage B: Synthesize Step 1 with Tavily + Groq
-      const step1Plan = curriculum.steps[0];
-      const step1Content = await researchAndSynthesizeStepContent({
-        userId,
-        skillName,
-        subGenre,
-        skillCategory,
-        stepNumber: 1,
-        stepTitle: step1Plan.title,
-        stepDescription: step1Plan.description,
-        requiredPracticeDays: step1Plan.requiredPracticeDays,
-        dietaryPreference: body.dietaryPreference,
-        medicalConditions: body.medicalConditions,
-        preferredLanguage,
-      });
+      // Stage B: Initialize Step 1 (Unlocked, un-sourced for sub-second trajectory enrollment)
+      const step1Plan = curriculum.steps[0] || {
+        title: `${skillName}: Foundations & Invariants`,
+        description: `Master core foundational mechanics and first principles.`,
+        requiredPracticeDays: 1,
+      };
 
       // Insert Step 1 (Unlocked)
       await prisma.$executeRawUnsafe(`
@@ -178,31 +169,17 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
           documentation_markdown,
           documentation_source_url,
           documentation_quadrants,
-          daily_diet_plan,
           is_unlocked,
           is_completed
         )
-        VALUES ($1, $2, $3, $4, $5, 0, FALSE, NULL, $6, $7, $8, $9, $10::jsonb, $11::jsonb, TRUE, FALSE)
-        ON CONFLICT (skill_id, step_number) DO UPDATE SET
-          title = EXCLUDED.title,
-          description = EXCLUDED.description,
-          video_url = EXCLUDED.video_url,
-          video_id = EXCLUDED.video_id,
-          documentation_markdown = EXCLUDED.documentation_markdown,
-          documentation_quadrants = EXCLUDED.documentation_quadrants,
-          daily_diet_plan = EXCLUDED.daily_diet_plan;
+        VALUES ($1, $2, $3, $4, $5, 0, FALSE, NULL, '', '', '', '', '[]'::jsonb, TRUE, FALSE)
+        ON CONFLICT (skill_id, step_number) DO NOTHING;
       `,
         skillId,
         1,
-        step1Content.title,
-        step1Content.description,
-        step1Content.requiredPracticeDays,
-        step1Content.videoUrl,
-        step1Content.videoId,
-        step1Content.documentationMarkdown,
-        step1Content.documentationSourceUrl,
-        JSON.stringify(step1Content.documentationQuadrants),
-        step1Content.dailyDietPlan ? JSON.stringify(step1Content.dailyDietPlan) : null
+        step1Plan.title,
+        step1Plan.description || `Master foundational principles of ${skillName}`,
+        step1Plan.requiredPracticeDays || 1
       );
 
       // Pre-populate remaining steps (Locked)
@@ -239,7 +216,7 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
         skill: userSkill,
         overview: curriculum.roadmapOverview,
         steps,
-        currentStepContent: step1Content,
+        currentStepContent: null,
       });
     } catch (err: any) {
       fastify.log.error(err, '[POST /api/skills/generate] Failed');
@@ -333,106 +310,35 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
         step = stepRows[0];
       }
 
-      // 4. Verify whether resources are populated or need real-web synthesis
-      const hasMarkdown = step.documentation_markdown && step.documentation_markdown.trim().length > 60;
-      const hasVideo = step.video_id && step.video_id.trim().length > 0;
-
-      if (!hasMarkdown || !hasVideo) {
-        const diffTier = getDifficultyTier(stepNum);
-
-        // A. Fetch authentic, non-repeating YouTube videos (Anti-Repetition Vault enforced)
-        const verifiedVideos = await fetchVerifiedStepVideos({
-          userId,
-          skillId,
-          skillName: skill.skill_name,
-          subGenre: skill.sub_genre,
-          stepNumber: stepNum,
-          stepTitle: step.title,
-          difficultyLevel: diffTier.difficultyLevel,
-          skillCategory: skill.skill_category,
-          limit: 3,
-        });
-
-        const primaryVideo = verifiedVideos[0];
-
-        // B. Fetch authentic web documentation via Tavily + Wikipedia + Groq
-        const docResult = await fetchAndSynthesizeStepDocumentation({
-          userId,
-          skillId,
-          skillName: skill.skill_name,
-          subGenre: skill.sub_genre,
-          stepNumber: stepNum,
-          totalSteps: skill.total_steps || 5,
-          stepTitle: step.title,
-          stepDescription: step.description,
-          difficultyLevel: diffTier.difficultyLevel,
-          language,
-          skillCategory: skill.skill_category,
-        });
-
-        // C. Generate athletic daily fueling plan if physical
-        let dailyDietPlan = step.daily_diet_plan;
-        if (skill.skill_category === 'physical' && !dailyDietPlan) {
-          dailyDietPlan = await generateAthleticFuelingPlan({
-            sportName: skill.skill_name,
-            subGenre: skill.sub_genre,
-            dietaryPreference: 'Vegetarian',
-            medicalConditions: 'None',
-            preferredLanguage: language,
-          });
-        }
-
-        // D. Update PostgreSQL database keyed by (skill_id, step_number)
-        await prisma.$executeRawUnsafe(`
-          UPDATE skill_steps SET
-            video_url = $1,
-            video_id = $2,
-            documentation_markdown = $3,
-            documentation_source_url = $4,
-            documentation_quadrants = $5::jsonb,
-            daily_diet_plan = $6::jsonb
-          WHERE skill_id = $7 AND step_number = $8;
-        `,
-          primaryVideo.url,
-          primaryVideo.videoId,
-          docResult.documentationMarkdown,
-          docResult.sourceUrl,
-          JSON.stringify(docResult.quadrants),
-          dailyDietPlan ? JSON.stringify(dailyDietPlan) : null,
-          skillId,
-          stepNum
-        );
-
-        // Reload updated step record
-        stepRows = await prisma.$queryRawUnsafe(`
-          SELECT * FROM skill_steps WHERE skill_id = $1 AND step_number = $2 LIMIT 1;
-        `, skillId, stepNum);
-        step = stepRows[0];
-      }
+      // 4. Non-blocking GET: Return step data immediately without slow synchronous synthesis
+      const isSourced = Boolean(step.is_sourced || (step.video_id && (step.documentation_markdown || step.topics)));
 
       // 5. Structure payload
       const responsePayload = {
         success: true,
         skillId,
         stepNumber: stepNum,
-        step,
-        videos: [
+        step: {
+          ...step,
+          is_sourced: isSourced,
+        },
+        videos: step.video_id ? [
           {
             id: step.video_id,
             videoId: step.video_id,
-            url: step.video_url,
+            url: step.video_url || `https://www.youtube.com/watch?v=${step.video_id}`,
             title: `${step.title} - Video Walkthrough`,
             subtitle: step.description,
             type: 'youtube',
           },
-        ],
-        documentation: {
+        ] : [],
+        documentation: step.documentation_markdown ? {
           title: `${step.title} - Technical Guide`,
           markdown: step.documentation_markdown,
           sourceUrl: step.documentation_source_url,
           quadrants: step.documentation_quadrants,
           type: 'doc',
-        },
+        } : null,
       };
 
       // Cache compound key
@@ -477,7 +383,7 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
         userId = 'default-user';
       }
 
-      const sourced = await sourceStepContent(userId, skillId, stepNum);
+      const sourced = await sourceStepContentFast(userId, skillId, stepNum);
       return reply.status(200).send(sourced);
     } catch (err: any) {
       fastify.log.error(err, '[POST /api/skills/:skillId/step/:stepNumber/source] Failed');

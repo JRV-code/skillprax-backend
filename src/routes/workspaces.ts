@@ -228,31 +228,29 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       const profile = await prisma.userProfile.findUnique({ where: { id: profileId } });
       const eduContext = profile ? `${profile.educationBoard} ${profile.grade}` : "Standard Track";
 
-      const systemPrompt = `You are the SKILL-TRACK Pedagogy & Curriculum Engine (v2.6).
+      const systemPrompt = `You are the SKILL-TRACK Mastery Curriculum Engine.
 Domain: "${cleanDomain}"
 Target Skill: "${cleanTitle}"
 ${cleanSubGenre ? `Specialized Sub-Genre: "${cleanSubGenre}"` : ''}
+Target Goal: "${body.desiredMastery || body.targetGoal || 'Mastery'}". Experience: "${body.experienceLevel || 'Beginner'}". Daily Commitment: "${body.dailyHours || '1h 30m'}".
 Learner Educational Context: "${eduContext}".
 
 TASK:
-Generate a rigorous, sequentially mastered curriculum tailored specifically to "${cleanTitle}".
+Determine the exact number of progression steps (between 3 and 8) necessary to take this learner from their current level to mastery.
+Design a custom heading and distinct progression style for each step, ensuring each step gets progressively more advanced, teaching and introducing new techniques and first principles.
+Be fast, rigorous, and specific to "${cleanTitle}". DO NOT fetch or include URLs, videos, or quizzes.
 
-DYNAMIC SIZING DIRECTIVE (3 to 8 Milestones):
-- DYNAMICALLY SCOPE ROADMAP DEPTH BETWEEN 3 AND 8 MILESTONES based on technical complexity:
-  * Niche technical drill or narrow specialization: 3 to 4 milestones.
-  * Intermediate applied systems: 4 to 6 milestones.
-  * Deep multi-layered disciplines (e.g. Organic Chemistry, Distributed Systems): 6 to 8 milestones.
-- Every step MUST have a completely UNIQUE, DISTINCT title reflecting a clear progressive level-up in difficulty and mastery.
-- Each milestone MUST contain 2 to 3 granular Assessable Competency Units (ACUs).
-
-JSON SCHEMA:
+RETURN ONLY VALID JSON (no markdown wrapping, no extra keys):
 {
   "title": "${cleanTitle}",
-  "subTitle": "An authoritative, domain-accurate subtitle",
+  "subTitle": "Authoritative subtitle tailored to ${cleanTitle}",
+  "progressionStyle": "e.g. Dynamic Scaffolding / Non-linear Spiral / Applied Biomechanical Ascent",
   "steps": [
     {
       "stepIndex": 1,
-      "title": "Unique Foundational Module Name",
+      "title": "Unique Foundational Milestone Title",
+      "progressionHeading": "Stage 1: Core Fundamentals & First Principles",
+      "summary": "Clear summary of new concepts and techniques taught in this step",
       "acus": [
         { "title": "Competency Unit Name", "description": "Specific measurable skill tested" },
         { "title": "Competency Unit Name", "description": "Specific measurable skill tested" }
@@ -266,9 +264,9 @@ JSON SCHEMA:
         const aiRes = await callGroqWithFallback(
           [
             { role: "system", content: systemPrompt },
-            { role: "user", content: `Generate dynamic 3-8 step curriculum for "${cleanTitle}" ${cleanSubGenre ? `(${cleanSubGenre})` : ''}` }
+            { role: "user", content: `Generate dynamic 3-8 step mastery trajectory for "${cleanTitle}" ${cleanSubGenre ? `(${cleanSubGenre})` : ''}` }
           ],
-          { apiKey: apiKeys.groqApiKey, jsonMode: true, model: "llama-3.3-70b-versatile" }
+          { apiKey: apiKeys.groqApiKey, jsonMode: true, model: "llama-3.3-70b-versatile", maxTokens: 1400 }
         );
         const cleaned = aiRes.content.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '');
         generatedData = JSON.parse(cleaned);
@@ -277,10 +275,13 @@ JSON SCHEMA:
         generatedData = {
           title: cleanTitle,
           subTitle: `${cleanSubGenre ? `${cleanSubGenre} ` : ''}${cleanDomain} Mastery Track`,
+          progressionStyle: "Dynamic Step-by-Step Mastery",
           steps: [
             {
               stepIndex: 1,
               title: `${cleanTitle}: Foundational Principles`,
+              progressionHeading: "Stage 1: Core Invariants & Mechanics",
+              summary: "Master baseline principles, foundational invariants, and terminology.",
               acus: [
                 { title: `Foundational ${cleanTitle} Baseline`, description: "Verify baseline principles" },
                 { title: "Boundary Conditions", description: "First-principles verification" }
@@ -289,6 +290,8 @@ JSON SCHEMA:
             {
               stepIndex: 2,
               title: `${cleanTitle}: Applied Mechanics`,
+              progressionHeading: "Stage 2: Operational Flow & Applied Execution",
+              summary: "Learn sequential execution, operational mechanics, and standard patterns.",
               acus: [
                 { title: "Procedural Execution", description: "Applied synthesis and operational steps" }
               ]
@@ -296,6 +299,8 @@ JSON SCHEMA:
             {
               stepIndex: 3,
               title: `${cleanTitle}: Advanced Optimization`,
+              progressionHeading: "Stage 3: Edge Cases & Non-linear Stress Testing",
+              summary: "Explore complex variations, edge case handling, and diagnostic stress tests.",
               acus: [
                 { title: "Non-linear edge cases", description: "Cross-domain synthesis verification" }
               ]
@@ -303,6 +308,8 @@ JSON SCHEMA:
             {
               stepIndex: 4,
               title: `${cleanTitle}: Apex Mastery`,
+              progressionHeading: "Stage 4: Autonomous Apex Synthesis",
+              summary: "Achieve deep creative mastery, cross-discipline integration, and independent intuition.",
               acus: [
                 { title: "Apex Competency Clearance", description: "Comprehensive Socratic verification" }
               ]
@@ -311,7 +318,7 @@ JSON SCHEMA:
         };
       }
 
-      // Clamp steps between 3 and 8
+      // Dynamic sizing between 3 and 8 steps decided by Groq
       const rawSteps = Array.isArray(generatedData.steps) ? generatedData.steps : [];
       const clampedSteps = rawSteps.slice(0, 8);
       if (clampedSteps.length < 3) {
@@ -320,6 +327,8 @@ JSON SCHEMA:
           clampedSteps.push({
             stepIndex: idx,
             title: `Milestone ${idx}: Applied Synthesis`,
+            progressionHeading: `Stage ${idx}: Applied Synthesis`,
+            summary: `Practical execution and verification under scenario constraints`,
             acus: [{ title: 'Applied Verification', description: 'Practical execution under scenario constraints' }]
           });
         }
@@ -340,7 +349,7 @@ JSON SCHEMA:
             create: clampedSteps.map((s: any, idx: number) => ({
               stepIndex: idx + 1,
               title: s.title || `Step ${idx + 1}`,
-              description: `Mastery gate for step ${idx + 1}`,
+              description: s.summary || s.progressionHeading || `Mastery gate for step ${idx + 1}`,
               status: idx === 0 ? "STUDY_UNGENERATED" : "LOCKED",
               assessableUnits: (s.acus || []).map((a: any) => ({
                 title: typeof a === "string" ? a : a.title || "Competency Unit",

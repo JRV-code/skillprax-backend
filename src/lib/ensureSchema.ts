@@ -192,7 +192,14 @@ export async function ensureDatabaseSchema() {
         ALTER TABLE skill_steps
         ADD COLUMN IF NOT EXISTS topics JSONB DEFAULT '[]'::jsonb,
         ADD COLUMN IF NOT EXISTS is_sourced BOOLEAN DEFAULT FALSE,
-        ADD COLUMN IF NOT EXISTS quiz_data JSONB DEFAULT '[]'::jsonb;
+        ADD COLUMN IF NOT EXISTS quiz_data JSONB DEFAULT '[]'::jsonb,
+        ADD COLUMN IF NOT EXISTS video_title VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS video_mini_guide TEXT,
+        ADD COLUMN IF NOT EXISTS doc_title VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS doc_url TEXT,
+        ADD COLUMN IF NOT EXISTS doc_domain VARCHAR(255),
+        ADD COLUMN IF NOT EXISTS doc_mini_guide TEXT,
+        ADD COLUMN IF NOT EXISTS step_explanation TEXT;
       `);
       await prisma.$executeRawUnsafe(`
         ALTER TABLE user_resource_history
