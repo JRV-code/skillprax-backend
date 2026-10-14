@@ -45,6 +45,56 @@ export async function runSchemaMigration() {
     `ALTER TABLE user_resource_history ALTER COLUMN id SET DEFAULT gen_random_uuid()::text`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_user_resource_history_uniq ON user_resource_history (user_id, resource_identifier)`,
     `ALTER TABLE users ALTER COLUMN updated_at SET DEFAULT NOW()`,
+
+    // Ensure CUID-compatible TEXT columns for all learning pipeline tables
+    `ALTER TABLE IF EXISTS resource_histories ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS resource_histories ALTER COLUMN workspace_id TYPE TEXT USING workspace_id::text`,
+    `ALTER TABLE IF EXISTS resource_histories ALTER COLUMN profile_id TYPE TEXT USING profile_id::text`,
+
+    `ALTER TABLE IF EXISTS step_chapters ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS step_chapters ALTER COLUMN step_id TYPE TEXT USING step_id::text`,
+
+    `ALTER TABLE IF EXISTS step_topics ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS step_topics ALTER COLUMN step_id TYPE TEXT USING step_id::text`,
+    `ALTER TABLE IF EXISTS step_topics ALTER COLUMN chapter_id TYPE TEXT USING chapter_id::text`,
+
+    `ALTER TABLE IF EXISTS resources ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS resources ALTER COLUMN step_id TYPE TEXT USING step_id::text`,
+    `ALTER TABLE IF EXISTS resources ALTER COLUMN topic_id TYPE TEXT USING topic_id::text`,
+    `ALTER TABLE IF EXISTS resources ALTER COLUMN chapter_id TYPE TEXT USING chapter_id::text`,
+
+    `ALTER TABLE IF EXISTS attempt_results ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS attempt_results ALTER COLUMN step_id TYPE TEXT USING step_id::text`,
+    `ALTER TABLE IF EXISTS attempt_results ALTER COLUMN profile_id TYPE TEXT USING profile_id::text`,
+
+    `ALTER TABLE IF EXISTS video_progress ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS video_progress ALTER COLUMN profile_id TYPE TEXT USING profile_id::text`,
+    `ALTER TABLE IF EXISTS video_progress ALTER COLUMN resource_id TYPE TEXT USING resource_id::text`,
+
+    `ALTER TABLE IF EXISTS step_translations ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS step_translations ALTER COLUMN step_id TYPE TEXT USING step_id::text`,
+
+    `ALTER TABLE IF EXISTS chapters ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS chapters ALTER COLUMN step_id TYPE TEXT USING step_id::text`,
+
+    `ALTER TABLE IF EXISTS user_resource_history ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS user_resource_history ALTER COLUMN user_id TYPE TEXT USING user_id::text`,
+    `ALTER TABLE IF EXISTS user_resource_history ALTER COLUMN skill_id TYPE TEXT USING skill_id::text`,
+
+    `ALTER TABLE IF EXISTS content_documents ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS content_documents ALTER COLUMN step_id TYPE TEXT USING step_id::text`,
+    `ALTER TABLE IF EXISTS content_documents ALTER COLUMN resource_id TYPE TEXT USING resource_id::text`,
+
+    `ALTER TABLE IF EXISTS content_translations ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS content_translations ALTER COLUMN content_document_id TYPE TEXT USING content_document_id::text`,
+
+    `ALTER TABLE IF EXISTS quiz_translations ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS quiz_translations ALTER COLUMN evaluation_id TYPE TEXT USING evaluation_id::text`,
+
+    `ALTER TABLE IF EXISTS translation_caches ALTER COLUMN id TYPE TEXT USING id::text`,
+    `ALTER TABLE IF EXISTS translation_caches ALTER COLUMN scope_id TYPE TEXT USING scope_id::text`,
+
+    `ALTER TABLE IF EXISTS subgenre_caches ALTER COLUMN id TYPE TEXT USING id::text`,
   ];
 
   for (const stmt of statements) {

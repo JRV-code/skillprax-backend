@@ -27,6 +27,18 @@ const server = Fastify({
   }
 });
 
+// Accept empty JSON body gracefully instead of throwing FST_ERR_CTP_EMPTY_JSON_BODY
+server.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+  try {
+    const text = typeof body === 'string' ? body.trim() : '';
+    const json = text ? JSON.parse(text) : {};
+    done(null, json);
+  } catch (err: any) {
+    err.statusCode = 400;
+    done(err, undefined);
+  }
+});
+
 const start = async () => {
   try {
     // Initialize Module 7 Database Schema & Safe Migration

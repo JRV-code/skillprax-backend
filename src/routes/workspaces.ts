@@ -357,7 +357,8 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       const parsedResources = currentStep ? safeJsonParse(currentStep.resources, []) : [];
       const parsedAcus = currentStep ? safeJsonParse(currentStep.assessableUnits, []) : [];
 
-      const needsHealing = currentStep && (parsedResources.length === 0 || parsedAcus.length === 0);
+      const isV4Step = currentStep && (currentStep.packStatus || (currentStep as any).pack_status);
+      const needsHealing = !isV4Step && currentStep && (parsedResources.length === 0 || parsedAcus.length === 0);
 
       const isStaleLock = workspace.generationStartedAt
         ? Date.now() - new Date(workspace.generationStartedAt).getTime() >= 30000

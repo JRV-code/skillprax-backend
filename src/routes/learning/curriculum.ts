@@ -24,18 +24,33 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
   fastify.post('/api/steps/:stepId/level-up-resources', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
     try {
-      const step = await prisma.skillStep.findUnique({ where: { id: stepId } });
+      let step = await prisma.skillStep.findUnique({
+        where: { id: stepId },
+        include: { workspace: true },
+      });
+      if (!step) {
+        // Fallback: Check if caller passed a workspaceId
+        const ws = await prisma.workspace.findUnique({
+          where: { id: stepId },
+          include: { steps: { orderBy: { stepIndex: 'asc' } } },
+        });
+        if (ws && ws.steps.length > 0) {
+          const activeS = ws.steps.find((s) => s.status !== 'PASSED') || ws.steps[0];
+          step = { ...activeS, workspace: ws } as any;
+        }
+      }
       if (!step) return reply.status(404).send({ error: 'Step not found' });
 
-      const claimed = await claimPackBuild(stepId);
+      const claimed = await claimPackBuild(step.id);
       if (claimed) {
-        enqueueJob(() => runPackBuild(stepId));
+        enqueueJob(() => runPackBuild(step.id));
       }
 
       return reply.status(202).send({
         success: true,
         message: claimed ? 'Pack build queued' : 'Pack build already in progress',
         packStatus: 'BUILDING',
+        stepId: step.id,
       });
     } catch (err: any) {
       fastify.log.error(err, '[CurriculumBuild] Failed');
@@ -47,7 +62,7 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
   fastify.post('/api/steps/:stepId/engaged', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
     try {
-      const step = await prisma.skillStep.findUnique({
+      let step = await prisma.skillStep.findUnique({
         where: { id: stepId },
         include: {
           workspace: {
@@ -58,12 +73,25 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         },
       });
 
+      if (!step) {
+        const ws = await prisma.workspace.findUnique({
+          where: { id: stepId },
+          include: {
+            steps: { orderBy: { stepIndex: 'asc' } },
+          },
+        });
+        if (ws && ws.steps.length > 0) {
+          const activeS = ws.steps.find((s) => s.status !== 'PASSED') || ws.steps[0];
+          step = { ...activeS, workspace: ws } as any;
+        }
+      }
+
       if (!step) return reply.status(404).send({ error: 'Step not found' });
       if (step.status === 'LOCKED') return reply.status(403).send({ error: 'Step is locked' });
       if (step.packStatus !== 'READY') return reply.status(400).send({ error: 'Step pack must be READY' });
 
       await prisma.skillStep.update({
-        where: { id: stepId },
+        where: { id: step.id },
         data: { engagedAt: new Date() },
       });
 
@@ -101,7 +129,7 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
   fastify.get('/api/steps/:stepId/status', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
     try {
-      const step = await prisma.skillStep.findUnique({
+      let step = await prisma.skillStep.findUnique({
         where: { id: stepId },
         select: {
           id: true,
@@ -114,6 +142,30 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
           quizError: true,
         },
       });
+
+      if (!step) {
+        const ws = await prisma.workspace.findUnique({
+          where: { id: stepId },
+          include: {
+            steps: {
+              orderBy: { stepIndex: 'asc' },
+              select: {
+                id: true,
+                status: true,
+                stepIndex: true,
+                packStatus: true,
+                packStage: true,
+                packError: true,
+                quizStatus: true,
+                quizError: true,
+              },
+            },
+          },
+        });
+        if (ws && ws.steps.length > 0) {
+          step = ws.steps.find((s) => s.status !== 'PASSED') || ws.steps[0];
+        }
+      }
 
       if (!step) return reply.status(404).send({ error: 'Step not found' });
       return reply.send({
@@ -136,7 +188,7 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
     const { lang } = (req.query || {}) as { lang?: string };
 
     try {
-      const step = await prisma.skillStep.findUnique({
+      let step = await prisma.skillStep.findUnique({
         where: { id: stepId },
         include: {
           stepChapters: {
@@ -151,6 +203,31 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
           stepResources: true,
         },
       });
+
+      if (!step) {
+        const ws = await prisma.workspace.findUnique({
+          where: { id: stepId },
+          include: { steps: { orderBy: { stepIndex: 'asc' } } },
+        });
+        if (ws && ws.steps.length > 0) {
+          const activeS = ws.steps.find((s) => s.status !== 'PASSED') || ws.steps[0];
+          step = await prisma.skillStep.findUnique({
+            where: { id: activeS.id },
+            include: {
+              stepChapters: {
+                orderBy: { order: 'asc' },
+                include: {
+                  topics: {
+                    orderBy: { order: 'asc' },
+                    include: { resources: true },
+                  },
+                },
+              },
+              stepResources: true,
+            },
+          });
+        }
+      }
 
       if (!step) return reply.status(404).send({ error: 'Step not found' });
       if (step.status === 'LOCKED') {

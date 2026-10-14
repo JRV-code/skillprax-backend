@@ -444,7 +444,7 @@ model UiTranslation {
 }
 
 model ResourceHistory {
-  id           String   @id @default(uuid())
+  id           String   @id @default(cuid())
   profileId    String   @map("profile_id")
   workspaceId  String   @map("workspace_id")
   stepIndex    Int      @map("step_index")
@@ -463,7 +463,7 @@ model ResourceHistory {
 }
 
 model Chapter {
-  id            String     @id @default(uuid())
+  id            String     @id @default(cuid())
   stepId        String
   key           String                       // "c1".."c6"
   orderIndex    Int
@@ -485,7 +485,7 @@ model Chapter {
 }
 
 model Resource {
-  id           String    @id @default(uuid())
+  id           String    @id @default(cuid())
   chapterId    String?   @map("chapter_id")
   stepId       String?   @map("step_id")
   topicId      String?   @map("topic_id")
@@ -512,7 +512,7 @@ model Resource {
 }
 
 model StepChapter {
-  id        String      @id @default(uuid())
+  id        String      @id @default(cuid())
   stepId    String      @map("step_id")
   order     Int
   title     String
@@ -525,7 +525,7 @@ model StepChapter {
 }
 
 model StepTopic {
-  id         String       @id @default(uuid())
+  id         String       @id @default(cuid())
   stepId     String       @map("step_id")
   chapterId  String?      @map("chapter_id")
   key        String
@@ -547,7 +547,7 @@ model StepTopic {
 }
 
 model AttemptResult {
-  id                   String    @id @default(uuid())
+  id                   String    @id @default(cuid())
   stepId               String    @map("step_id")
   profileId            String?   @map("profile_id")
   kind                 String    @default("INITIAL") // INITIAL | TARGETED_RETEST | PERFECTION
@@ -565,7 +565,7 @@ model AttemptResult {
 }
 
 model StepTranslation {
-  id           String    @id @default(uuid())
+  id           String    @id @default(cuid())
   stepId       String    @map("step_id")
   languageCode String    @map("language_code")
   payload      Json
@@ -577,7 +577,7 @@ model StepTranslation {
 }
 
 model QuizTranslation {
-  id           String   @id @default(uuid())
+  id           String   @id @default(cuid())
   evaluationId String   @map("evaluation_id")
   languageCode String   @map("language_code")
   payload      Json
@@ -588,7 +588,7 @@ model QuizTranslation {
 }
 
 model VideoProgress {
-  id         String   @id @default(uuid())
+  id         String   @id @default(cuid())
   profileId  String   @map("profile_id")
   resourceId String   @map("resource_id")
   seconds    Int      @default(0)
@@ -601,7 +601,7 @@ model VideoProgress {
 }
 
 model TranslationCache {
-  id           String   @id @default(uuid())
+  id           String   @id @default(cuid())
   scope        String             // STEP_BOOK | QUIZ | UI
   scopeId      String             // stepId | evaluationId | 'ui'
   languageCode String
@@ -613,7 +613,7 @@ model TranslationCache {
 }
 
 model SubgenreCache {
-  id                  String   @id @default(uuid())
+  id                  String   @id @default(cuid())
   normalizedSkillName String   @unique @map("normalized_skill_name")
   subgenres           Json
   createdAt           DateTime @default(now()) @map("created_at")
