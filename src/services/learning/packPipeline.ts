@@ -8,6 +8,7 @@ import {
   callGroqJson,
   searchTavily,
   extractYouTubeId,
+  checkYouTube,
   normalizeUrl,
   domainOf,
   contentFingerprint,
@@ -254,22 +255,40 @@ Rules:
     const cleanStepTitle = step.title.replace(/["']/g, '').trim();
     const cleanAcuTitles = planning.acus.map((a) => a.title.replace(/["']/g, '')).join(' ');
     const docQuery = `${skill} ${subGenre} ${cleanStepTitle} ${cleanAcuTitles.slice(0, 100)} ${TIER_QUERY_MODIFIERS[tier]}`.trim();
-    // Video search: NO type or length keywords per v4 spec
-    const videoQuery = `${skill} ${subGenre} ${cleanStepTitle} tutorial`.trim();
+    
+    // High-recall video Query 1: dedicated YouTube watch query
+    const videoQuery1 = `site:youtube.com/watch ${skill} ${cleanStepTitle} tutorial lecture`.trim();
 
-    const [docCandidatesRaw, videoCandidatesRaw] = await Promise.all([
+    const [docCandidatesRaw, videoCandidatesRaw1] = await Promise.all([
       searchTavily(docQuery, {
         searchDepth: 'advanced',
         maxResults: 8,
         includeRawContent: true,
       }),
-      searchTavily(videoQuery, {
+      searchTavily(videoQuery1, {
         searchDepth: 'basic',
         maxResults: 8,
-        includeDomains: ['youtube.com'],
+        includeDomains: ['youtube.com', 'youtu.be'],
         includeRawContent: false,
       }),
     ]);
+
+    let videoCandidatesRaw = [...videoCandidatesRaw1];
+    const initialVideoIds = new Set(
+      videoCandidatesRaw1.map((r) => extractYouTubeId(r.url)).filter(Boolean)
+    );
+
+    // Query 2 (if Query 1 yields < 2 video IDs)
+    if (initialVideoIds.size < 2) {
+      const videoQuery2 = `${skill} ${subGenre} ${cleanStepTitle} youtube video tutorial`.trim();
+      const videoCandidatesRaw2 = await searchTavily(videoQuery2, {
+        searchDepth: 'basic',
+        maxResults: 8,
+        includeDomains: ['youtube.com', 'youtu.be'],
+        includeRawContent: false,
+      });
+      videoCandidatesRaw.push(...videoCandidatesRaw2);
+    }
 
     // P4: FILTER candidates
     const filteredDocs: Array<{ index: number; title: string; url: string; domain: string; snippet: string; text: string; score: number }> = [];
@@ -319,11 +338,14 @@ Rules:
       const vId = extractYouTubeId(r.url);
       if (!vId) continue;
       if (historyIdentifiers.has(`yt:${vId}`) || historyIdentifiers.has(vId)) continue;
-      if (!filteredVideos.some((v) => v.videoId === vId)) {
+      if (filteredVideos.some((v) => v.videoId === vId)) continue;
+
+      const ytCheck = await checkYouTube(vId);
+      if (ytCheck.status !== 'GONE') {
         filteredVideos.push({
           index: filteredVideos.length,
           videoId: vId,
-          title: r.title || `${step.title} Video`,
+          title: r.title || `${step.title} Video Lecture`,
           channel: r.title?.split('-')[0]?.trim() || 'Verified Channel',
         });
       }
@@ -394,6 +416,20 @@ Rules:
       planning.chapters.forEach((_, chIdx) => {
         if (filteredVideos[chIdx]) {
           assignedVideoMap.set(chIdx, { video: filteredVideos[chIdx], videoType: 'tutorial' });
+        }
+      });
+    }
+
+    // Ensure every chapter has an assigned video if filteredVideos are available
+    if (filteredVideos.length > 0) {
+      planning.chapters.forEach((_, chIdx) => {
+        if (!assignedVideoMap.has(chIdx)) {
+          const usedIds = new Set([...assignedVideoMap.values()].map((v) => v.video.videoId));
+          const unused = filteredVideos.find((v) => !usedIds.has(v.videoId));
+          const chosen = unused || filteredVideos[chIdx % filteredVideos.length];
+          if (chosen) {
+            assignedVideoMap.set(chIdx, { video: chosen, videoType: 'tutorial' });
+          }
         }
       });
     }
@@ -669,6 +705,8 @@ Return ONLY JSON:
         },
       });
 
+      const persistedVideoIds = new Set<string>();
+
       // Persist StepChapters and StepTopics
       for (let chIdx = 0; chIdx < planning.chapters.length; chIdx++) {
         const ch = planning.chapters[chIdx];
@@ -684,11 +722,12 @@ Return ONLY JSON:
         // If a video candidate was assigned to this chapter, persist it
         const assignedVid = assignedVideoMap.get(chIdx);
         if (assignedVid) {
+          persistedVideoIds.add(assignedVid.video.videoId);
           const videoUrl = `https://www.youtube.com/watch?v=${assignedVid.video.videoId}`;
           await tx.resource.create({
             data: {
               stepId,
-              chapterId: null,
+              chapterId: stepChapter.id,
               type: 'youtube',
               title: assignedVid.video.title,
               url: videoUrl,
@@ -784,6 +823,30 @@ Return ONLY JSON:
               update: {},
             });
           }
+        }
+      }
+
+      // Persist any additional filtered videos as step-level resources
+      for (const fv of filteredVideos) {
+        if (!persistedVideoIds.has(fv.videoId)) {
+          persistedVideoIds.add(fv.videoId);
+          const videoUrl = `https://www.youtube.com/watch?v=${fv.videoId}`;
+          await tx.resource.create({
+            data: {
+              stepId,
+              chapterId: null,
+              type: 'youtube',
+              title: fv.title,
+              url: videoUrl,
+              domain: 'youtube.com',
+              videoId: fv.videoId,
+              channelName: fv.channel,
+              videoType: 'tutorial',
+              linkStatus: 'VERIFIED',
+              embeddable: true,
+              checkedAt: new Date(),
+            },
+          });
         }
       }
     }, { maxWait: 15000, timeout: 60000 });

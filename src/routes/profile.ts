@@ -343,6 +343,228 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
     }
   });
 
+  // 1c. POST /api/auth/register — Standard Registration
+  fastify.post("/api/auth/register", async (req, reply) => {
+    try {
+      const { email, password, name } = (req.body || {}) as {
+        email?: string;
+        password?: string;
+        name?: string;
+      };
+
+      if (!email || !email.trim()) {
+        return reply.status(400).send({ error: "Email address is required." });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanPassword = (password || "").trim();
+      const targetEmailKey = emailKey(cleanEmail);
+
+      if (!cleanPassword || cleanPassword.length < 8) {
+        return reply.status(400).send({ error: "Password must be at least 8 characters long." });
+      }
+
+      // Check if user already exists
+      let existingUser: any = null;
+      try {
+        const rows: any[] = await prisma.$queryRawUnsafe(`
+          SELECT * FROM users WHERE email_key = $1 OR LOWER(email) = $2 LIMIT 1;
+        `, targetEmailKey, cleanEmail);
+        if (rows && rows.length > 0) {
+          existingUser = rows[0];
+        }
+      } catch (sqlErr) {
+        fastify.log.warn({ err: sqlErr }, "[Register] Error querying users table");
+      }
+
+      if (existingUser) {
+        return reply.status(409).send({ error: "An account with this email already exists. Please sign in instead." });
+      }
+
+      const userName = name && name.trim() ? name.trim() : cleanEmail.split("@")[0];
+      const passwordHash = hashPassword(cleanPassword);
+      let dbUser: any = null;
+
+      try {
+        const rows: any[] = await prisma.$queryRawUnsafe(`
+          INSERT INTO users (
+            email, email_key, name, password_hash, is_email_verified,
+            gender, profession, city, state, dietary_preference,
+            medical_conditions, preferred_language, daily_reminder_enabled,
+            preferred_reminder_time, last_active_date, created_at, updated_at
+          ) VALUES (
+            $1, $2, $3, $4, TRUE,
+            'Prefer not to say', 'Student', 'Ahmedabad', 'Gujarat', 'Vegetarian',
+            'None', 'en', TRUE,
+            '19:00', CURRENT_DATE, NOW(), NOW()
+          )
+          RETURNING *;
+        `, cleanEmail, targetEmailKey, userName, passwordHash);
+        dbUser = rows && rows.length > 0 ? rows[0] : null;
+      } catch (insertErr) {
+        fastify.log.warn({ err: insertErr }, "[Register] Raw insert warning");
+      }
+
+      let profile = await prisma.userProfile.create({
+        data: {
+          name: userName,
+          email: cleanEmail,
+          emailKey: targetEmailKey,
+          gender: "Prefer not to say",
+          profession: "Student",
+          city: "Ahmedabad",
+          state: "Gujarat",
+          currentStreak: 1,
+          longestStreak: 1,
+        },
+      });
+
+      const sessionToken = jwt.sign(
+        {
+          userId: dbUser?.id || profile.id,
+          id: profile.id,
+          email: cleanEmail,
+          emailKey: targetEmailKey,
+          name: userName,
+        },
+        JWT_SECRET,
+        { expiresIn: "30d" }
+      );
+
+      const formatted = formatProfilePayload(profile, dbUser);
+      return reply.status(201).send({
+        success: true,
+        user: {
+          ...formatted,
+          hasPassword: true,
+        },
+        profile: formatted,
+        token: sessionToken,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, "[POST /api/auth/register] Failed");
+      return reply.status(500).send({ error: "Registration failed. Please try again." });
+    }
+  });
+
+  // 1d. POST /api/auth/login — Standard Login
+  fastify.post("/api/auth/login", async (req, reply) => {
+    try {
+      const { email, password } = (req.body || {}) as {
+        email?: string;
+        password?: string;
+      };
+
+      if (!email || !email.trim()) {
+        return reply.status(400).send({ error: "Email address is required." });
+      }
+      if (!password || !password.trim()) {
+        return reply.status(400).send({ error: "Password is required." });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanPassword = password.trim();
+      const targetEmailKey = emailKey(cleanEmail);
+      const clientIp = req.ip || "127.0.0.1";
+
+      const rateCheck = checkRateLimit(clientIp, cleanEmail);
+      if (!rateCheck.allowed) {
+        return reply.status(429).send({ error: rateCheck.message });
+      }
+
+      let dbUser: any = null;
+      try {
+        const rows: any[] = await prisma.$queryRawUnsafe(`
+          SELECT * FROM users WHERE email_key = $1 OR LOWER(email) = $2 LIMIT 1;
+        `, targetEmailKey, cleanEmail);
+        if (rows && rows.length > 0) {
+          dbUser = rows[0];
+        }
+      } catch (sqlErr) {
+        fastify.log.warn({ err: sqlErr }, "[Login] Error querying users table");
+      }
+
+      if (!dbUser) {
+        return reply.status(404).send({ error: "No account found with this email. Please sign up first." });
+      }
+
+      if (!dbUser.password_hash) {
+        return reply.status(400).send({
+          needsPasswordSetup: true,
+          error: "Account created via Google. Please sign in with Google.",
+        });
+      }
+
+      const isValid = verifyPassword(cleanPassword, dbUser.password_hash);
+      if (!isValid) {
+        const cur = emailFailMap.get(targetEmailKey) || { failedCount: 0, lockedUntil: 0 };
+        cur.failedCount++;
+        if (cur.failedCount >= 5) {
+          cur.lockedUntil = Date.now() + 5 * 60 * 1000;
+        }
+        emailFailMap.set(targetEmailKey, cur);
+
+        return reply.status(401).send({
+          error: "Invalid email or password. Please try again.",
+          code: "INCORRECT_CREDENTIALS",
+        });
+      }
+
+      emailFailMap.delete(targetEmailKey);
+
+      let profile = await prisma.userProfile.findFirst({
+        where: {
+          OR: [
+            { emailKey: targetEmailKey },
+            { email: { equals: cleanEmail, mode: "insensitive" } },
+          ],
+        },
+      });
+
+      if (!profile) {
+        profile = await prisma.userProfile.create({
+          data: {
+            name: dbUser.name || cleanEmail.split("@")[0],
+            email: cleanEmail,
+            emailKey: targetEmailKey,
+            gender: dbUser.gender || "Prefer not to say",
+            profession: dbUser.profession || "Student",
+            city: dbUser.city || "Ahmedabad",
+            state: dbUser.state || "Gujarat",
+            currentStreak: dbUser.current_streak || 1,
+            longestStreak: dbUser.longest_streak || 1,
+          },
+        });
+      }
+
+      const sessionToken = jwt.sign(
+        {
+          userId: dbUser.id || profile.id,
+          id: profile.id,
+          email: cleanEmail,
+          emailKey: targetEmailKey,
+          name: profile.name,
+        },
+        JWT_SECRET,
+        { expiresIn: "30d" }
+      );
+
+      const formatted = formatProfilePayload(profile, dbUser);
+      return reply.status(200).send({
+        success: true,
+        user: {
+          ...formatted,
+          hasPassword: true,
+        },
+        profile: formatted,
+        token: sessionToken,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, "[POST /api/auth/login] Failed");
+      return reply.status(500).send({ error: "Login failed. Please try again." });
+    }
+  });
+
   // 2. POST /api/auth/google — Verify Google ID Token & Sync Neon PostgreSQL User Record
   fastify.post("/api/auth/google", async (req, reply) => {
     try {

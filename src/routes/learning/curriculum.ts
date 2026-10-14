@@ -248,9 +248,22 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         }
       }
 
+      const allVideos = step.stepResources
+        .filter((r) => r.type === 'youtube' && r.videoId)
+        .map((r) => ({
+          id: r.id,
+          title: r.title,
+          videoId: r.videoId,
+          videoType: r.videoType || 'tutorial',
+          channelName: r.channelName,
+          embeddable: r.embeddable ?? true,
+          chapterId: r.chapterId,
+        }));
+
       const chapters = step.stepChapters.map((ch, chIdx) => {
         const transCh = translatedChapters?.[chIdx];
-        const chVideo = step.stepResources.find((r) => r.chapterId === ch.id && r.type === 'youtube');
+        const chVideo = step.stepResources.find((r) => r.chapterId === ch.id && r.type === 'youtube')
+          || (allVideos.length > 0 ? allVideos[chIdx % allVideos.length] : null);
 
         return {
           id: ch.id,
@@ -267,6 +280,7 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
                 embeddable: chVideo.embeddable,
               }
             : null,
+          videos: allVideos.filter((v) => v.chapterId === ch.id),
           topics: ch.topics.map((t, tIdx) => {
             const transTopic = transCh?.topics?.[tIdx];
             const docRes = t.resources.find((r) => r.type === 'doc') || t.resources[0];
@@ -307,6 +321,7 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         packStage: step.packStage,
         intro,
         chapters,
+        videos: allVideos,
       });
     } catch (err: any) {
       fastify.log.error(err, '[GetStepPack] Failed');
