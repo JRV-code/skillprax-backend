@@ -761,40 +761,64 @@ Return JSON:
   }> = [];
 
   if (!passed) {
-    let historyIdentifiers = new Set<string>();
-    try {
-      const history = await prisma.resourceHistory.findMany({
+    const [existingResources, history] = await Promise.all([
+      prisma.resource.findMany({
+        where: { step: { workspaceId: step.workspaceId } },
+        select: { videoId: true, url: true },
+      }),
+      prisma.resourceHistory.findMany({
         where: { workspaceId: step.workspaceId },
-      });
-      historyIdentifiers = new Set(history.map((h) => h.identifier));
-    } catch (_) {}
+      }),
+    ]);
+
+    const usedVideoIds = new Set<string>();
+    const usedDocUrls = new Set<string>();
+
+    for (const r of existingResources) {
+      if (r.videoId) usedVideoIds.add(r.videoId);
+      if (r.url) {
+        usedDocUrls.add(normalizeUrl(r.url));
+        const yt = extractYouTubeId(r.url);
+        if (yt) usedVideoIds.add(yt);
+      }
+    }
+
+    for (const h of history) {
+      if (h.identifier) {
+        usedDocUrls.add(normalizeUrl(h.identifier));
+        if (h.identifier.startsWith('yt:')) {
+          usedVideoIds.add(h.identifier.slice(3));
+        } else {
+          const yt = extractYouTubeId(h.identifier);
+          if (yt) usedVideoIds.add(yt);
+        }
+      }
+    }
 
     const weakTopics = Array.from(new Set(wrongQuestions.map((w) => w.topicTitle))).slice(0, 3);
-    const workspaceTitle = step.workspace?.title || step.title;
+    const workspaceSkill = (step.workspace as any)?.skillName || step.workspace?.title || step.title;
 
     for (const topicTitle of weakTopics) {
-      const vidQuery = `${workspaceTitle} ${topicTitle} tutorial video breakdown`;
-      const docQuery = `${workspaceTitle} ${topicTitle} technical guide documentation`;
+      const vidQuery = `site:youtube.com/watch "${workspaceSkill}" "${topicTitle}" common mistakes explained tutorial`;
+      const docQuery = `"${workspaceSkill}" "${topicTitle}" guide examples reference -site:youtube.com`;
 
       try {
         const [vidResults, docResults] = await Promise.all([
           searchTavily(vidQuery, {
             searchDepth: 'basic',
-            maxResults: 4,
-            includeDomains: ['youtube.com'],
+            maxResults: 6,
+            includeDomains: ['youtube.com', 'youtu.be'],
           }).catch(() => []),
           searchTavily(docQuery, {
             searchDepth: 'advanced',
-            maxResults: 4,
+            maxResults: 6,
           }).catch(() => []),
         ]);
 
         // Find 1 fresh YouTube video
         for (const r of vidResults) {
-          const norm = normalizeUrl(r.url);
-          if (historyIdentifiers.has(norm)) continue;
           const ytId = extractYouTubeId(r.url);
-          if (!ytId) continue;
+          if (!ytId || usedVideoIds.has(ytId)) continue;
           const ytCheck = await checkYouTube(ytId);
           if (ytCheck.status === 'GONE') continue;
 
@@ -809,18 +833,27 @@ Return JSON:
             whyWatchOrRead: `Visual walkthrough of ${topicTitle} mechanics to overcome identified misconception.`,
           });
 
-          historyIdentifiers.add(norm);
+          usedVideoIds.add(ytId);
+          usedDocUrls.add(normalizeUrl(r.url));
+
           try {
-            await prisma.resourceHistory.create({
-              data: {
+            await prisma.resourceHistory.upsert({
+              where: {
+                workspaceId_identifier: {
+                  workspaceId: step.workspaceId,
+                  identifier: `yt:${ytId}`,
+                },
+              },
+              create: {
                 workspaceId: step.workspaceId,
                 profileId: step.workspace?.profileId || (step.workspace as any)?.userProfileId || 'anonymous',
                 stepIndex: step.stepIndex,
-                resourceType: 'YOUTUBE',
-                identifier: norm,
+                resourceType: 'YOUTUBE_VIDEO',
+                identifier: `yt:${ytId}`,
                 title: r.title,
                 domain: 'youtube.com',
               },
+              update: {},
             });
           } catch (_) {}
           break;
@@ -829,11 +862,14 @@ Return JSON:
         // Find 1 fresh Doc
         for (const r of docResults) {
           const norm = normalizeUrl(r.url);
-          if (historyIdentifiers.has(norm)) continue;
+          if (usedDocUrls.has(norm)) continue;
           if (r.url.includes('youtube.com') || r.url.includes('youtu.be')) continue;
           if (!(await isSafePublicUrl(r.url))) continue;
           const vLink = await verifyLink(r.url);
           if (vLink.status === 'DEAD') continue;
+
+          const finalNorm = normalizeUrl(vLink.finalUrl);
+          if (usedDocUrls.has(finalNorm)) continue;
 
           remediationResources.push({
             id: `rem-doc-${remediationResources.length + 1}`,
@@ -846,18 +882,27 @@ Return JSON:
             whyWatchOrRead: `Official reference covering foundational principles of ${topicTitle}.`,
           });
 
-          historyIdentifiers.add(norm);
+          usedDocUrls.add(norm);
+          usedDocUrls.add(finalNorm);
+
           try {
-            await prisma.resourceHistory.create({
-              data: {
+            await prisma.resourceHistory.upsert({
+              where: {
+                workspaceId_identifier: {
+                  workspaceId: step.workspaceId,
+                  identifier: finalNorm,
+                },
+              },
+              create: {
                 workspaceId: step.workspaceId,
                 profileId: step.workspace?.profileId || (step.workspace as any)?.userProfileId || 'anonymous',
                 stepIndex: step.stepIndex,
-                resourceType: 'URL',
-                identifier: norm,
+                resourceType: 'DOC',
+                identifier: finalNorm,
                 title: r.title,
                 domain: domainOf(vLink.finalUrl),
               },
+              update: {},
             });
           } catch (_) {}
           break;

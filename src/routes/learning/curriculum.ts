@@ -401,10 +401,39 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
 
       if (!res || !res.step) return reply.status(404).send({ error: 'Resource not found' });
 
-      const history = await prisma.resourceHistory.findMany({
-        where: { workspaceId: res.step.workspaceId },
-      });
-      const historyUrls = new Set(history.map((h) => h.identifier));
+      const [history, existingResources] = await Promise.all([
+        prisma.resourceHistory.findMany({
+          where: { workspaceId: res.step.workspaceId },
+        }),
+        prisma.resource.findMany({
+          where: { step: { workspaceId: res.step.workspaceId } },
+          select: { videoId: true, url: true },
+        }),
+      ]);
+
+      const usedVideoIds = new Set<string>();
+      const usedDocUrls = new Set<string>();
+
+      for (const r of existingResources) {
+        if (r.videoId) usedVideoIds.add(r.videoId);
+        if (r.url) {
+          usedDocUrls.add(normalizeUrl(r.url));
+          const yt = extractYouTubeId(r.url);
+          if (yt) usedVideoIds.add(yt);
+        }
+      }
+
+      for (const h of history) {
+        if (h.identifier) {
+          usedDocUrls.add(normalizeUrl(h.identifier));
+          if (h.identifier.startsWith('yt:')) {
+            usedVideoIds.add(h.identifier.slice(3));
+          } else {
+            const yt = extractYouTubeId(h.identifier);
+            if (yt) usedVideoIds.add(yt);
+          }
+        }
+      }
 
       const topicTitle = res.topic?.title || res.title;
       const isVideo = res.type === 'youtube';
@@ -415,11 +444,11 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         const query = `${res.step.workspace.title} "${topicTitle}" tutorial`;
         const vids = await searchTavily(query, {
           maxResults: 6,
-          includeDomains: ['youtube.com'],
+          includeDomains: ['youtube.com', 'youtu.be'],
         });
         for (const v of vids) {
           const ytId = extractYouTubeId(v.url);
-          if (!ytId || historyUrls.has(`yt:${ytId}`) || historyUrls.has(v.url)) continue;
+          if (!ytId || usedVideoIds.has(ytId)) continue;
           const chk = await checkYouTube(ytId);
           if (chk.status === 'EMBEDDABLE' || chk.status === 'UNKNOWN') {
             replacement = {
@@ -436,7 +465,7 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         const docs = await searchTavily(query, { maxResults: 6, includeRawContent: true });
         for (const d of docs) {
           const norm = normalizeUrl(d.url);
-          if (historyUrls.has(norm)) continue;
+          if (usedDocUrls.has(norm)) continue;
           const v = await verifyLink(d.url, d.rawContent || d.content);
           if (v.status !== 'DEAD') {
             replacement = { url: v.finalUrl, title: d.title, domain: domainOf(v.finalUrl) };
