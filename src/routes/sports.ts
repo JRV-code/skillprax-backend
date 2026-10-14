@@ -1072,6 +1072,35 @@ STRICT DRILL MANDATE:
       return reply.status(500).send({ error: 'Failed to record drill completion' });
     }
   });
+
+  // 12. POST /api/sports/:sportId/step/:stepNumber/source — Dedicated Sports Chapter Sourcing
+  fastify.post('/api/sports/:sportId/step/:stepNumber/source', async (req, reply) => {
+    try {
+      const { sportId, stepNumber } = req.params as { sportId: string; stepNumber: string };
+      const stepNum = parseInt(stepNumber, 10);
+      const body = (req.body || {}) as { userId?: string };
+
+      if (isNaN(stepNum) || stepNum < 1) {
+        return reply.status(400).send({ error: 'Valid positive stepNumber is required.' });
+      }
+
+      const userId = (req as any).user?.id || body.userId || '00000000-0000-0000-0000-000000000000';
+      const { sourceStepContentFast } = await import('../services/resourceSourcingService');
+      const sourced = await sourceStepContentFast(userId, sportId, stepNum);
+
+      return reply.status(200).send({
+        success: true,
+        step: sourced,
+        ...sourced,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, '[POST /api/sports/:sportId/step/:stepNumber/source] Failed');
+      return reply.status(500).send({
+        success: false,
+        error: err.message || 'Internal sports resource synthesis failure',
+      });
+    }
+  });
 };
 
 export default sportsRoutes;

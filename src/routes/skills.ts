@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import jwt from 'jsonwebtoken';
 import prisma from '../lib/prisma';
+import { db } from '../lib/db';
 import { getEffectiveKeys } from '../lib/keyManager';
 import { callGroqWithFallback } from '../lib/ai/pipeline';
 import {
@@ -368,7 +369,8 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
         return reply.status(400).send({ error: 'Valid positive stepNumber is required.' });
       }
 
-      let userId = body.userId;
+      // 1. Resolve User ID safely (handles JWT, session, or body fallback)
+      let userId = (req as any).user?.id || body.userId;
       if (!userId) {
         const authHeader = req.headers.authorization;
         if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -383,7 +385,12 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
       }
 
       if (!userId) {
-        userId = 'default-user';
+        try {
+          const fallbackUser = await db.query('SELECT id FROM users LIMIT 1');
+          userId = fallbackUser.rows[0]?.id || '00000000-0000-0000-0000-000000000000';
+        } catch (_) {
+          userId = '00000000-0000-0000-0000-000000000000';
+        }
       }
 
       const sourced = await sourceStepContentFast(userId, skillId, stepNum);
@@ -401,7 +408,10 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
       });
     } catch (err: any) {
       fastify.log.error(err, '[POST /api/skills/:skillId/step/:stepNumber/source] Failed');
-      return reply.status(500).send({ error: 'Failed to source step content' });
+      return reply.status(500).send({
+        success: false,
+        error: err.message || 'Internal resource synthesis failure',
+      });
     }
   });
 

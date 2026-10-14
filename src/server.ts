@@ -29,8 +29,9 @@ const server = Fastify({
 
 const start = async () => {
   try {
-    // Initialize Module 7 Database Schema
+    // Initialize Module 7 Database Schema & Safe Migration
     await ensureDatabaseSchema();
+    await import('./db/ensureSchema').then(m => m.runSchemaMigration()).catch(e => console.warn('[SchemaMigration] Startup notice:', e));
 
     const allowedOrigins = [
       'http://localhost:3000',

@@ -145,7 +145,10 @@ export async function evaluateQuizSubmission(
   };
 }
 
+export const evaluateQuiz = evaluateQuizSubmission;
+
 export default {
   generateStepQuiz,
   evaluateQuizSubmission,
+  evaluateQuiz,
 };

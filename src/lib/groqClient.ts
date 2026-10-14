@@ -37,31 +37,54 @@ export const groq = {
           body.max_tokens = options.max_tokens;
         }
 
-        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${groqKey}`,
-          },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(45000),
-        });
+        const candidateModels = [
+          model,
+          'llama-3.3-70b-versatile',
+          'llama-3.1-8b-instant',
+          'qwen/qwen3.8-27b',
+          'openai/gpt-oss-120b',
+        ];
 
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Groq API request failed (${res.status}): ${errText}`);
+        let lastError: any = null;
+
+        for (const candidate of Array.from(new Set(candidateModels))) {
+          try {
+            body.model = candidate;
+            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${groqKey}`,
+              },
+              body: JSON.stringify(body),
+              signal: AbortSignal.timeout(45000),
+            });
+
+            if (res.ok) {
+              const data: any = await res.json();
+              return {
+                choices: [
+                  {
+                    message: {
+                      content: data.choices?.[0]?.message?.content || '',
+                    },
+                  },
+                ],
+              };
+            }
+
+            const errText = await res.text();
+            lastError = new Error(`Groq API request failed (${res.status}): ${errText}`);
+            // If error is not 404/model_not_found, break
+            if (res.status !== 404 && !errText.includes('model_not_found')) {
+              break;
+            }
+          } catch (e: any) {
+            lastError = e;
+          }
         }
 
-        const data: any = await res.json();
-        return {
-          choices: [
-            {
-              message: {
-                content: data.choices?.[0]?.message?.content || '',
-              },
-            },
-          ],
-        };
+        throw lastError || new Error('Groq completion failed across candidate models');
       },
     },
   },
