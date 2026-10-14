@@ -572,42 +572,58 @@ export function titleSimilarity(a: string, b: string): number {
 }
 export const sharesLongRun = (source: string, output: string) => hasVerbatimRun(output, source);
 
-// Wikipedia API helper for last-resort recovery (P6)
-export async function fetchWikipediaExtract(query: string): Promise<{
+// Wikipedia API helper for last-resort recovery (P6) with fallback query support
+export async function fetchWikipediaExtract(
+  query: string,
+  fallbackQuery?: string
+): Promise<{
   title: string;
   url: string;
   text: string;
 } | null> {
-  try {
-    const headers = {
-      'User-Agent': 'SkillTrack/1.0 (educational-app)',
-      Accept: 'application/json',
-    };
-    const s = await fetch(
-      'https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&formatversion=2&srlimit=3&srsearch=' +
-        encodeURIComponent(query),
-      { headers, signal: AbortSignal.timeout(6000) }
-    );
-    if (!s.ok) return null;
-    const sJson: any = await s.json();
-    const title = sJson?.query?.search?.[0]?.title;
-    if (!title) return null;
-    const e = await fetch(
-      'https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&redirects=1&format=json&formatversion=2&titles=' +
-        encodeURIComponent(title),
-      { headers, signal: AbortSignal.timeout(8000) }
-    );
-    if (!e.ok) return null;
-    const eJson: any = await e.json();
-    const page = eJson?.query?.pages?.[0];
-    const text: string = (page?.extract ?? '').trim();
-    if (text.length < 400) return null;
-    return {
-      title: page.title as string,
-      url: 'https://en.wikipedia.org/wiki/' + encodeURIComponent(String(page.title).replace(/ /g, '_')),
-      text,
-    };
-  } catch {
-    return null;
+  const headers = {
+    'User-Agent': 'SkillTrack/1.0 (educational-app)',
+    Accept: 'application/json',
+  };
+
+  const trySearch = async (searchTerm: string) => {
+    try {
+      const s = await fetch(
+        'https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&formatversion=2&srlimit=3&srsearch=' +
+          encodeURIComponent(searchTerm),
+        { headers, signal: AbortSignal.timeout(6000) }
+      );
+      if (!s.ok) return null;
+      const sJson: any = await s.json();
+      const title = sJson?.query?.search?.[0]?.title;
+      if (!title) return null;
+      const e = await fetch(
+        'https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext=1&redirects=1&format=json&formatversion=2&titles=' +
+          encodeURIComponent(title),
+        { headers, signal: AbortSignal.timeout(8000) }
+      );
+      if (!e.ok) return null;
+      const eJson: any = await e.json();
+      const page = eJson?.query?.pages?.[0];
+      const text: string = (page?.extract ?? '').trim();
+      if (text.length < 350) return null;
+      return {
+        title: page.title as string,
+        url: 'https://en.wikipedia.org/wiki/' + encodeURIComponent(String(page.title).replace(/ /g, '_')),
+        text,
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const primary = await trySearch(query);
+  if (primary) return primary;
+
+  if (fallbackQuery && fallbackQuery.trim() !== query.trim()) {
+    const fallback = await trySearch(fallbackQuery);
+    if (fallback) return fallback;
   }
+
+  return null;
 }

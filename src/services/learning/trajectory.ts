@@ -194,7 +194,7 @@ export async function generateMasteryTrajectory(input: TrajectoryInput) {
     );
 
     return { workspace: ws, steps: stepRows };
-  });
+  }, { maxWait: 15000, timeout: 60000 });
 
   return {
     workspaceId: result.workspace.id,

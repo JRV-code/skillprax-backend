@@ -251,9 +251,11 @@ Rules:
       data: { packStage: 'FINDING_LINKS' },
     });
 
-    const docQuery = `${skill} ${subGenre} "${step.title}" ${acuTitles} ${TIER_QUERY_MODIFIERS[tier]} 2026`.trim();
+    const cleanStepTitle = step.title.replace(/["']/g, '').trim();
+    const cleanAcuTitles = planning.acus.map((a) => a.title.replace(/["']/g, '')).join(' ');
+    const docQuery = `${skill} ${subGenre} ${cleanStepTitle} ${cleanAcuTitles.slice(0, 100)} ${TIER_QUERY_MODIFIERS[tier]}`.trim();
     // Video search: NO type or length keywords per v4 spec
-    const videoQuery = `${skill} ${subGenre} "${step.title}" ${acuTitles}`.trim();
+    const videoQuery = `${skill} ${subGenre} ${cleanStepTitle} tutorial`.trim();
 
     const [docCandidatesRaw, videoCandidatesRaw] = await Promise.all([
       searchTavily(docQuery, {
@@ -287,7 +289,7 @@ Rules:
       if (historyIdentifiers.has(normalized)) continue;
       if (isBlockedDomain(r.url)) continue;
       if (looksWalled(r.url, text)) continue;
-      if (text.length < LEARNING_CONFIG.MIN_EXTRACTABLE_CHARS) continue;
+      if (text.length < 400) continue;
 
       const fp = contentFingerprint(r.title, text);
       if (historyFingerprints.has(fp)) continue;
@@ -296,6 +298,8 @@ Rules:
       if (wsDomainCount >= LEARNING_CONFIG.MAX_LINKS_PER_DOMAIN_PER_WORKSPACE) continue;
 
       const fit = levelFitScore(tier, text);
+      // Give substantive content bonus if it meets the full MIN_EXTRACTABLE_CHARS
+      const richnessBonus = text.length >= LEARNING_CONFIG.MIN_EXTRACTABLE_CHARS ? 3 : 0;
       filteredDocs.push({
         index: filteredDocs.length,
         title: r.title,
@@ -303,7 +307,7 @@ Rules:
         domain: dom,
         snippet: text.slice(0, 160).replace(/\s+/g, ' ').trim(),
         text,
-        score: (r.score || 0) + fit,
+        score: (r.score || 0) + fit + richnessBonus,
       });
     }
 
@@ -400,11 +404,12 @@ Rules:
       if (assignedDocMap.has(t.key)) continue;
       if (extraSearches < LEARNING_CONFIG.MAX_EXTRA_TOPIC_SEARCHES) {
         extraSearches++;
-        const targetQ = `${skill} "${t.title}" ${TIER_QUERY_MODIFIERS[tier]}`;
+        const cleanTopicTitle = t.title.replace(/["']/g, '').trim();
+        const targetQ = `${skill} ${cleanTopicTitle} ${TIER_QUERY_MODIFIERS[tier]}`.trim();
         const recovered = await searchTavily(targetQ, { maxResults: 3, includeRawContent: true });
         for (const r of recovered) {
           const text = r.rawContent || r.content || '';
-          if (text.length >= LEARNING_CONFIG.MIN_EXTRACTABLE_CHARS && !isBlockedDomain(r.url) && !looksWalled(r.url, text)) {
+          if (text.length >= 400 && !isBlockedDomain(r.url) && !looksWalled(r.url, text)) {
             assignedDocMap.set(t.key, {
               index: -1,
               title: r.title,
@@ -420,8 +425,9 @@ Rules:
       }
 
       if (!assignedDocMap.has(t.key)) {
-        // Last resort: MediaWiki Search API
-        const wiki = await fetchWikipediaExtract(`${skill} ${t.title}`);
+        // Last resort: MediaWiki Search API with fallback query
+        const cleanTopicTitle = t.title.replace(/["']/g, '').trim();
+        const wiki = await fetchWikipediaExtract(`${skill} ${cleanTopicTitle}`, skill);
         if (wiki) {
           assignedDocMap.set(t.key, {
             index: -2,
@@ -608,7 +614,7 @@ Return ONLY JSON:
           await tx.resource.create({
             data: {
               stepId,
-              chapterId: stepChapter.id,
+              chapterId: null,
               type: 'youtube',
               title: assignedVid.video.title,
               url: videoUrl,
@@ -673,7 +679,7 @@ Return ONLY JSON:
             await tx.resource.create({
               data: {
                 stepId,
-                chapterId: stepChapter.id,
+                chapterId: null,
                 topicId: createdTopic.id,
                 type: 'doc',
                 title: verified.doc.title,
@@ -706,7 +712,7 @@ Return ONLY JSON:
           }
         }
       }
-    });
+    }, { maxWait: 15000, timeout: 60000 });
 
     console.log(`[runPackBuild] Step ${stepId} pack built successfully. Ready topics: ${readyTopics.length}`);
   } catch (err: any) {

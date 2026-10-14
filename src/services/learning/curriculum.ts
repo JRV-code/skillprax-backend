@@ -668,7 +668,7 @@ Return ONLY JSON:
         data: { status: 'STUDY_READY' },
       });
     }
-  });
+  }, { maxWait: 15000, timeout: 60000 });
 
   if (!hasAtLeastOneUsableLink) {
     return {

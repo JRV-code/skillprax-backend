@@ -714,6 +714,7 @@ export async function ensureDatabaseSchema() {
 
       `ALTER TABLE resources ADD COLUMN IF NOT EXISTS topic_id TEXT`,
       `ALTER TABLE resources ADD COLUMN IF NOT EXISTS video_type TEXT`,
+      `ALTER TABLE resources DROP CONSTRAINT IF EXISTS resources_chapter_id_fkey`,
 
       `ALTER TABLE resource_histories ADD COLUMN IF NOT EXISTS fingerprint TEXT`,
       `CREATE INDEX IF NOT EXISTS idx_res_hist_ws_domain ON resource_histories(workspace_id, domain)`,

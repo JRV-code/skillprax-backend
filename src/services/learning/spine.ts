@@ -330,7 +330,7 @@ Return ONLY a JSON object formatted as:
         });
       }
     }
-  });
+  }, { maxWait: 15000, timeout: 60000 });
 
   return spine.steps;
 }
