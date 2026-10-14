@@ -341,11 +341,13 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
         } : null,
       };
 
-      // Cache compound key
-      stepResourceMemoryCache.set(cacheKey, {
-        data: responsePayload,
-        cachedAt: Date.now(),
-      });
+      // Cache compound key only if the step has already been sourced
+      if (isSourced) {
+        stepResourceMemoryCache.set(cacheKey, {
+          data: responsePayload,
+          cachedAt: Date.now(),
+        });
+      }
 
       return reply.status(200).send(responsePayload);
     } catch (err: any) {
@@ -384,7 +386,18 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
       }
 
       const sourced = await sourceStepContentFast(userId, skillId, stepNum);
-      return reply.status(200).send(sourced);
+
+      // Invalidate memory cache for this step across languages so subsequent GET calls return fresh data
+      for (const lang of ['en', 'hi', 'es', 'fr', 'de']) {
+        const cKey = `skill:${skillId}:step:${stepNum}:lang:${lang}`;
+        stepResourceMemoryCache.delete(cKey);
+      }
+
+      return reply.status(200).send({
+        success: true,
+        step: sourced,
+        ...sourced,
+      });
     } catch (err: any) {
       fastify.log.error(err, '[POST /api/skills/:skillId/step/:stepNumber/source] Failed');
       return reply.status(500).send({ error: 'Failed to source step content' });

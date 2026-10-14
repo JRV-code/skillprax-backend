@@ -28,15 +28,27 @@ export function isVideoUrl(url: string): boolean {
 }
 
 export interface SourcedStepResult {
+  step_number?: number;
+  title?: string;
+  is_sourced?: boolean;
+  video_id?: string;
+  video_title?: string;
+  video_url?: string;
   videoId: string;
   videoTitle: string;
   videoUrl: string;
   videoMiniGuide?: string;
+  video_mini_guide?: string;
   docTitle?: string;
+  doc_title?: string;
   docUrl?: string;
+  doc_url?: string;
   docDomain?: string;
+  doc_domain?: string;
   docMiniGuide?: string;
+  doc_mini_guide?: string;
   stepExplanation?: string;
+  step_explanation?: string;
   topics: EnrichedTopic[];
 }
 
@@ -400,15 +412,27 @@ RETURN ONLY VALID JSON (no markdown formatting, no extra keys):
   }
 
   return {
+    step_number: stepNumber,
+    title: stepTitle,
+    is_sourced: true,
+    video_id: videoResult.videoId,
+    video_title: videoResult.videoTitle,
+    video_url: videoUrl,
     videoId: videoResult.videoId,
     videoTitle: videoResult.videoTitle,
     videoUrl,
     videoMiniGuide: groqGuides.videoMiniGuide,
+    video_mini_guide: groqGuides.videoMiniGuide,
     docTitle: primaryDoc.title,
+    doc_title: primaryDoc.title,
     docUrl: primaryDoc.externalUrl,
+    doc_url: primaryDoc.externalUrl,
     docDomain: primaryDoc.sourceDomain,
+    doc_domain: primaryDoc.sourceDomain,
     docMiniGuide: groqGuides.docMiniGuide,
+    doc_mini_guide: groqGuides.docMiniGuide,
     stepExplanation: groqGuides.stepExplanation,
+    step_explanation: groqGuides.stepExplanation,
     topics: enrichedTopics,
   };
 }
