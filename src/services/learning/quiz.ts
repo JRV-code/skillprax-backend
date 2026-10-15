@@ -734,7 +734,7 @@ export async function submitQuizAnswers(
   const passed = exactPercentage >= 70;
   const percent = exactPercentage;
 
-  // Identify wrong answers
+  // Identify wrong answers baseline
   const wrongQuestions = detailedBreakdown.filter((q) => !q.isCorrect);
   let wrongQuestionsWithAi = wrongQuestions.map((wq) => ({
     questionId: wq.id,
@@ -747,56 +747,8 @@ export async function submitQuizAnswers(
     topicTitle: wq.topicTitle,
   }));
 
-  // AI Mistake Analysis (Groq) for wrong questions
-  if (wrongQuestions.length > 0) {
-    try {
-      const groqMistakeRes = await callGroqJson<{ analyses: Array<{ questionId: string; mistakeExplanation: string }> }>(
-        `You are a Senior Socratic Evaluator. Analyze the learner's incorrect quiz answers.
-For each question, provide a concise, personalized mistakeExplanation (1-2 sentences) explaining:
-1. Why their selected answer is incorrect or reflects a misconception
-2. The core principle behind the correct answer
-3. How to remember or apply that concept correctly
-
-Return JSON:
-{
-  "analyses": [
-    { "questionId": "...", "mistakeExplanation": "..." }
-  ]
-}`,
-        JSON.stringify({
-          stepTitle: step.title,
-          mistakes: wrongQuestions.map((wq) => ({
-            questionId: wq.id,
-            question: wq.question,
-            userSelected: wq.chosenText,
-            correctAnswer: wq.correctText,
-            topic: wq.topicTitle,
-          })),
-        }),
-        {
-          validate: (data: any) => {
-            if (!data || typeof data !== 'object') throw new Error('Invalid JSON response');
-            return data;
-          },
-          maxTokens: 2500,
-          temperature: 0.3,
-        }
-      );
-
-      if (Array.isArray(groqMistakeRes?.analyses)) {
-        const analysisMap = new Map(groqMistakeRes.analyses.map((a) => [a.questionId, a.mistakeExplanation]));
-        wrongQuestionsWithAi = wrongQuestionsWithAi.map((wq) => ({
-          ...wq,
-          mistakeExplanation: analysisMap.get(wq.questionId) || wq.explanation,
-        }));
-      }
-    } catch (gErr) {
-      console.warn('[SubmitQuiz] Groq mistake analysis notice:', gErr);
-    }
-  }
-
-  // IF FAILED (percent < 70) — Source Fresh Remediation Resources
-  const remediationResources: Array<{
+  // Baseline deterministic remediation resources from step's own topics
+  let remediationResources: Array<{
     id: string;
     topicTitle: string;
     type: 'VIDEO' | 'DOC';
@@ -808,159 +760,41 @@ Return JSON:
   }> = [];
 
   if (!passed) {
-    const [existingResources, history] = await Promise.all([
-      prisma.resource.findMany({
-        where: { step: { workspaceId: step.workspaceId } },
-        select: { videoId: true, url: true },
-      }),
-      prisma.resourceHistory.findMany({
-        where: { workspaceId: step.workspaceId },
-      }),
-    ]);
-
-    const usedVideoIds = new Set<string>();
-    const usedDocUrls = new Set<string>();
-
-    for (const r of existingResources) {
-      if (r.videoId) usedVideoIds.add(r.videoId);
-      if (r.url) {
-        usedDocUrls.add(normalizeUrl(r.url));
-        const yt = extractYouTubeId(r.url);
-        if (yt) usedVideoIds.add(yt);
-      }
-    }
-
-    for (const h of history) {
-      if (h.identifier) {
-        usedDocUrls.add(normalizeUrl(h.identifier));
-        if (h.identifier.startsWith('yt:')) {
-          usedVideoIds.add(h.identifier.slice(3));
-        } else {
-          const yt = extractYouTubeId(h.identifier);
-          if (yt) usedVideoIds.add(yt);
-        }
-      }
-    }
-
     const weakTopics = Array.from(new Set(wrongQuestions.map((w) => w.topicTitle))).slice(0, 3);
-    const workspaceSkill = (step.workspace as any)?.skillName || step.workspace?.title || step.title;
+    for (let i = 0; i < weakTopics.length; i++) {
+      const wTitle = weakTopics[i];
+      const matchTopic = step.stepTopics.find((t) => t.title === wTitle || t.key === wTitle);
+      const docRes = matchTopic?.resources.find((r) => r.type === 'doc');
+      const vidRes = matchTopic?.resources.find((r) => r.type === 'youtube' || Boolean(r.videoId));
 
-    for (const topicTitle of weakTopics) {
-      const vidQuery = `site:youtube.com/watch "${workspaceSkill}" "${topicTitle}" common mistakes explained tutorial`;
-      const docQuery = `"${workspaceSkill}" "${topicTitle}" guide examples reference -site:youtube.com`;
-
-      try {
-        const [vidResults, docResults] = await Promise.all([
-          searchTavily(vidQuery, {
-            searchDepth: 'basic',
-            maxResults: 6,
-            includeDomains: ['youtube.com', 'youtu.be'],
-          }).catch(() => []),
-          searchTavily(docQuery, {
-            searchDepth: 'advanced',
-            maxResults: 6,
-          }).catch(() => []),
-        ]);
-
-        // Find 1 fresh YouTube video
-        for (const r of vidResults) {
-          const ytId = extractYouTubeId(r.url);
-          if (!ytId || usedVideoIds.has(ytId)) continue;
-          const ytCheck = await checkYouTube(ytId);
-          if (ytCheck.status === 'GONE') continue;
-
-          remediationResources.push({
-            id: `rem-vid-${remediationResources.length + 1}`,
-            topicTitle,
-            type: 'VIDEO',
-            title: r.title || `${topicTitle} Video Tutorial`,
-            url: r.url,
-            videoId: ytId,
-            domain: 'youtube.com',
-            whyWatchOrRead: `Visual walkthrough of ${topicTitle} mechanics to overcome identified misconception.`,
-          });
-
-          usedVideoIds.add(ytId);
-          usedDocUrls.add(normalizeUrl(r.url));
-
-          try {
-            await prisma.resourceHistory.upsert({
-              where: {
-                workspaceId_identifier: {
-                  workspaceId: step.workspaceId,
-                  identifier: `yt:${ytId}`,
-                },
-              },
-              create: {
-                workspaceId: step.workspaceId,
-                profileId: step.workspace?.profileId || (step.workspace as any)?.userProfileId || 'anonymous',
-                stepIndex: step.stepIndex,
-                resourceType: 'YOUTUBE_VIDEO',
-                identifier: `yt:${ytId}`,
-                title: r.title,
-                domain: 'youtube.com',
-              },
-              update: {},
-            });
-          } catch (_) {}
-          break;
-        }
-
-        // Find 1 fresh Doc
-        for (const r of docResults) {
-          const norm = normalizeUrl(r.url);
-          if (usedDocUrls.has(norm)) continue;
-          if (r.url.includes('youtube.com') || r.url.includes('youtu.be')) continue;
-          if (!(await isSafePublicUrl(r.url))) continue;
-          const vLink = await verifyLink(r.url);
-          if (vLink.status === 'DEAD') continue;
-
-          const finalNorm = normalizeUrl(vLink.finalUrl);
-          if (usedDocUrls.has(finalNorm)) continue;
-
-          remediationResources.push({
-            id: `rem-doc-${remediationResources.length + 1}`,
-            topicTitle,
-            type: 'DOC',
-            title: r.title || `${topicTitle} Technical Guide`,
-            url: vLink.finalUrl,
-            videoId: null,
-            domain: domainOf(vLink.finalUrl),
-            whyWatchOrRead: `Official reference covering foundational principles of ${topicTitle}.`,
-          });
-
-          usedDocUrls.add(norm);
-          usedDocUrls.add(finalNorm);
-
-          try {
-            await prisma.resourceHistory.upsert({
-              where: {
-                workspaceId_identifier: {
-                  workspaceId: step.workspaceId,
-                  identifier: finalNorm,
-                },
-              },
-              create: {
-                workspaceId: step.workspaceId,
-                profileId: step.workspace?.profileId || (step.workspace as any)?.userProfileId || 'anonymous',
-                stepIndex: step.stepIndex,
-                resourceType: 'DOC',
-                identifier: finalNorm,
-                title: r.title,
-                domain: domainOf(vLink.finalUrl),
-              },
-              update: {},
-            });
-          } catch (_) {}
-          break;
-        }
-      } catch (remErr) {
-        console.warn('[SubmitQuiz] Remediation search error for topic:', topicTitle, remErr);
+      if (vidRes) {
+        remediationResources.push({
+          id: `rem-vid-${remediationResources.length + 1}`,
+          topicTitle: wTitle,
+          type: 'VIDEO',
+          title: vidRes.title || `${wTitle} Tutorial`,
+          url: vidRes.url,
+          videoId: vidRes.videoId,
+          domain: 'youtube.com',
+          whyWatchOrRead: `Visual walkthrough of ${wTitle} mechanics to overcome identified misconception.`,
+        });
+      }
+      if (docRes) {
+        remediationResources.push({
+          id: `rem-doc-${remediationResources.length + 1}`,
+          topicTitle: wTitle,
+          type: 'DOC',
+          title: docRes.title || `${wTitle} Technical Guide`,
+          url: docRes.url,
+          videoId: null,
+          domain: docRes.domain || 'reference.org',
+          whyWatchOrRead: `Official reference covering foundational principles of ${wTitle}.`,
+        });
       }
     }
   }
 
-  // IF PASSED (percent >= 70) — Unlock Next Step
+  // IF PASSED (percent >= 70) — Immediately unlock Next Step in PostgreSQL
   const priorPassed = await prisma.attemptResult.findFirst({
     where: { stepId: step.id, passed: true },
   });
@@ -1038,6 +872,119 @@ Return JSON:
     const c = rs.filter((r) => r.isCorrect).length;
     return { topicKey, correct: c, total: rs.length, percent: Math.floor((c * 100) / rs.length) };
   });
+
+  // Fast AI Enrichment (Groq Mistake Analysis + Tavily Remediation) wrapped in strict 5s timeout
+  try {
+    const enrichPromise = async () => {
+      // 1. Groq Mistake Analysis
+      if (wrongQuestions.length > 0) {
+        try {
+          const groqMistakeRes = await callGroqJson<{ analyses: Array<{ questionId: string; mistakeExplanation: string }> }>(
+            `You are a Senior Socratic Evaluator. Analyze the learner's incorrect quiz answers.
+For each question, provide a concise, personalized mistakeExplanation (1-2 sentences) explaining:
+1. Why their selected answer is incorrect or reflects a misconception
+2. The core principle behind the correct answer
+3. How to remember or apply that concept correctly
+
+Return JSON:
+{
+  "analyses": [
+    { "questionId": "...", "mistakeExplanation": "..." }
+  ]
+}`,
+            JSON.stringify({
+              stepTitle: step.title,
+              mistakes: wrongQuestions.map((wq) => ({
+                questionId: wq.id,
+                question: wq.question,
+                userSelected: wq.chosenText,
+                correctAnswer: wq.correctText,
+                topic: wq.topicTitle,
+              })),
+            }),
+            {
+              validate: (data: any) => {
+                if (!data || typeof data !== 'object') throw new Error('Invalid JSON response');
+                return data;
+              },
+              maxTokens: 1500,
+              temperature: 0.3,
+            }
+          );
+
+          if (Array.isArray(groqMistakeRes?.analyses)) {
+            const analysisMap = new Map(groqMistakeRes.analyses.map((a) => [a.questionId, a.mistakeExplanation]));
+            wrongQuestionsWithAi = wrongQuestionsWithAi.map((wq) => ({
+              ...wq,
+              mistakeExplanation: analysisMap.get(wq.questionId) || wq.explanation,
+            }));
+          }
+        } catch (_) {}
+      }
+
+      // 2. Tavily Remediation Search if failed
+      if (!passed) {
+        try {
+          const weakTopics = Array.from(new Set(wrongQuestions.map((w) => w.topicTitle))).slice(0, 2);
+          const workspaceSkill = (step.workspace as any)?.skillName || step.workspace?.title || step.title;
+          const freshRemediation: typeof remediationResources = [];
+
+          for (const topicTitle of weakTopics) {
+            const vidQuery = `site:youtube.com/watch "${workspaceSkill}" "${topicTitle}" mistakes tutorial`;
+            const docQuery = `"${workspaceSkill}" "${topicTitle}" guide examples -site:youtube.com`;
+
+            const [vidResults, docResults] = await Promise.all([
+              searchTavily(vidQuery, { searchDepth: 'basic', maxResults: 3, includeDomains: ['youtube.com', 'youtu.be'] }).catch(() => []),
+              searchTavily(docQuery, { searchDepth: 'basic', maxResults: 3 }).catch(() => []),
+            ]);
+
+            for (const r of vidResults) {
+              const ytId = extractYouTubeId(r.url);
+              if (ytId) {
+                freshRemediation.push({
+                  id: `rem-vid-${freshRemediation.length + 1}`,
+                  topicTitle,
+                  type: 'VIDEO',
+                  title: r.title || `${topicTitle} Tutorial`,
+                  url: r.url,
+                  videoId: ytId,
+                  domain: 'youtube.com',
+                  whyWatchOrRead: `Visual walkthrough of ${topicTitle} mechanics.`,
+                });
+                break;
+              }
+            }
+
+            for (const r of docResults) {
+              if (!r.url.includes('youtube.com')) {
+                freshRemediation.push({
+                  id: `rem-doc-${freshRemediation.length + 1}`,
+                  topicTitle,
+                  type: 'DOC',
+                  title: r.title || `${topicTitle} Guide`,
+                  url: r.url,
+                  videoId: null,
+                  domain: domainOf(r.url),
+                  whyWatchOrRead: `Reference covering core principles of ${topicTitle}.`,
+                });
+                break;
+              }
+            }
+          }
+
+          if (freshRemediation.length > 0) {
+            remediationResources = freshRemediation;
+          }
+        } catch (_) {}
+      }
+    };
+
+    const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 4500));
+    await Promise.race([enrichPromise(), timeoutPromise]);
+  } catch (enrichErr) {
+    console.warn('[SubmitQuiz] Bounded AI enrichment skipped:', enrichErr);
+  }
+
 
   // Persist AttemptResult
   const attemptResult = await prisma.attemptResult.create({

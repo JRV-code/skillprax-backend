@@ -6,7 +6,6 @@ import {
   enqueueJob,
   runPackBuild,
 } from '../../services/learning/packPipeline';
-import { generateStepConditioningPack } from '../../services/learning/sportsPackService';
 import { runQuizBuild } from '../../services/learning/quiz';
 import {
   searchTavily,
@@ -192,7 +191,6 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
       let step = await prisma.skillStep.findUnique({
         where: { id: stepId },
         include: {
-          workspace: true,
           stepChapters: {
             orderBy: { order: 'asc' },
             include: {
@@ -216,7 +214,6 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
           step = await prisma.skillStep.findUnique({
             where: { id: activeS.id },
             include: {
-              workspace: true,
               stepChapters: {
                 orderBy: { order: 'asc' },
                 include: {
@@ -315,79 +312,6 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         };
       });
 
-      const ws = step.workspace;
-      const domainStr = (ws?.domainCategory || ws?.domain || '').toLowerCase();
-      const skillStr = (ws?.skillName || ws?.title || '').toLowerCase();
-      const isSports = domainStr.includes('athletic') || domainStr.includes('sport') ||
-        ['football', 'soccer', 'cricket', 'badminton', 'tennis', 'basketball', 'swimming', 'boxing', 'archery', 'skateboarding', 'gymnastics', 'calisthenics', 'running', 'sprint', 'athletics', 'yoga', 'table tennis'].some(k => skillStr.includes(k));
-
-      let introData = (intro || {}) as any;
-
-      // Auto-Backfill for Existing Sports Steps that are READY but don't have conditioningItems yet
-      if (isSports && step.packStatus === 'READY' && (!Array.isArray(introData.conditioningItems) || introData.conditioningItems.length === 0) && ws) {
-        try {
-          const profileId = ws.userProfileId || ws.profileId || 'default-profile';
-          let healthConditions = 'None';
-          let dietaryPreference = 'Balanced';
-          const userProf = await prisma.userProfile.findFirst({
-            where: { OR: [{ id: profileId }, { workspaces: { some: { id: ws.id } } }] },
-            select: { healthConditions: true, dietaryPreference: true },
-          });
-          if (userProf) {
-            if (userProf.healthConditions) healthConditions = userProf.healthConditions;
-            if (userProf.dietaryPreference) dietaryPreference = userProf.dietaryPreference;
-          }
-
-          const usedVideoIds = new Set<string>();
-          for (const r of step.stepResources) {
-            if (r.videoId) usedVideoIds.add(r.videoId);
-          }
-
-          const priorSteps = await prisma.skillStep.findMany({
-            where: { workspaceId: ws.id, stepIndex: { lt: step.stepIndex } },
-            select: { intro: true },
-          });
-          const previouslyUsedNames: string[] = [];
-          for (const ps of priorSteps) {
-            const pIntro = ps.intro as any;
-            if (Array.isArray(pIntro?.conditioningItems)) {
-              for (const item of pIntro.conditioningItems) {
-                if (item?.name) previouslyUsedNames.push(item.name);
-              }
-            }
-          }
-
-          const generated = await generateStepConditioningPack({
-            skillName: ws.skillName || ws.title,
-            subGenre: ws.subGenre || 'Core',
-            stepIndex: step.stepIndex,
-            totalSteps: ws.totalPlannedSteps || 5,
-            stepTitle: step.title,
-            difficultyTier: step.difficultyTier || 'FOUNDATIONS',
-            healthConditions,
-            dietaryPreference,
-            previouslyUsedNames,
-            usedVideoIds,
-            profileId,
-            workspaceId: ws.id,
-          });
-
-          introData = {
-            ...introData,
-            conditioningItems: generated.conditioningItems,
-            stepNutrition: generated.stepNutrition,
-          };
-          intro = introData;
-
-          await prisma.skillStep.update({
-            where: { id: step.id },
-            data: { intro: introData },
-          });
-        } catch (backfillErr) {
-          fastify.log.warn({ err: backfillErr }, '[GetStepPack] Auto-backfill conditioning items warning');
-        }
-      }
-
       return reply.send({
         id: step.id,
         stepIndex: step.stepIndex,
@@ -398,9 +322,6 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         intro,
         chapters,
         videos: allVideos,
-        conditioningItems: introData?.conditioningItems || [],
-        stepNutrition: introData?.stepNutrition || null,
-        isSports,
       });
     } catch (err: any) {
       fastify.log.error(err, '[GetStepPack] Failed');
