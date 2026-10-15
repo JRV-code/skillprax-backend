@@ -156,7 +156,7 @@ export async function callGroqJson<T>(
   }
 
   const model = await getBestGroqModel(groqKey);
-  let currentMaxTokens = Math.min(8192, Math.max(opts.maxTokens ?? 4500, 3500));
+  let currentMaxTokens = Math.min(8192, opts.maxTokens ?? 4500);
   const temperature = opts.temperature ?? 0.2;
 
   let currentUserPrompt = userPrompt;

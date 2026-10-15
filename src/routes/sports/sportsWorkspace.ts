@@ -10,8 +10,44 @@ import {
   generateLevelUpQuiz,
   submitQuizAnswers,
 } from '../../services/learning/quiz';
+import { generateMasteryTrajectory } from '../../services/learning/trajectory';
 
 export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
+  // POST /api/sports-workspace/enroll — Sub-second skeleton-only sports enrollment (<1.5s)
+  fastify.post('/api/sports-workspace/enroll', async (req, reply) => {
+    try {
+      const body: any = req.body || {};
+      const cleanTitle = String(body.title ?? body.skill ?? body.topic ?? '').trim();
+      const cleanSub = String(body.subGenre || 'Athletic Mastery').trim();
+      const desiredLevel = body.desiredMastery || body.targetGoal || body.desiredLevel || 'Intermediate';
+      const experienceLevel = body.experienceLevel || body.currentExperience || 'Some Foundational Knowledge';
+      const profileId = body.profileId || body.userProfileId || 'default-profile';
+      const dailyMinutes = Math.max(15, Math.min(960, Number(body.dailyMinutes) || 60));
+
+      const result = await generateMasteryTrajectory({
+        section: 'SPORTS',
+        domain: 'Athletics',
+        skill: cleanTitle || 'Athletic Discipline',
+        subGenre: cleanSub,
+        desiredLevel,
+        currentExperience: experienceLevel,
+        dailyMinutes,
+        profileId,
+      });
+
+      return reply.status(201).send({
+        id: result.workspaceId,
+        workspace: result.workspace,
+        stepCount: result.stepCount,
+        stepCountReason: result.stepCountReason,
+        steps: result.steps,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, '[SportsEnrollment] Failed');
+      return reply.status(500).send({ error: err.message || 'Failed to enroll sports trajectory' });
+    }
+  });
+
   // GET /api/sports-workspace/:workspaceId — Get full sports workspace data
   fastify.get('/api/sports-workspace/:workspaceId', async (req, reply) => {
     const { workspaceId } = req.params as { workspaceId: string };
@@ -120,6 +156,75 @@ export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: Fastify
   // POST /api/sports-workspace/steps/:stepId/build-pack & /prefetch-pack — Trigger pack generation
   fastify.post('/api/sports-workspace/steps/:stepId/build-pack', handleSportsPackBuild);
   fastify.post('/api/sports-workspace/steps/:stepId/prefetch-pack', handleSportsPackBuild);
+
+  // POST /api/sports-workspace/steps/:stepId/engaged — Silent background prefetch of Step N quiz + Step N+1 pack & quiz
+  fastify.post('/api/sports-workspace/steps/:stepId/engaged', async (req, reply) => {
+    const { stepId } = req.params as { stepId: string };
+    try {
+      let step = await prisma.skillStep.findUnique({
+        where: { id: stepId },
+        include: {
+          workspace: {
+            include: {
+              steps: { orderBy: { stepIndex: 'asc' } },
+            },
+          },
+        },
+      });
+
+      if (!step) {
+        const ws = await prisma.workspace.findUnique({
+          where: { id: stepId },
+          include: { steps: { orderBy: { stepIndex: 'asc' } } },
+        });
+        if (ws && ws.steps.length > 0) {
+          const activeS = ws.steps.find((s) => s.status !== 'PASSED') || ws.steps[0];
+          step = { ...activeS, workspace: ws } as any;
+        }
+      }
+
+      if (!step) return reply.status(404).send({ error: 'Sports step not found' });
+
+      await prisma.skillStep.update({
+        where: { id: step.id },
+        data: { engagedAt: new Date() },
+      });
+
+      // 1) Enqueue quiz for current sports step N if not generated
+      if (step.quizStatus === 'NOT_BUILT' || step.quizStatus === 'FAILED') {
+        const targetId = step.id;
+        enqueueSportsJob(async () => {
+          try {
+            await generateLevelUpQuiz(targetId);
+            console.log(`[SportsEngaged] Step ${targetId} quiz prefetched silently.`);
+          } catch (qErr) {
+            console.warn('[SportsEngaged] Quiz prefetch notice:', qErr);
+          }
+        }).catch(() => {});
+      }
+
+      // 2) Lookahead next sports step N+1: build pack, then quiz for N+1
+      const nextStep = step.workspace?.steps?.find((s) => s.stepIndex === step.stepIndex + 1);
+      if (nextStep && (nextStep.packStatus === 'NOT_BUILT' || nextStep.packStatus === 'FAILED')) {
+        const nextId = nextStep.id;
+        enqueueSportsJob(async () => {
+          try {
+            console.log(`[SportsEngaged] Next Step ${nextId} (Step ${nextStep.stepIndex}) pack prefetch starting silently...`);
+            await runSportsPackBuild(nextId);
+            await generateLevelUpQuiz(nextId);
+            console.log(`[SportsEngaged] Next Step ${nextId} pack and quiz prefetched silently.`);
+          } catch (pErr) {
+            console.warn('[SportsEngaged] Next step prefetch notice:', pErr);
+          }
+        }).catch(() => {});
+      }
+
+      return reply.send({ success: true, message: 'Sports engagement registered; silent background prefetch enqueued' });
+    } catch (err: any) {
+      fastify.log.error(err, '[SportsStepEngaged] Failed');
+      return reply.status(500).send({ error: err.message || 'Failed to register sports engagement' });
+    }
+  });
 
   // GET /api/sports-workspace/steps/:stepId/pack-status — Poll status
   fastify.get('/api/sports-workspace/steps/:stepId/pack-status', async (req, reply) => {

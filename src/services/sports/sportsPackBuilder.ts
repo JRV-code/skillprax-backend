@@ -566,6 +566,24 @@ Return ONLY JSON:
         };
       };
 
+      const dailyMinutes = ws.dailyMinutes || 45;
+      let targetItemsPerDay = 4;
+      if (dailyMinutes <= 30) {
+        targetItemsPerDay = 3;
+      } else if (dailyMinutes <= 60) {
+        targetItemsPerDay = 4;
+      } else if (dailyMinutes <= 90) {
+        targetItemsPerDay = 5;
+      } else {
+        targetItemsPerDay = 6;
+      }
+
+      if (tier === 'ADVANCED_SITUATIONAL_STRESS' || tier === 'ELITE_MASTERY') {
+        targetItemsPerDay = Math.min(6, targetItemsPerDay + 1);
+      } else if (tier === 'FOUNDATIONS') {
+        targetItemsPerDay = Math.max(3, Math.min(5, targetItemsPerDay));
+      }
+
       try {
         const groqCall = callGroqJson<{
           totalDays: number;
@@ -600,17 +618,18 @@ Learner Profile Medical Conditions: "${healthConditions}"
 Learner Profile Dietary Preference: "${dietaryPreference}"
 Learner Age Category: "${ageCategory}"
 Difficulty Tier: ${tier}
+Learner Daily Time: ${dailyMinutes} minutes
 
 ${previousAvoidStr}
 
 RULES FOR UNIFIED DAY-BY-DAY TRAINING PLAN:
 1. TOTAL DAYS: Choose an optimal human schedule between 3 and 5 days (integer between 3 and 5).
-2. UNIFIED COMBINED LIST PER DAY (NO SEPARATE DRILL / EXERCISE / YOGASAN SECTIONS):
-   - For EACH day (Day 1 through Day totalDays), create ONE combined, mixed sequence of 3 to 5 items blending:
-     * Drills ("DRILL") — sport-specific skill execution
-     * Exercises ("EXERCISE") — kinetic power, deceleration, core, or strength
-     * Yogasanas ("YOGASAN") — joint mobility, flexibility, recovery flow
-   - Blend them in the ideal order to perform that day (e.g. Mobility Yogasan warmup -> Kinetic Drill -> Power Exercise -> Recovery Yogasan).
+2. DYNAMIC COMBINED LIST PER DAY (3 TO 6 ITEMS PER DAY — NOT FIXED AT 3):
+   - For each day (Day 1 through Day totalDays), generate between 3 and 6 combined training items (specifically targeting ${targetItemsPerDay} items for Day 1, and varying naturally between 3 and 6 items across the remaining days—DO NOT always output 3 items!). Mix Sport Drills, Conditioning Exercises, and Yogasanas together.
+   - Drills ("DRILL") — sport-specific skill execution and technique
+   - Exercises ("EXERCISE") — kinetic power, deceleration, core, agility, or strength
+   - Yogasanas ("YOGASAN") — joint mobility, flexibility, recovery flow, posture alignment
+   - Blend them in the ideal athletic sequence to perform that day (e.g. Mobility Yogasan warmup -> Kinetic Drill -> Power/Agility Exercise -> Secondary Drill -> Restorative Yogasan cooldown).
 3. TRUE DAY-TO-DAY PROGRESSION:
    - Day 1, Day 2, Day 3, etc. must each have a DISTINCT focus, title, and daily progression!
 4. FOR EVERY ITEM:
@@ -636,10 +655,43 @@ Return ONLY valid JSON matching:
       "focusDescription": "...",
       "items": [
         {
+          "category": "YOGASAN",
+          "name": "...",
+          "setsAndReps": "3 Holds × 45 sec",
+          "timerSeconds": 45,
+          "customDayAiGuide": "...",
+          "howToSteps": ["Step 1", "Step 2", "Step 3"],
+          "breathingCue": "...",
+          "medicalSafetyNote": "...",
+          "youtubeQuery": "..."
+        },
+        {
           "category": "DRILL",
           "name": "...",
           "setsAndReps": "3 Sets × 60 sec",
           "timerSeconds": 60,
+          "customDayAiGuide": "...",
+          "howToSteps": ["Step 1", "Step 2", "Step 3"],
+          "breathingCue": "...",
+          "medicalSafetyNote": "...",
+          "youtubeQuery": "..."
+        },
+        {
+          "category": "EXERCISE",
+          "name": "...",
+          "setsAndReps": "4 Sets × 12 Reps",
+          "timerSeconds": 60,
+          "customDayAiGuide": "...",
+          "howToSteps": ["Step 1", "Step 2", "Step 3"],
+          "breathingCue": "...",
+          "medicalSafetyNote": "...",
+          "youtubeQuery": "..."
+        },
+        {
+          "category": "DRILL",
+          "name": "...",
+          "setsAndReps": "3 Sets × 45 sec",
+          "timerSeconds": 45,
           "customDayAiGuide": "...",
           "howToSteps": ["Step 1", "Step 2", "Step 3"],
           "breathingCue": "...",
@@ -664,12 +716,12 @@ Return ONLY valid JSON matching:
               return data;
             },
             temperature: 0.4,
-            maxTokens: 3500,
+            maxTokens: 4000,
           }
         );
 
         const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Training plan Groq timeout after 6500ms')), 6500)
+          setTimeout(() => reject(new Error('Training plan Groq timeout after 9000ms')), 9000)
         );
 
         trainingPlanRaw = await Promise.race([groqCall, timeoutPromise]);
@@ -683,6 +735,17 @@ Return ONLY valid JSON matching:
               title: 'Day 1 — Kinetic Alignment & Movement Fundamentals',
               focusDescription: `Establish neuromuscular stability and fundamental kinetic posture for ${sportName}.`,
               items: [
+                {
+                  category: 'YOGASAN',
+                  name: `Hip & Shoulder Mobility Flow (Anjaneyasana)`,
+                  setsAndReps: '3 Holds × 45 sec',
+                  timerSeconds: 45,
+                  customDayAiGuide: 'Release hip flexor tension and enhance spinal mobility before dynamic drills.',
+                  howToSteps: ['Step into gentle lunge', 'Square hips forward', 'Breathe deeply and elongate'],
+                  breathingCue: 'Slow deep inhalations and exhalations.',
+                  medicalSafetyNote: `Gentle mobility suitable for ${healthConditions}.`,
+                  youtubeQuery: 'yoga mobility for athletic recovery',
+                },
                 {
                   category: 'DRILL',
                   name: `${sportName} Kinetic Stance & Balance Drill`,
@@ -706,15 +769,15 @@ Return ONLY valid JSON matching:
                   youtubeQuery: `${sportName} core conditioning`,
                 },
                 {
-                  category: 'YOGASAN',
-                  name: `Hip & Shoulder Mobility Flow (Anjaneyasana)`,
-                  setsAndReps: '3 Holds × 45 sec',
+                  category: 'DRILL',
+                  name: `${sportName} Micro-Paced Technical Repetitions`,
+                  setsAndReps: '3 Sets × 45 sec',
                   timerSeconds: 45,
-                  customDayAiGuide: 'Release hip flexor tension and enhance spinal mobility.',
-                  howToSteps: ['Step into gentle lunge', 'Square hips forward', 'Breathe deeply and elongate'],
-                  breathingCue: 'Slow deep inhalations and exhalations.',
-                  medicalSafetyNote: `Gentle mobility suitable for ${healthConditions}.`,
-                  youtubeQuery: 'yoga mobility for athletic recovery',
+                  customDayAiGuide: 'Execute slow, conscious technique repetitions to groove kinetic motor patterns.',
+                  howToSteps: ['Set position smoothly', 'Execute 50% speed rep focusing on touch', 'Reset posture completely'],
+                  breathingCue: 'Exhale on release.',
+                  medicalSafetyNote: `Zero rush, strictly non-impact for ${healthConditions}.`,
+                  youtubeQuery: `${sportName} slow motion mechanics`,
                 },
               ],
             },
@@ -723,6 +786,17 @@ Return ONLY valid JSON matching:
               title: 'Day 2 — Dynamic Acceleration & Deceleration Mastery',
               focusDescription: `Develop explosive concentric power and safe eccentric deceleration in ${sportName}.`,
               items: [
+                {
+                  category: 'YOGASAN',
+                  name: 'Virabhadrasana I (Warrior Kinetic Grounding)',
+                  setsAndReps: '3 Holds × 45 sec per side',
+                  timerSeconds: 45,
+                  customDayAiGuide: 'Root through the soles of feet to awaken lower-body stability.',
+                  howToSteps: ['Step one foot forward and bend knee to 90 degrees', 'Extend back leg active and straight', 'Reach arms upward with open chest'],
+                  breathingCue: 'Deep rhythmic breathing.',
+                  medicalSafetyNote: `Calibrated stance to protect joints for ${healthConditions}.`,
+                  youtubeQuery: 'yoga warrior stance athletic balance',
+                },
                 {
                   category: 'DRILL',
                   name: `${sportName} Linear Acceleration & Stop Drill`,
@@ -764,6 +838,17 @@ Return ONLY valid JSON matching:
               focusDescription: `Synthesize mechanics, tactical decision-making, and full-effort game simulation.`,
               items: [
                 {
+                  category: 'YOGASAN',
+                  name: 'Utkatasana (Dynamic Athletic Chair Hold)',
+                  setsAndReps: '3 Holds × 45 sec',
+                  timerSeconds: 45,
+                  customDayAiGuide: 'Activate quadriceps and glute stabilizers while preserving thoracic extension.',
+                  howToSteps: ['Stand with feet hip-width', 'Sit back as if into a chair', 'Extend arms along ears'],
+                  breathingCue: 'Steady abdominal breaths.',
+                  medicalSafetyNote: `Adjust squat depth comfortably for ${healthConditions}.`,
+                  youtubeQuery: 'yoga chair pose athletic power',
+                },
+                {
                   category: 'DRILL',
                   name: `${sportName} Full Tactical Repetition Sequence`,
                   setsAndReps: '4 Sets × 90 sec',
@@ -784,6 +869,17 @@ Return ONLY valid JSON matching:
                   breathingCue: 'Explosive exhale at peak power.',
                   medicalSafetyNote: `Calibrated with controlled resistance for ${healthConditions}.`,
                   youtubeQuery: 'kinetic chain power development',
+                },
+                {
+                  category: 'DRILL',
+                  name: `${sportName} Rapid Decision & Reaction Simulation`,
+                  setsAndReps: '3 Sets × 60 sec',
+                  timerSeconds: 60,
+                  customDayAiGuide: 'Simulate high-pressure match scenarios with instant biomechanical adjustments.',
+                  howToSteps: ['Begin with light bounce', 'React to random acoustic or visual cue', 'Execute decisive technical counter'],
+                  breathingCue: 'Quick inhalation, sharp exhalation on reaction.',
+                  medicalSafetyNote: `Controlled directional shifts safe for ${healthConditions}.`,
+                  youtubeQuery: `${sportName} reaction training`,
                 },
                 {
                   category: 'YOGASAN',
