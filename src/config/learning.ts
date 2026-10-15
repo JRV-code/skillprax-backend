@@ -7,8 +7,8 @@ export const BLOCKED_DOMAINS = [
 
 export const LEARNING_CONFIG = {
   PASS_THRESHOLD_PERCENT: 70,          // the ONE place for the pass mark
-  STEPS_MIN: 3, STEPS_MAX: 8,          // matches the "3-8 MILESTONES" badge
-  QUIZ_MIN_QUESTIONS: 8, QUIZ_MAX_QUESTIONS: 12,
+  STEPS_MIN: 3, STEPS_MAX: 6,          // dynamic 3-6 milestone scaling
+  QUIZ_MIN_QUESTIONS: 5, QUIZ_MAX_QUESTIONS: 10, // dynamic 5-10 question scaling
   CHAPTERS_MIN: 2, CHAPTERS_MAX: 4,
   TOPICS_TOTAL_MIN: 3, TOPICS_TOTAL_MAX: 8,
   FACTS_PER_TOPIC_MIN: 3, FACTS_PER_TOPIC_MAX: 5,
@@ -92,13 +92,106 @@ export function tierForStep(stepIndex: number, totalSteps: number): DifficultyTi
 
 // Advisory range handed to Groq (it still decides within STEPS_MIN..STEPS_MAX).
 export function stepRangeHint(gap: number, dailyMinutes: number): [number, number] {
-  let lo = 3 + Math.floor(gap * 0.75); // gap 0..4 -> 3..6
-  let hi = lo + 2;
+  let lo = 3 + Math.floor(gap * 0.6); // gap 0..4 -> 3..5
+  let hi = lo + 1;
   if (dailyMinutes < 45) {
     lo += 1;
     hi += 1;
-  } // smaller milestones for short sessions
-  return [Math.min(lo, 7), Math.min(hi, 8)];
+  }
+  return [
+    Math.max(LEARNING_CONFIG.STEPS_MIN, Math.min(lo, LEARNING_CONFIG.STEPS_MAX - 1)),
+    Math.min(hi, LEARNING_CONFIG.STEPS_MAX),
+  ];
+}
+
+// Deterministic multi-factor calculator for personalized step count (3..6 milestones)
+export function calculatePersonalizedStepBounds(params: {
+  skillName: string;
+  subGenre: string;
+  domain: string;
+  startTierIdx: number; // 0..3
+  endTierIdx: number;   // 1..4
+  dailyMinutes: number;
+}): { minSteps: number; maxSteps: number; recommendedTarget: number } {
+  const { skillName, subGenre, domain, startTierIdx, endTierIdx, dailyMinutes } = params;
+  const gap = Math.max(1, endTierIdx - startTierIdx); // 1 to 4
+
+  // Base steps from mastery gap (scaled cleanly within 3..6):
+  // gap 1 -> 3.5 | gap 2 -> 4.2 | gap 3 -> 4.9 | gap 4 -> 5.6
+  let base = 2.8 + gap * 0.7;
+
+  // Adjust for daily learning time (shorter daily sessions = more granular milestones)
+  if (dailyMinutes <= 30) base += 0.6;
+  else if (dailyMinutes >= 120) base -= 0.5;
+
+  // Adjust for intrinsic skill & sub-genre complexity
+  const combinedText = `${skillName} ${subGenre} ${domain}`.toLowerCase();
+  const highComplexityKeywords = /full[- ]?stack|architecture|machine learning|deep learning|ai|quantum|compiler|distributed|organic chemistry|calculus|physics|biomechanics|competitive|tournament|orchestration|security|cryptography|3d|game dev|system/i;
+  const focusedSkillKeywords = /basics|intro|etiquette|laundry|cleaning|folding|hydration|stretching|typing|note[- ]?taking/i;
+
+  if (highComplexityKeywords.test(combinedText)) {
+    base += 0.8;
+  } else if (focusedSkillKeywords.test(combinedText)) {
+    base -= 0.7;
+  }
+
+  const recommendedTarget = Math.max(
+    LEARNING_CONFIG.STEPS_MIN,
+    Math.min(LEARNING_CONFIG.STEPS_MAX, Math.round(base))
+  );
+  const minSteps = Math.max(LEARNING_CONFIG.STEPS_MIN, recommendedTarget - 1);
+  const maxSteps = Math.min(LEARNING_CONFIG.STEPS_MAX, recommendedTarget + 1);
+
+  return { minSteps, maxSteps, recommendedTarget };
+}
+
+// Deterministic calculator for personalized quiz question count (5..10 questions)
+export function calculatePersonalizedQuestionCount(params: {
+  stepIndex: number;       // 1-based step number
+  totalSteps: number;      // 3..6
+  difficultyTier: string;  // FOUNDATIONS .. ELITE_MASTERY
+  topicsCount: number;     // number of topics in this step
+  acusCount: number;       // number of ACUs in this step
+  skillName: string;
+  mode?: 'initial' | 'retest' | 'perfection';
+}): number {
+  const { stepIndex, totalSteps, difficultyTier, topicsCount, acusCount, skillName, mode } = params;
+
+  // Start at base 5 questions for foundational steps
+  let count = 5;
+
+  // 1. Add questions based on Difficulty Tier (0 to +2)
+  const tierWeights: Record<string, number> = {
+    FOUNDATIONS: 0,
+    ELEMENTARY_MECHANICS: 1,
+    INTERMEDIATE_FLUIDITY: 1,
+    ADVANCED_SITUATIONAL_STRESS: 2,
+    ELITE_MASTERY: 2,
+  };
+  count += tierWeights[difficultyTier] ?? 1;
+
+  // 2. Add questions based on number of topics & competency units in this step (0 to +1)
+  if (topicsCount >= 4 || acusCount >= 4) count += 1;
+
+  // 3. Add progression weight for later milestones in the roadmap (0 to +1)
+  const progressRatio = totalSteps > 1 ? (stepIndex - 1) / (totalSteps - 1) : 0;
+  if (progressRatio >= 0.6) count += 1;
+
+  // 4. Add +1 for high-density analytical/technical skills
+  if (/math|physics|chemistry|algorithm|architecture|code|programming|engineering|finance|quantum/i.test(skillName)) {
+    count += 1;
+  }
+
+  // Retest / perfection modes stay concise (5 to 7 questions)
+  if (mode === 'retest' || mode === 'perfection') {
+    return Math.max(5, Math.min(7, count));
+  }
+
+  // Clamp strictly between QUIZ_MIN_QUESTIONS (5) and QUIZ_MAX_QUESTIONS (10)
+  return Math.max(
+    LEARNING_CONFIG.QUIZ_MIN_QUESTIONS,
+    Math.min(LEARNING_CONFIG.QUIZ_MAX_QUESTIONS, count)
+  );
 }
 
 export const TIER_QUERY_MODIFIERS: Record<DifficultyTier, string> = {

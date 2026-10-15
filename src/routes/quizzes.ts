@@ -1,6 +1,6 @@
 import { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import prisma from '../lib/prisma';
-import { LEARNING_CONFIG } from '../config/learning';
+import { LEARNING_CONFIG, calculatePersonalizedQuestionCount } from '../config/learning';
 import {
   callGroqJson,
   searchTavily,
@@ -109,16 +109,21 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
 
       const targetQuestionCount = isPerfection
         ? Math.min(4, Math.max(2, (focusAcus || []).length || 3))
-        : Math.min(
-            LEARNING_CONFIG.QUIZ_MAX_QUESTIONS,
-            Math.max(LEARNING_CONFIG.QUIZ_MIN_QUESTIONS, Math.round(acus.length * 2.5) || 8)
-          );
+        : calculatePersonalizedQuestionCount({
+            stepIndex: step.stepIndex || 1,
+            totalSteps: step.workspace?.totalPlannedSteps || 5,
+            difficultyTier: step.difficultyTier || 'FOUNDATIONS',
+            topicsCount: Array.isArray(step.topics) ? step.topics.length : (step.stepTopics?.length || 3),
+            acusCount: acus.length,
+            skillName: step.workspace?.skillName || step.workspace?.title || step.title || '',
+            mode: isPerfection ? 'perfection' : 'initial',
+          });
 
       const quizSystem = `You are a Principal Psychometrician & Socratic Evaluation Architect.
 Generate scenario-grounded challenge questions based EXCLUSIVELY on the provided Grounding Text.
 Every question must test a principle, trap, or edge case present in the text.
 Rules:
-- Generate ${targetQuestionCount} questions.
+- Generate EXACTLY ${targetQuestionCount} Multiple-Choice Questions (calibrated to this step's ${step.difficultyTier || 'FOUNDATIONS'} tier and ${acus.length} topics). Ensure every topic in this step is covered.
 - Every question MUST have:
   * "acuId": The ACU tested.
   * "question": The scenario challenge prompt.

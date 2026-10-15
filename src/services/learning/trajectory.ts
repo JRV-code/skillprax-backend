@@ -6,6 +6,7 @@ import {
   EXPERIENCE_START_TIER,
   tierForStepRange,
   stepRangeHint,
+  calculatePersonalizedStepBounds,
 } from '../../config/learning';
 import { callGroqJson, assertNoUrls } from './foundation';
 
@@ -45,11 +46,28 @@ export async function generateMasteryTrajectory(input: TrajectoryInput) {
   const startIdx = EXPERIENCE_START_TIER[currentExperience] ?? 0;
   const endIdx = MASTERY_END_TIER[desiredLevel] ?? 2;
   const gap = Math.max(0, endIdx - startIdx);
-  const hint = stepRangeHint(gap, dailyMinutes);
+  const { minSteps, maxSteps, recommendedTarget } = calculatePersonalizedStepBounds({
+    skillName: skill,
+    subGenre,
+    domain,
+    startTierIdx: startIdx,
+    endTierIdx: endIdx,
+    dailyMinutes,
+  });
+  const hint = [minSteps, maxSteps] as [number, number];
   const startTier = DIFFICULTY_TIERS[startIdx];
   const endTier = DIFFICULTY_TIERS[endIdx];
 
-  const systemPrompt = `You are the Curriculum Architect for SKILL-TRACK. You design one learner's mastery trajectory as an ordered list of milestone TITLES only. You decide how many milestones this learner needs. Reason from the gap between where they are and where they want to be, how broad the chosen sub-genre is, and how much time they have per day. A large gap, a broad sub-genre, or short daily sessions need more, smaller milestones; a small gap, a narrow sub-genre, and long daily sessions need fewer. Rules: the count must be between 3 and 8; the FIRST milestone starts at the learner's current level (never re-teach what they already know); the LAST reaches the desired mastery level; each title is specific, 4-80 characters, names a concrete capability or concept (never 'Introduction', 'Overview', 'Basics', 'Advanced Topics', 'Conclusion'), contains no numbering and no 'Step N'; titles must not overlap each other and must form a clear progression where each builds on the previous. For physical activities (section SPORTS) include safety and conditioning where relevant. Return ONLY JSON:
+  const systemPrompt = `You are the Curriculum Architect for SKILL-TRACK. You design one learner's mastery trajectory as an ordered list of milestone TITLES only. You decide how many milestones this learner needs.
+Determine the exact number of milestones between ${minSteps} and ${maxSteps} (recommended for this skill and learner profile: ${recommendedTarget} milestones) based on the intrinsic depth of '${skill}' (${subGenre}), the learner's gap from '${currentExperience}' to '${desiredLevel}', and their ${dailyMinutes} min/day schedule. Do NOT always default to 4 steps: use 3–4 steps for focused/everyday skills or small gaps, 5 steps for standard multi-layered skills, and 6 steps for deep technical/scientific/athletic mastery trajectories.
+Rules:
+- The count must be between ${LEARNING_CONFIG.STEPS_MIN} and ${LEARNING_CONFIG.STEPS_MAX} (target: ${recommendedTarget}).
+- The FIRST milestone starts at the learner's current level (never re-teach what they already know).
+- The LAST reaches the desired mastery level.
+- Each title is specific, 4-80 characters, names a concrete capability or concept (never 'Introduction', 'Overview', 'Basics', 'Advanced Topics', 'Conclusion'), contains no numbering and no 'Step N'.
+- Titles must not overlap each other and must form a clear progression where each builds on the previous.
+- For physical activities (section SPORTS) include safety and conditioning where relevant.
+Return ONLY JSON:
 { "stepCount": <int>, "stepCountReason": "<=160 chars", "steps": [ { "title": "..." } ] }`;
 
   const userPayload = {
@@ -62,7 +80,9 @@ export async function generateMasteryTrajectory(input: TrajectoryInput) {
     dailyMinutes,
     startTier,
     endTier,
-    suggestedStepRange: hint,
+    recommendedStepCount: recommendedTarget,
+    stepRangeBounds: [minSteps, maxSteps],
+    suggestedStepRange: [minSteps, maxSteps],
   };
 
   // Redacted log verifying all six enrollment inputs reach Groq (Test T1)
@@ -75,75 +95,85 @@ export async function generateMasteryTrajectory(input: TrajectoryInput) {
     dailyMinutes,
     gap,
     hint,
+    recommendedTarget,
   });
 
-  const trajectory = await callGroqJson<TrajectoryOutput>(
-    systemPrompt,
-    JSON.stringify(userPayload),
-    {
-      validate: (data: any) => {
-        assertNoUrls(data, 'Trajectory Generation');
+  let trajectory: TrajectoryOutput;
+  try {
+    trajectory = await callGroqJson<TrajectoryOutput>(
+      systemPrompt,
+      JSON.stringify(userPayload),
+      {
+        validate: (data: any) => {
+          assertNoUrls(data, 'Trajectory Generation');
 
-        if (typeof data?.stepCount !== 'number') {
-          throw new Error('stepCount must be a number');
-        }
-        if (!Array.isArray(data?.steps)) {
-          throw new Error('steps must be an array');
-        }
-        if (data.stepCount !== data.steps.length) {
-          throw new Error(`stepCount (${data.stepCount}) does not match steps array length (${data.steps.length})`);
-        }
-        if (
-          data.stepCount < LEARNING_CONFIG.STEPS_MIN ||
-          data.stepCount > LEARNING_CONFIG.STEPS_MAX
-        ) {
-          throw new Error(
-            `stepCount must be between ${LEARNING_CONFIG.STEPS_MIN} and ${LEARNING_CONFIG.STEPS_MAX}`
-          );
-        }
-
-        const seenTitles = new Set<string>();
-        const forbiddenPattern = /^(introduction|overview|basics?|advanced topics?|conclusion)$/i;
-
-        for (let i = 0; i < data.steps.length; i++) {
-          const s = data.steps[i];
-          if (!s || typeof s.title !== 'string') {
-            throw new Error(`Step ${i + 1} title must be a string`);
+          if (typeof data?.stepCount !== 'number') {
+            throw new Error('stepCount must be a number');
           }
-          const cleanTitle = s.title.trim().replace(/^Step \d+:\s*/i, '');
-          if (cleanTitle.length < 4 || cleanTitle.length > 80) {
-            throw new Error(`Step title "${cleanTitle}" length must be between 4 and 80 characters`);
+          if (!Array.isArray(data?.steps)) {
+            throw new Error('steps must be an array');
           }
-          if (forbiddenPattern.test(cleanTitle)) {
-            throw new Error(`Step title "${cleanTitle}" is too generic. Must be a concrete milestone.`);
+          if (data.stepCount !== data.steps.length) {
+            throw new Error(`stepCount (${data.stepCount}) does not match steps array length (${data.steps.length})`);
           }
-          const lower = cleanTitle.toLowerCase();
-          if (seenTitles.has(lower)) {
-            throw new Error(`Duplicate step title detected: "${cleanTitle}"`);
+          if (
+            data.stepCount < LEARNING_CONFIG.STEPS_MIN ||
+            data.stepCount > LEARNING_CONFIG.STEPS_MAX
+          ) {
+            throw new Error(
+              `stepCount must be between ${LEARNING_CONFIG.STEPS_MIN} and ${LEARNING_CONFIG.STEPS_MAX}`
+            );
           }
-          seenTitles.add(lower);
-          s.title = cleanTitle;
-        }
 
-        return {
-          stepCount: data.stepCount,
-          stepCountReason: String(data.stepCountReason || `${data.stepCount} progressive milestones to reach ${desiredLevel}`).slice(0, 160),
-          steps: data.steps.map((s: any) => ({ title: s.title.trim() })),
-        };
-      },
-      temperature: 0.3,
-      maxTokens: 600,
-    }
-  );
+          const seenTitles = new Set<string>();
+          const forbiddenPattern = /^(introduction|overview|basics?|advanced topics?|conclusion)$/i;
 
-  // Check hint range deviation
-  if (
-    trajectory.stepCount < hint[0] - 2 ||
-    trajectory.stepCount > hint[1] + 2
-  ) {
-    console.warn(
-      `[Trajectory:GroqPrompt] stepCount (${trajectory.stepCount}) deviated from suggested range [${hint[0]}, ${hint[1]}]`
+          for (let i = 0; i < data.steps.length; i++) {
+            const s = data.steps[i];
+            if (!s || typeof s.title !== 'string') {
+              throw new Error(`Step ${i + 1} title must be a string`);
+            }
+            const cleanTitle = s.title.trim().replace(/^Step \d+:\s*/i, '');
+            if (cleanTitle.length < 4 || cleanTitle.length > 80) {
+              throw new Error(`Step title "${cleanTitle}" length must be between 4 and 80 characters`);
+            }
+            if (forbiddenPattern.test(cleanTitle)) {
+              throw new Error(`Step title "${cleanTitle}" is too generic. Must be a concrete milestone.`);
+            }
+            const lower = cleanTitle.toLowerCase();
+            if (seenTitles.has(lower)) {
+              throw new Error(`Duplicate step title detected: "${cleanTitle}"`);
+            }
+            seenTitles.add(lower);
+            s.title = cleanTitle;
+          }
+
+          return {
+            stepCount: data.stepCount,
+            stepCountReason: String(data.stepCountReason || `${data.stepCount} progressive milestones to reach ${desiredLevel}`).slice(0, 160),
+            steps: data.steps.map((s: any) => ({ title: s.title.trim() })),
+          };
+        },
+        temperature: 0.3,
+        maxTokens: 600,
+      }
     );
+  } catch (groqErr) {
+    console.warn('[Trajectory:GroqPrompt] Groq call failed, utilizing calibrated fallback:', groqErr);
+    const fallbackTemplates = [
+      `Foundational Core Invariants & Mental Models for ${skill}`,
+      `Isolated Execution Mechanics & Basic Drills in ${subGenre}`,
+      `Dynamic Rhythm, Fluidity, & Procedural Synthesis in ${skill}`,
+      `Error Diagnostics, Misconceptions, & Situational Recovery`,
+      `Advanced Integrated Execution & High-Complexity Workflows`,
+      `Elite Nuance Optimization & Autonomous Mastery in ${skill}`,
+    ];
+    const chosenSteps = fallbackTemplates.slice(0, recommendedTarget).map((title) => ({ title }));
+    trajectory = {
+      stepCount: chosenSteps.length,
+      stepCountReason: `Calibrated ${chosenSteps.length}-milestone trajectory for ${desiredLevel} in ${subGenre}`,
+      steps: chosenSteps,
+    };
   }
 
   // Persist in ONE transaction: Workspace and Steps (Milestone titles ONLY)

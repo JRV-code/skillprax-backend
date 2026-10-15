@@ -1,5 +1,5 @@
 import prisma from '../../lib/prisma';
-import { LEARNING_CONFIG } from '../../config/learning';
+import { LEARNING_CONFIG, calculatePersonalizedQuestionCount } from '../../config/learning';
 import {
   callGroqJson,
   assertNoUrls,
@@ -327,10 +327,14 @@ export async function runQuizBuild(stepId: string): Promise<void> {
   });
 
   try {
-    const targetCount = Math.min(
-      LEARNING_CONFIG.QUIZ_MAX_QUESTIONS,
-      Math.max(LEARNING_CONFIG.QUIZ_MIN_QUESTIONS, Math.min(allFacts.length, 10))
-    );
+    const targetCount = calculatePersonalizedQuestionCount({
+      stepIndex: step.stepIndex || 1,
+      totalSteps: step.workspace?.totalPlannedSteps || 5,
+      difficultyTier: step.difficultyTier || 'FOUNDATIONS',
+      topicsCount: readyTopics.length,
+      acusCount: Array.isArray(step.assessableUnits) ? step.assessableUnits.length : 0,
+      skillName: step.workspace?.skillName || step.workspace?.title || step.title || '',
+    });
 
     // Group facts by topic
     const factsByTopic = new Map<string, UsableFact[]>();
@@ -355,7 +359,7 @@ export async function runQuizBuild(stepId: string): Promise<void> {
 Create rigorous, multiple-choice evaluation questions based EXCLUSIVELY on the provided facts.
 
 REQUIREMENTS:
-1. Generate ${Math.max(selectedFacts.length, 8)} questions, with each question testing EXACTLY ONE provided fact.
+1. Generate EXACTLY ${targetCount} Multiple-Choice Questions (calibrated to this step's ${step.difficultyTier || 'FOUNDATIONS'} tier and ${readyTopics.length} topics). Ensure every topic in this step is covered. Each question tests EXACTLY ONE provided fact.
 2. Every ready topic provided must receive at least one question.
 3. The correct answer MUST be directly supported by that fact's statement.
 4. For each question, provide EXACTLY 3 plausible distractors.
@@ -429,10 +433,10 @@ Return ONLY JSON:
       });
     }
 
-    // Deterministic grounded fallback so we are 100% guaranteed to reach at least 8 questions
-    if (validQuestions.length < LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) {
+    // Deterministic grounded fallback so we are 100% guaranteed to reach targetCount questions
+    if (validQuestions.length < targetCount) {
       for (const sf of selectedFacts) {
-        if (validQuestions.length >= LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) break;
+        if (validQuestions.length >= targetCount) break;
         if (!validQuestions.some((vq) => vq.evidenceFact === sf.fact)) {
           const topic = topicMap.get(sf.topicKey) || readyTopics[0];
           validQuestions.push({
@@ -453,15 +457,15 @@ Return ONLY JSON:
         }
       }
 
-      // If still below minimum, cycle through topics to generate complete set
+      // If still below targetCount, cycle through topics to generate complete set
       let fillIdx = 1;
-      while (validQuestions.length < LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) {
+      while (validQuestions.length < targetCount) {
         const topic = readyTopics[(validQuestions.length) % readyTopics.length];
         validQuestions.push({
           topicKey: topic.key,
           topicId: topic.id,
           resourceId: topic.resources?.[0]?.id,
-          evidenceFact: `${topic.title} standard baseline verification`,
+          evidenceFact: `${topic.title} standard baseline verification ${fillIdx}`,
           acuId: `${topic.key}-acu`,
           question: `Which approach best prevents common errors when implementing ${topic.title}?`,
           correctAnswer: `Consistently follow verified mechanical steps and audit baseline invariants.`,
@@ -476,7 +480,8 @@ Return ONLY JSON:
       }
     }
 
-    const balanced = buildBalancedQuestions(validQuestions);
+    const finalQuestions = validQuestions.slice(0, targetCount);
+    const balanced = buildBalancedQuestions(finalQuestions);
 
     await prisma.skillStep.update({
       where: { id: stepId },
