@@ -75,7 +75,13 @@ export async function runSchemaMigration() {
     `ALTER TABLE IF EXISTS step_translations ALTER COLUMN step_id TYPE TEXT USING step_id::text`,
 
     `ALTER TABLE IF EXISTS chapters ALTER COLUMN id TYPE TEXT USING id::text`,
-    `ALTER TABLE IF EXISTS chapters ALTER COLUMN step_id TYPE TEXT USING step_id::text`,
+    `DO $$ BEGIN 
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'chapters' AND column_name = 'step_id') THEN 
+        ALTER TABLE chapters ALTER COLUMN step_id TYPE TEXT USING step_id::text; 
+      ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'chapters' AND column_name = 'stepId') THEN
+        ALTER TABLE chapters ALTER COLUMN "stepId" TYPE TEXT USING "stepId"::text;
+      END IF; 
+    END $$;`,
 
     `ALTER TABLE IF EXISTS user_resource_history ALTER COLUMN id TYPE TEXT USING id::text`,
     `ALTER TABLE IF EXISTS user_resource_history ALTER COLUMN user_id TYPE TEXT USING user_id::text`,
@@ -92,7 +98,13 @@ export async function runSchemaMigration() {
     `ALTER TABLE IF EXISTS quiz_translations ALTER COLUMN evaluation_id TYPE TEXT USING evaluation_id::text`,
 
     `ALTER TABLE IF EXISTS translation_caches ALTER COLUMN id TYPE TEXT USING id::text`,
-    `ALTER TABLE IF EXISTS translation_caches ALTER COLUMN scope_id TYPE TEXT USING scope_id::text`,
+    `DO $$ BEGIN 
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'translation_caches' AND column_name = 'scope_id') THEN 
+        ALTER TABLE translation_caches ALTER COLUMN scope_id TYPE TEXT USING scope_id::text; 
+      ELSIF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'translation_caches' AND column_name = 'scopeId') THEN
+        ALTER TABLE translation_caches ALTER COLUMN "scopeId" TYPE TEXT USING "scopeId"::text;
+      END IF; 
+    END $$;`,
 
     `ALTER TABLE IF EXISTS subgenre_caches ALTER COLUMN id TYPE TEXT USING id::text`,
     

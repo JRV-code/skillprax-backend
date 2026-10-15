@@ -170,7 +170,7 @@ model SkillStep {
   title           String
   description     String        @default("")
   status          String        @default("IN_PROGRESS")
-  difficultyTier  String?       @default("FOUNDATIONS")
+  difficultyTier  String?       @default("FOUNDATIONS") @map("difficulty_tier")
   intro           Json?
   packStatus       String           @default("NOT_BUILT") @map("pack_status")
   packStage        String?          @map("pack_stage")

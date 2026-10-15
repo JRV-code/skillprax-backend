@@ -834,155 +834,90 @@ Output ONLY a JSON array of 7 objects (Day 1 through Day 7) matching this schema
     try {
       const {
         sportName = 'Football',
+        subGenre = '',
         dietaryPreference = 'Vegetarian',
+        medicalConditions = 'None',
         healthConditions = 'None',
         trainingGoal = 'Peak Performance & Rapid Recovery',
+        preferredLanguage = 'en',
       } = (req.body || {}) as {
         sportName?: string;
+        subGenre?: string;
         dietaryPreference?: string;
+        medicalConditions?: string;
         healthConditions?: string;
         trainingGoal?: string;
+        preferredLanguage?: string;
       };
 
-      const { groqKey } = await getEffectiveKeys();
-      const apiKey = groqKey || process.env.GROQ_API_KEY || '';
+      const effectiveHealth = healthConditions && healthConditions !== 'None' ? healthConditions : (medicalConditions || 'None');
 
-      const prompt = `You are an Olympic Sports Nutritionist & Dietitian.
-Generate a tailored sports nutrition & hydration regimen strictly customized for an athlete with:
-- Selected Sport: "${sportName}"
-- Dietary Preference: "${dietaryPreference}"
-- Health / Injury Conditions (Safety Filter): "${healthConditions}"
-- Goal: "${trainingGoal}"
+      const fuelingPlan = await generateAthleticFuelingPlan({
+        sportName,
+        subGenre,
+        dietaryPreference,
+        medicalConditions: effectiveHealth,
+        preferredLanguage,
+      });
 
-CRITICAL SAFETY & MEDICAL CONSTRAINT:
-The athlete has reported health/injury conditions: "${healthConditions}".
-Your nutritional advice must actively support joint recovery, anti-inflammatory repair, and zero digestive/mechanical distress for this condition.
-
-Return strictly valid JSON:
-{
-  "preTraining": {
-    "title": "Pre-Training Energy Fuel (60-90 Mins Prior)",
-    "meal": "Specific delicious meal matching ${dietaryPreference}",
-    "timing": "60 to 90 minutes before drill initiation",
-    "macros": "High complex carbohydrate (50-60g), moderate lean protein (15-20g), low fiber/fat",
-    "hydration": "450-600ml water with pinch of pink salt",
-    "why": "Optimizes circulating blood glucose and hepatic glycogen stores without gastrointestinal heaviness."
-  },
-  "postTraining": {
-    "title": "Post-Training Muscle Recovery & Repair (Within 45 Mins)",
-    "meal": "Specific recovery meal/smoothie matching ${dietaryPreference}",
-    "timing": "Within 30 to 45 minutes of drill completion",
-    "macros": "3:1 carbohydrate-to-protein ratio (40g carbs, 20-25g bioavailable protein)",
-    "hydration": "750ml water + electrolyte replenishment (sodium, potassium, magnesium)",
-    "why": "Restores intramuscular glycogen and activates myofibrillar protein synthesis to prevent delayed soreness."
-  },
-  "hydrationSchedule": {
-    "dailyTargetLiters": "3.5 - 4.0 Liters Daily",
-    "morning": "500ml room temperature water upon waking with lemon & pinch of salt",
-    "intraTraining": "150-200ml every 15-20 minutes of intense drill exertion",
-    "postTraining": "500-750ml electrolyte fluid within 1 hour post session",
-    "electrolytes": "Magnesium citrate, potassium bicarbonate, and sea salt"
-  },
-  "micronutrientFocus": [
-    {
-      "nutrient": "Magnesium Glycinate & Potassium",
-      "purpose": "Neuromuscular relaxation & cramp prevention",
-      "foodSources": "Spinach, pumpkin seeds, bananas, tender coconut water"
-    },
-    {
-      "nutrient": "Omega-3 Fatty Acids (EPA/DHA)",
-      "purpose": "Systemic joint lubrication and anti-inflammatory tendon support",
-      "foodSources": "Flaxseeds, chia seeds, walnuts, cold-pressed oils"
-    },
-    {
-      "nutrient": "Vitamin D3 + K2 & Calcium",
-      "purpose": "Bone mineral density and forceful myofibrillar contraction",
-      "foodSources": "Fortified plant/dairy milk, sesame seeds, sunlight exposure, curd"
-    },
-    {
-      "nutrient": "Antioxidant Polyphenols & Vitamin C",
-      "purpose": "Cellular oxidative stress reduction and collagen synthesis",
-      "foodSources": "Indian gooseberry (Amla), berries, pomegranate, citrus fruits"
-    }
-  ],
-  "safetyModification": "Tailored nutritional adaptation: specifically anti-inflammatory and joint-cushioning for ${healthConditions}."
-}`;
-
-      if (apiKey) {
-        try {
-          const aiRes = await callGroqWithFallback(
-            [
-              { role: 'system', content: 'You are an Olympic Sports Nutritionist. Respond ONLY with valid JSON.' },
-              { role: 'user', content: prompt },
-            ],
-            { apiKey, model: 'llama-3.3-70b-versatile', temperature: 0.25, jsonMode: true }
-          );
-
-          let parsed = JSON.parse(aiRes.content);
-          if (parsed && !parsed.preTraining && parsed.plan) parsed = parsed.plan;
-          if (parsed && parsed.preTraining && parsed.postTraining) {
-            return reply.send({ success: true, plan: parsed });
-          }
-        } catch (aiErr) {
-          fastify.log.warn({ err: aiErr }, '[POST /api/sports/nutrition-plan] Groq fallback');
-        }
-      }
-
-      // Default high-quality structured fallback
-      const defaultPlan = {
+      const unifiedPlan = {
+        ...fuelingPlan,
         preTraining: {
-          title: "Pre-Training Energy Fuel (60-90 Mins Prior)",
-          meal: dietaryPreference.toLowerCase().includes('non')
-            ? "Grilled chicken breast with steamed sweet potatoes and beetroot slices"
-            : "Rolled oats porridge with banana, crushed almonds, chia seeds, and honey",
-          timing: "60 to 90 minutes before drill initiation",
-          macros: "High complex carbohydrates (55g), moderate protein (18g), low fat",
-          hydration: "500ml water with a pinch of Himalayan pink salt",
-          why: "Maximizes muscle glycogen availability and prevents mid-session energy crashes."
+          title: fuelingPlan.preTrainingFuel?.title || 'Pre-Training Energy Fuel (60-90 Mins Prior)',
+          meal: fuelingPlan.preTrainingFuel?.description || 'High complex carbohydrates and clean protein',
+          timing: fuelingPlan.preTrainingFuel?.timing || '60 to 90 minutes before drill initiation',
+          macros: 'High complex carbohydrates (50-60g), moderate protein (15-20g)',
+          hydration: `${Math.round((fuelingPlan.hydrationTargetLiters || 3.2) * 150)}ml water with pinch of pink salt`,
+          why: 'Optimizes circulating blood glucose and hepatic glycogen stores without gastrointestinal heaviness.',
         },
         postTraining: {
-          title: "Post-Training Muscle Recovery & Repair (Within 45 Mins)",
-          meal: dietaryPreference.toLowerCase().includes('non')
-            ? "Boiled eggs or grilled fish with brown rice and stir-fried greens"
-            : "Paneer/tofu quinoa bowl with steamed broccoli, pomegranate, and flaxseed oil drizzle",
-          timing: "Within 30 to 45 minutes of drill completion",
-          macros: "3:1 carb-to-protein ratio (45g carbs, 22g protein)",
-          hydration: "750ml electrolyte fluid with coconut water and citrus",
-          why: "Repairs micro-tears in muscle fibers and restores glycogen reserves."
+          title: fuelingPlan.postTrainingRecovery?.title || 'Post-Training Muscle Recovery & Repair (Within 45 Mins)',
+          meal: fuelingPlan.postTrainingRecovery?.description || 'Recovery protein and amino acids',
+          timing: 'Within 30 to 45 minutes of drill completion',
+          macros: '3:1 carbohydrate-to-protein ratio (40g carbs, 20-25g bioavailable protein)',
+          hydration: '750ml water + electrolyte replenishment (sodium, potassium, magnesium)',
+          why: 'Restores intramuscular glycogen and activates myofibrillar protein synthesis.',
         },
         hydrationSchedule: {
-          dailyTargetLiters: "3.5 - 4.0 Liters Daily",
-          morning: "500ml water upon waking with lemon and pink salt",
-          intraTraining: "150-200ml every 15 minutes of continuous exercise",
-          postTraining: "700ml electrolyte water within 60 minutes after practice",
-          electrolytes: "Potassium, Magnesium, and Sodium replenishment"
+          dailyTargetLiters: `${fuelingPlan.hydrationTargetLiters || 3.5} Liters Daily`,
+          morning: '500ml room temperature water upon waking with lemon & pinch of salt',
+          intraTraining: '150-200ml every 15-20 minutes of intense drill exertion',
+          postTraining: '500-750ml electrolyte fluid within 1 hour post session',
+          electrolytes: 'Magnesium citrate, potassium bicarbonate, and sea salt',
         },
         micronutrientFocus: [
           {
-            nutrient: "Magnesium & Potassium",
-            purpose: "Neuromuscular impulse transmission and cramp suppression",
-            foodSources: "Spinach, bananas, pumpkin seeds, coconut water"
+            nutrient: 'Magnesium Glycinate & Potassium',
+            purpose: 'Neuromuscular relaxation & cramp prevention',
+            foodSources: 'Spinach, pumpkin seeds, bananas, tender coconut water',
           },
           {
-            nutrient: "Omega-3 Fatty Acids",
-            purpose: "Anti-inflammatory joint protection and cellular recovery",
-            foodSources: "Chia seeds, walnuts, flaxseeds, cold-pressed oils"
+            nutrient: 'Omega-3 Fatty Acids (EPA/DHA)',
+            purpose: 'Systemic joint lubrication and anti-inflammatory tendon support',
+            foodSources: 'Flaxseeds, chia seeds, walnuts, cold-pressed oils',
           },
           {
-            nutrient: "Vitamin D3 + K2",
-            purpose: "Skeletal resilience and bone density under mechanical loads",
-            foodSources: "Sunlight exposure, fortified milk/curd, mushrooms"
+            nutrient: 'Vitamin D3 + K2 & Calcium',
+            purpose: 'Bone mineral density and forceful myofibrillar contraction',
+            foodSources: 'Fortified plant/dairy milk, sesame seeds, sunlight exposure, curd',
           },
           {
-            nutrient: "Vitamin C & Zinc",
-            purpose: "Collagen synthesis for ligaments and immune optimization",
-            foodSources: "Amla (Gooseberry), citrus fruits, bell peppers, lentils"
-          }
+            nutrient: 'Antioxidant Polyphenols & Vitamin C',
+            purpose: 'Cellular oxidative stress reduction and collagen synthesis',
+            foodSources: 'Indian gooseberry (Amla), berries, pomegranate, citrus fruits',
+          },
         ],
-        safetyModification: `Tailored joint-cushioning and low-inflammation protocol protective of ${healthConditions}.`
+        safetyModification: `Tailored nutritional adaptation: specifically anti-inflammatory and joint-cushioning for ${effectiveHealth}.`,
       };
 
-      return reply.send({ success: true, plan: defaultPlan });
+      return reply.send({
+        success: true,
+        sportName,
+        dietaryPreference,
+        healthConditions: effectiveHealth,
+        nutritionPlan: unifiedPlan,
+        plan: unifiedPlan,
+      });
     } catch (err: any) {
       fastify.log.error(err, '[POST /api/sports/nutrition-plan] Error');
       return reply.status(500).send({ error: 'Failed to generate sports nutrition plan' });
@@ -1311,46 +1246,6 @@ Return JSON array of items:
     }
   });
 
-  // POST /api/sports/nutrition-plan — Dynamic Sport Fueling & Nutrition Plan via Groq
-  fastify.post('/api/sports/nutrition-plan', async (req, reply) => {
-    try {
-      const {
-        sportName = 'Football',
-        subGenre = '',
-        dietaryPreference = 'Vegetarian',
-        medicalConditions = 'None',
-        healthConditions = 'None',
-        preferredLanguage = 'en',
-      } = (req.body || {}) as {
-        sportName?: string;
-        subGenre?: string;
-        dietaryPreference?: string;
-        medicalConditions?: string;
-        healthConditions?: string;
-        preferredLanguage?: string;
-      };
-
-      const effectiveHealth = healthConditions && healthConditions !== 'None' ? healthConditions : medicalConditions;
-      const plan = await generateAthleticFuelingPlan({
-        sportName,
-        subGenre,
-        dietaryPreference,
-        medicalConditions: effectiveHealth || 'None',
-        preferredLanguage,
-      });
-
-      return reply.send({
-        success: true,
-        sportName,
-        dietaryPreference,
-        healthConditions: effectiveHealth,
-        nutritionPlan: plan,
-      });
-    } catch (err: any) {
-      fastify.log.error(err, '[POST /api/sports/nutrition-plan] Error');
-      return reply.status(500).send({ error: 'Failed to generate nutrition plan' });
-    }
-  });
 
   // POST /api/sports/drills/generate — Dynamic Sport Drill Generation via Groq (Backwards compatible)
   fastify.post('/api/sports/drills/generate', async (req, reply) => {
