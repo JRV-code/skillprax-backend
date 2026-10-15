@@ -504,7 +504,7 @@ export async function verifyLink(
   url: string,
   sampleText?: string
 ): Promise<{ status: LinkStatus; finalUrl: string }> {
-  if (!(await isSafePublicUrl(url)) || looksWalled(url, sampleText)) {
+  if (!url || !/^https?:\/\//i.test(url) || !(await isSafePublicUrl(url))) {
     return { status: 'DEAD', finalUrl: url };
   }
   const yt = extractYouTubeId(url);
@@ -516,33 +516,28 @@ export async function verifyLink(
     };
   }
   const headers = {
-    'User-Agent': 'Mozilla/5.0 (compatible; SkillTrackLinkCheck/1.0)',
-    Accept: 'text/html,*/*',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   };
-  for (const method of ['HEAD', 'GET'] as const) {
-    try {
-      const res = await fetch(url, {
-        method,
-        headers,
-        redirect: 'follow',
-        signal: AbortSignal.timeout(LEARNING_CONFIG.LINK_CHECK_TIMEOUT_MS),
-      });
-      await res.body?.cancel();
-      const finalUrl = res.url || url;
-      if (res.status === 404 || res.status === 410 || looksWalled(finalUrl)) {
-        return { status: 'DEAD', finalUrl };
-      }
-      if (res.status === 401 || res.status === 403 || res.status === 429) {
-        return { status: 'UNCHECKED', finalUrl };
-      }
-      if (res.ok) return { status: 'VERIFIED', finalUrl };
-      if (res.status === 405 || res.status === 501) continue;
-      return { status: 'UNCHECKED', finalUrl };
-    } catch {
-      /* timeout/network: try next method */
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LEARNING_CONFIG.LINK_VERIFY_TIMEOUT_MS || 2500);
+    const res = await fetch(url, {
+      method: 'HEAD',
+      headers,
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const finalUrl = res.url || url;
+    if (res.status === 404 || res.status === 410) {
+      return { status: 'DEAD', finalUrl };
     }
+    return { status: res.ok ? 'VERIFIED' : 'UNCHECKED', finalUrl };
+  } catch {
+    // Timeout, CORS, or anti-bot challenge -> valid clickable web link for browser
+    return { status: 'UNCHECKED', finalUrl: url };
   }
-  return { status: 'UNCHECKED', finalUrl: url };
 }
 
 // 6.5 LEVEL FIT

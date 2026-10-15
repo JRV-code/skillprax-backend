@@ -41,6 +41,13 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
       }
       if (!step) return reply.status(404).send({ error: 'Step not found' });
 
+      if (step.packStatus === 'FAILED') {
+        await prisma.skillStep.update({
+          where: { id: step.id },
+          data: { packStatus: 'NOT_BUILT', packError: null },
+        });
+      }
+
       const claimed = await claimPackBuild(step.id);
       if (claimed) {
         enqueueJob(() => runPackBuild(step.id));
@@ -234,6 +241,31 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         return reply.send({ locked: true });
       }
 
+      // Auto-heal stuck, failed or empty packs
+      if (step.packStatus === 'FAILED' || (step.packStatus === 'READY' && (!step.stepChapters || step.stepChapters.length === 0))) {
+        try {
+          await runPackBuild(step.id);
+          const healed = await prisma.skillStep.findUnique({
+            where: { id: step.id },
+            include: {
+              stepChapters: {
+                orderBy: { order: 'asc' },
+                include: {
+                  topics: {
+                    orderBy: { order: 'asc' },
+                    include: { resources: true },
+                  },
+                },
+              },
+              stepResources: true,
+            },
+          });
+          if (healed) step = healed;
+        } catch (healErr) {
+          fastify.log.warn({ err: healErr, stepId: step.id }, '[GetStepPack] Auto-heal build notice');
+        }
+      }
+
       let intro = step.intro;
       let translatedChapters = null;
 
@@ -248,65 +280,74 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         }
       }
 
-      const allVideos = step.stepResources
-        .filter((r) => r.type === 'youtube' && r.videoId)
+      const allVideos = (step.stepResources || [])
+        .filter((r) => (r.type === 'youtube' || r.type === 'video') && (r.videoId || r.url))
         .map((r) => ({
           id: r.id,
           title: r.title,
-          videoId: r.videoId,
+          videoId: r.videoId || extractYouTubeId(r.url) || '',
           videoType: r.videoType || 'tutorial',
-          channelName: r.channelName,
+          channelName: r.channelName || 'Academy',
           embeddable: r.embeddable ?? true,
           chapterId: r.chapterId,
+          url: r.url || `https://www.youtube.com/watch?v=${r.videoId}`,
         }));
 
-      const chapters = step.stepChapters.map((ch, chIdx) => {
+      const chapters = (step.stepChapters || []).map((ch, chIdx) => {
         const transCh = translatedChapters?.[chIdx];
-        const chVideo = step.stepResources.find((r) => r.chapterId === ch.id && r.type === 'youtube')
-          || (allVideos.length > 0 ? allVideos[chIdx % allVideos.length] : null);
+        const chapterVideos = allVideos.filter((v) => v.chapterId === ch.id);
+        const chVideo = chapterVideos[0] || (allVideos.length > 0 ? allVideos[chIdx % allVideos.length] : null);
 
         return {
           id: ch.id,
           order: ch.order,
+          position: ch.order,
           title: transCh?.title || ch.title,
-          summary: transCh?.summary || ch.summary,
-          video: chVideo
-            ? {
-                id: chVideo.id,
-                title: chVideo.title,
-                videoId: chVideo.videoId,
-                videoType: chVideo.videoType || 'tutorial',
-                channelName: chVideo.channelName,
-                embeddable: chVideo.embeddable,
-              }
-            : null,
-          videos: allVideos.filter((v) => v.chapterId === ch.id),
-          topics: ch.topics.map((t, tIdx) => {
+          summary: transCh?.summary || ch.summary || '',
+          overview: transCh?.summary || ch.summary || '',
+          video: chVideo,
+          videos: chapterVideos.length > 0 ? chapterVideos : (chVideo ? [chVideo] : []),
+          lectures: chapterVideos.length > 0 ? chapterVideos : (chVideo ? [chVideo] : []),
+          resources: chapterVideos.length > 0 ? chapterVideos : (chVideo ? [chVideo] : []),
+          topics: (ch.topics || []).map((t, tIdx) => {
             const transTopic = transCh?.topics?.[tIdx];
-            const docRes = t.resources.find((r) => r.type === 'doc') || t.resources[0];
+            const topicDocs = (t.resources || [])
+              .filter((r) => r.type === 'doc' || r.type === 'DOC')
+              .map((r) => ({
+                id: r.id,
+                url: r.url,
+                title: r.title,
+                domain: r.domain,
+                linkStatus: r.linkStatus || 'VERIFIED',
+                snippet: r.snippet || '',
+              }));
+
+            const primaryDoc = topicDocs[0] || (t.resources && t.resources[0] ? {
+              id: t.resources[0].id,
+              url: t.resources[0].url,
+              title: t.resources[0].title,
+              domain: t.resources[0].domain,
+              linkStatus: t.resources[0].linkStatus || 'VERIFIED',
+              snippet: t.resources[0].snippet || '',
+            } : null);
 
             return {
               id: t.id,
               key: t.key,
               order: t.order,
+              position: t.order,
               title: transTopic?.title || t.title,
-              covers: transTopic?.covers || t.covers,
-              minutes: t.minutes,
-              acuIds: t.acuIds,
-              guide: transTopic?.guide || t.guide,
-              status: t.status,
-              resource: docRes
-                ? {
-                    id: docRes.id,
-                    url: docRes.url,
-                    title: docRes.title,
-                    domain: docRes.domain,
-                    linkStatus: docRes.linkStatus,
-                    videoId: docRes.videoId,
-                    videoType: docRes.videoType,
-                    embeddable: docRes.embeddable,
-                  }
-                : null,
+              covers: transTopic?.covers || t.covers || '',
+              minutes: t.minutes || 15,
+              acuIds: t.acuIds || [],
+              guide: transTopic?.guide || t.guide || {},
+              howToApproach: (t.guide as any)?.howToApproach || (t as any).summary || t.covers || '',
+              status: primaryDoc ? ('READY' as const) : ('NO_VERIFIED_LINK' as const),
+              resource: primaryDoc,
+              doc: primaryDoc,
+              resources: topicDocs,
+              documents: topicDocs,
+              links: topicDocs,
             };
           }),
         };

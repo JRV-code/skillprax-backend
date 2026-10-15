@@ -1,6 +1,7 @@
 import { getEffectiveKeys } from '../lib/keyManager';
 import { callGroqWithFallback } from '../lib/ai/pipeline';
 import { SearchResultItem, extractYouTubeVideoId } from './search';
+import { calculatePersonalizedStepBounds } from '../config/learning';
 
 export interface ACUInput {
   id: string;
@@ -52,6 +53,13 @@ export async function generateSkillRoadmap(params: {
   const cleanSubGenre = (params.subGenre || '').trim();
   const learnerContext = `${params.profession || 'Learner'}${params.age ? ` (Age ${params.age})` : ''}`;
 
+  const { minSteps, maxSteps, recommendedTarget } = calculatePersonalizedStepBounds({
+    skillName: cleanTitle,
+    subGenre: cleanSubGenre,
+    domain: cleanDomain,
+    desiredLevel: params.targetGoal,
+  });
+
   const systemPrompt = `You are the SKILL-TRACK Pedagogy & Curriculum Engine (v2.6).
 Domain: "${cleanDomain}"
 Target Skill: "${cleanTitle}"
@@ -59,20 +67,15 @@ ${cleanSubGenre ? `Specialized Sub-Genre: "${cleanSubGenre}"` : ''}
 Learner Context: "${learnerContext}"
 Mastery Goal: "${params.targetGoal || 'Full Competency'}"
 
-TASK:
-Synthesize an authoritative, highly structured, sequential mastery roadmap for this skill.
+CRITICAL MILESTONE COUNT MANDATE:
+Based on the complexity of "${cleanTitle}" (${cleanSubGenre}) and the learner's target goal, you MUST generate EXACTLY ${recommendedTarget} progressive milestones (stepIndex 1 through ${recommendedTarget}) in the "steps" array and set "totalPlannedSteps": ${recommendedTarget}.
+DO NOT default to 4 or 5 steps unless ${recommendedTarget} matches!
 
-CRITICAL DYNAMIC SIZING DIRECTIVE (3 to 8 Milestones):
-- DYNAMICALLY SCOPE ROADMAP DEPTH BETWEEN 3 AND 8 MILESTONES based on the technical scope and complexity:
-  * Highly focused drills or niche skills: 3 to 4 milestones.
-  * Intermediate applied mechanics: 4 to 6 milestones.
-  * Deep multi-layered disciplines (e.g. Organic Chemistry, Distributed Systems): 6 to 8 milestones.
-- DO NOT default to a rigid 5 steps. Evaluate the exact scope of "${cleanTitle}${cleanSubGenre ? ` (${cleanSubGenre})` : ''}".
-- Each milestone MUST have a distinct, progressive title reflecting increasing rigor:
-  * Milestone 1: Foundational Mental Models & Core Principles
-  * Intermediate Milestones: Applied Mechanics, Execution & Non-linear Edge Cases
-  * Final Milestone: Advanced Synthesis & Apex Mastery Clearance.
-- Each milestone MUST contain 2 to 4 granular Assessable Competency Units (ACUs).
+Each milestone MUST have a distinct, progressive title reflecting increasing rigor:
+- Milestone 1: Foundational Mental Models & Core Principles
+- Intermediate Milestones: Applied Mechanics, Execution & Non-linear Edge Cases
+- Final Milestone: Advanced Synthesis & Apex Mastery Clearance.
+Each milestone MUST contain 2 to 4 granular Assessable Competency Units (ACUs).
 
 Output strictly valid JSON with NO markdown syntax:
 {
@@ -80,7 +83,7 @@ Output strictly valid JSON with NO markdown syntax:
   "subTitle": "Authoritative subtitle summarizing the specialization",
   "domainCategory": "${cleanDomain}",
   "subGenre": "${cleanSubGenre}",
-  "totalPlannedSteps": 5,
+  "totalPlannedSteps": ${recommendedTarget},
   "steps": [
     {
       "stepIndex": 1,
@@ -105,11 +108,10 @@ Output strictly valid JSON with NO markdown syntax:
   let cleaned = response.content.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '');
   const parsed = JSON.parse(cleaned);
 
-  // Guarantee step count is clamped between 3 and 8
+  // Guarantee step count is clamped between 3 and 6
   const steps = Array.isArray(parsed.steps) ? parsed.steps : [];
-  const clampedSteps = steps.slice(0, 8);
+  const clampedSteps = steps.slice(0, 6);
   if (clampedSteps.length < 3) {
-    // Add baseline steps if model returned fewer than 3
     while (clampedSteps.length < 3) {
       const idx = clampedSteps.length + 1;
       clampedSteps.push({

@@ -58,17 +58,20 @@ export async function generateMasteryTrajectory(input: TrajectoryInput) {
   const startTier = DIFFICULTY_TIERS[startIdx];
   const endTier = DIFFICULTY_TIERS[endIdx];
 
-  const systemPrompt = `You are the Curriculum Architect for SKILL-TRACK. You design one learner's mastery trajectory as an ordered list of milestone TITLES only. You decide how many milestones this learner needs.
-Determine the exact number of milestones between ${minSteps} and ${maxSteps} (recommended for this skill and learner profile: ${recommendedTarget} milestones) based on the intrinsic depth of '${skill}' (${subGenre}), the learner's gap from '${currentExperience}' to '${desiredLevel}', and their ${dailyMinutes} min/day schedule. Do NOT always default to 4 steps: use 3–4 steps for focused/everyday skills or small gaps, 5 steps for standard multi-layered skills, and 6 steps for deep technical/scientific/athletic mastery trajectories.
+  const systemPrompt = `You are the Curriculum Architect for SKILL-TRACK. You design one learner's mastery trajectory as an ordered list of milestone TITLES only.
+CRITICAL MILESTONE COUNT MANDATE:
+For this specific learner and skill ("${skill}" - "${subGenre}"), you MUST generate EXACTLY ${recommendedTarget} progressive milestones (stepIndex 1 through ${recommendedTarget}) in the "steps" array and set "stepCount": ${recommendedTarget}.
+DO NOT default to 4 steps unless ${recommendedTarget} === 4!
+Based on the intrinsic depth of '${skill}' (${subGenre}), the learner's progression from '${currentExperience}' to '${desiredLevel}', and their ${dailyMinutes} min/day schedule, exactly ${recommendedTarget} milestones are required.
 Rules:
-- The count must be between ${LEARNING_CONFIG.STEPS_MIN} and ${LEARNING_CONFIG.STEPS_MAX} (target: ${recommendedTarget}).
+- The count must be EXACTLY ${recommendedTarget} steps.
 - The FIRST milestone starts at the learner's current level (never re-teach what they already know).
 - The LAST reaches the desired mastery level.
 - Each title is specific, 4-80 characters, names a concrete capability or concept (never 'Introduction', 'Overview', 'Basics', 'Advanced Topics', 'Conclusion'), contains no numbering and no 'Step N'.
 - Titles must not overlap each other and must form a clear progression where each builds on the previous.
 - For physical activities (section SPORTS) include safety and conditioning where relevant.
 Return ONLY JSON:
-{ "stepCount": <int>, "stepCountReason": "<=160 chars", "steps": [ { "title": "..." } ] }`;
+{ "stepCount": ${recommendedTarget}, "stepCountReason": "<=160 chars explaining why exactly ${recommendedTarget} milestones are calibrated", "steps": [ { "title": "..." } ] }`;
 
   const userPayload = {
     section,

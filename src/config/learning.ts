@@ -1,8 +1,6 @@
 export const BLOCKED_DOMAINS = [
   'linkedin.com', 'facebook.com', 'instagram.com', 'pinterest.com', 'quora.com',
-  'scribd.com', 'researchgate.net', 'academia.edu', 'udemy.com', 'coursera.org',
-  'skillshare.com', 'masterclass.com', 'medium.com', 'nytimes.com', 'wsj.com',
-  'ft.com', 'bloomberg.com', 'tiktok.com', 'x.com', 'twitter.com', 'reddit.com',
+  'scribd.com', 'tiktok.com', 'x.com', 'twitter.com', 'reddit.com',
 ] as const;
 
 export const LEARNING_CONFIG = {
@@ -21,7 +19,8 @@ export const LEARNING_CONFIG = {
   ENGAGEMENT_SECONDS: 20,              // active reading time that counts as "reading"
   PACK_STALE_AFTER_MS: 300000,
   MAX_EXTRA_TOPIC_SEARCHES: 3,
-  LINK_CHECK_TIMEOUT_MS: 5000,
+  LINK_CHECK_TIMEOUT_MS: 2500,
+  LINK_VERIFY_TIMEOUT_MS: 2500,
   LINK_CHECK_CONCURRENCY: 5,
   SUBGENRE_MIN: 4, SUBGENRE_MAX: 6,
   LANGUAGES: ['en', 'hi', 'gu', 'mr', 'kn', 'ta', 'te', 'fr', 'es', 'de'] as const,
@@ -91,10 +90,19 @@ export function tierForStep(stepIndex: number, totalSteps: number): DifficultyTi
 }
 
 // Advisory range handed to Groq (it still decides within STEPS_MIN..STEPS_MAX).
-export function stepRangeHint(gap: number, dailyMinutes: number): [number, number] {
-  let lo = 3 + Math.floor(gap * 0.6); // gap 0..4 -> 3..5
+export function stepRangeHint(gapOrStart: number, dailyMinutesOrEnd: number, dailyMinsOpt?: number): [number, number] {
+  if (dailyMinsOpt !== undefined) {
+    const { minSteps, maxSteps } = calculatePersonalizedStepBounds({
+      skillName: '',
+      startTierIdx: gapOrStart,
+      endTierIdx: dailyMinutesOrEnd,
+      dailyMinutes: dailyMinsOpt,
+    });
+    return [minSteps, maxSteps];
+  }
+  let lo = 3 + Math.floor(gapOrStart * 0.6); // gap 0..4 -> 3..5
   let hi = lo + 1;
-  if (dailyMinutes < 45) {
+  if (dailyMinutesOrEnd < 45) {
     lo += 1;
     hi += 1;
   }
@@ -107,37 +115,52 @@ export function stepRangeHint(gap: number, dailyMinutes: number): [number, numbe
 // Deterministic multi-factor calculator for personalized step count (3..6 milestones)
 export function calculatePersonalizedStepBounds(params: {
   skillName: string;
-  subGenre: string;
-  domain: string;
-  startTierIdx: number; // 0..3
-  endTierIdx: number;   // 1..4
-  dailyMinutes: number;
+  subGenre?: string;
+  domain?: string;
+  startTierIdx?: number; // 0..3
+  endTierIdx?: number;   // 1..4
+  currentExperience?: string;
+  desiredLevel?: string;
+  dailyMinutes?: number;
 }): { minSteps: number; maxSteps: number; recommendedTarget: number } {
-  const { skillName, subGenre, domain, startTierIdx, endTierIdx, dailyMinutes } = params;
-  const gap = Math.max(1, endTierIdx - startTierIdx); // 1 to 4
+  const skillText = `${params.skillName || ''} ${params.subGenre || ''} ${params.domain || ''}`.toLowerCase();
+  const dailyMinutes = Number(params.dailyMinutes) || 60;
 
-  // Base steps from mastery gap (scaled cleanly within 3..6):
-  // gap 1 -> 3.5 | gap 2 -> 4.2 | gap 3 -> 4.9 | gap 4 -> 5.6
-  let base = 2.8 + gap * 0.7;
+  // Map experience & desired level strings if numeric indices aren't passed
+  const expMap: Record<string, number> = {
+    'no prior knowledge': 0, 'absolute beginner': 0, 'beginner': 0, 'novice': 0,
+    'some foundational knowledge': 1, 'basic familiarity': 1, 'elementary': 1,
+    'intermediate practitioner': 2, 'intermediate': 2, 'working proficiency': 2,
+    'experienced / advanced': 3, 'advanced practitioner': 3, 'advanced': 3,
+  };
+  const targetMap: Record<string, number> = {
+    'beginner': 1, 'foundational': 1, 'basic': 1,
+    'intermediate': 2, 'working proficiency': 2,
+    'advanced': 3, 'competitive': 3,
+    'professional mastery': 4, 'elite': 4, 'mastery': 4,
+  };
 
-  // Adjust for daily learning time (shorter daily sessions = more granular milestones)
-  if (dailyMinutes <= 30) base += 0.6;
-  else if (dailyMinutes >= 120) base -= 0.5;
+  const startIdx = params.startTierIdx ?? (expMap[(params.currentExperience || '').toLowerCase()] ?? 0);
+  const endIdx = params.endTierIdx ?? (targetMap[(params.desiredLevel || '').toLowerCase()] ?? 3);
+  const gap = Math.max(1, endIdx - startIdx); // 1 to 4
 
-  // Adjust for intrinsic skill & sub-genre complexity
-  const combinedText = `${skillName} ${subGenre} ${domain}`.toLowerCase();
-  const highComplexityKeywords = /full[- ]?stack|architecture|machine learning|deep learning|ai|quantum|compiler|distributed|organic chemistry|calculus|physics|biomechanics|competitive|tournament|orchestration|security|cryptography|3d|game dev|system/i;
-  const focusedSkillKeywords = /basics|intro|etiquette|laundry|cleaning|folding|hydration|stretching|typing|note[- ]?taking/i;
+  // Base step calculation across 3..6
+  let score = 2.6 + gap * 0.75;
 
-  if (highComplexityKeywords.test(combinedText)) {
-    base += 0.8;
-  } else if (focusedSkillKeywords.test(combinedText)) {
-    base -= 0.7;
-  }
+  // Time adjustment
+  if (dailyMinutes <= 30) score += 0.6;
+  else if (dailyMinutes >= 120) score -= 0.5;
+
+  // Intrinsic skill complexity adjustment
+  const deepSkills = /full[- ]?stack|system|architecture|machine learning|deep learning|ai|quantum|compiler|organic chemistry|calculus|physics|biomechanics|algorithm|cryptography|3d|blender|unreal|distributed|competitive|tournament|gymnastics|swimming|boxing|martial/i;
+  const quickSkills = /laundry|folding|cleaning|hydration|basic|etiquette|typing|stretching|breathing|organization|note[- ]?taking/i;
+
+  if (deepSkills.test(skillText)) score += 0.85;
+  else if (quickSkills.test(skillText)) score -= 0.85;
 
   const recommendedTarget = Math.max(
     LEARNING_CONFIG.STEPS_MIN,
-    Math.min(LEARNING_CONFIG.STEPS_MAX, Math.round(base))
+    Math.min(LEARNING_CONFIG.STEPS_MAX, Math.round(score))
   );
   const minSteps = Math.max(LEARNING_CONFIG.STEPS_MIN, recommendedTarget - 1);
   const maxSteps = Math.min(LEARNING_CONFIG.STEPS_MAX, recommendedTarget + 1);
