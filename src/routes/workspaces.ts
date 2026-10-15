@@ -236,6 +236,21 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       dailyMinutes = Math.max(15, Math.min(960, dailyMinutes)); // between 15 mins and 16 hours
 
       const profileId = body.profileId || body.userProfileId || "default-profile";
+      const healthConditions = body.healthConditions || body.medicalConditions;
+      const dietaryPreference = body.dietaryPreference;
+
+      if (healthConditions || dietaryPreference) {
+        try {
+          await prisma.userProfile.updateMany({
+            where: { id: profileId },
+            data: {
+              ...(healthConditions ? { healthConditions } : {}),
+              ...(dietaryPreference ? { dietaryPreference } : {}),
+            },
+          });
+        } catch (_) {}
+      }
+
       const section = cleanDomain.toLowerCase().includes("athletic") || cleanDomain.toLowerCase().includes("sport") || body.section === "SPORTS"
         ? "SPORTS"
         : "SKILL";

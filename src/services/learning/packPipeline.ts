@@ -23,6 +23,7 @@ import {
   TavilySearchResult,
   findUniqueYouTubeVideo,
 } from './foundation';
+import { generateStepConditioningPack } from './sportsPackService';
 
 // Global execution queue ensuring concurrency 1 for rate limits
 let tail: Promise<void> = Promise.resolve();
@@ -126,12 +127,28 @@ export async function runPackBuild(stepId: string): Promise<void> {
   }
 
   const ws = step.workspace;
-  const isSports = (ws.domainCategory || ws.domain || '').toLowerCase().includes('athletic') ||
-                   (ws.domainCategory || ws.domain || '').toLowerCase().includes('sport');
+  const domainStr = (ws.domainCategory || ws.domain || '').toLowerCase();
+  const skillStr = (ws.skillName || ws.title || '').toLowerCase();
+  const isSports = domainStr.includes('athletic') || domainStr.includes('sport') ||
+    ['football', 'soccer', 'cricket', 'badminton', 'tennis', 'basketball', 'swimming', 'boxing', 'archery', 'skateboarding', 'gymnastics', 'calisthenics', 'running', 'sprint', 'athletics', 'yoga', 'table tennis'].some(k => skillStr.includes(k));
   const section = isSports ? 'SPORTS' : 'SKILLS';
   const tier = (step.difficultyTier as DifficultyTier) || 'FOUNDATIONS';
   const skill = ws.skillName || ws.title;
   const subGenre = ws.subGenre || 'Core';
+  const profileId = ws.userProfileId || ws.profileId || 'default-profile';
+
+  let healthConditions = 'None';
+  let dietaryPreference = 'Balanced';
+  try {
+    const userProf = await prisma.userProfile.findFirst({
+      where: { OR: [{ id: profileId }, { workspaces: { some: { id: ws.id } } }] },
+      select: { healthConditions: true, dietaryPreference: true },
+    });
+    if (userProf) {
+      if (userProf.healthConditions) healthConditions = userProf.healthConditions;
+      if (userProf.dietaryPreference) dietaryPreference = userProf.dietaryPreference;
+    }
+  } catch (_) {}
 
   try {
     // P1: Load workspace ResourceHistory, existing workspace resources, and prior steps' topics
@@ -720,17 +737,62 @@ Return ONLY JSON:
       topicGuideMap.set(gt.key, sanitizeNoUrls(gt.guide));
     }
 
+    // P8.5: If Sports workspace, run the Groq Per-Step Conditioning & Nutrition Generator
+    let sportsConditioningResult: { conditioningItems: any[]; stepNutrition: any } | null = null;
+    if (isSports) {
+      try {
+        const priorSteps = await prisma.skillStep.findMany({
+          where: { workspaceId: ws.id, stepIndex: { lt: step.stepIndex } },
+          select: { intro: true },
+        });
+        const previouslyUsedNames: string[] = [];
+        for (const ps of priorSteps) {
+          const pIntro = ps.intro as any;
+          if (Array.isArray(pIntro?.conditioningItems)) {
+            for (const item of pIntro.conditioningItems) {
+              if (item?.name) previouslyUsedNames.push(item.name);
+            }
+          }
+        }
+
+        sportsConditioningResult = await generateStepConditioningPack({
+          skillName: skill,
+          subGenre,
+          stepIndex: step.stepIndex,
+          totalSteps: ws.totalPlannedSteps || ws.steps?.length || 5,
+          stepTitle: step.title,
+          difficultyTier: tier,
+          healthConditions,
+          dietaryPreference,
+          previouslyUsedNames,
+          usedVideoIds,
+          profileId,
+          workspaceId: ws.id,
+        });
+      } catch (condErr) {
+        console.warn('[runPackBuild] Step conditioning generator notice:', condErr);
+      }
+    }
+
     // P9: PERSIST in one atomic database transaction
     await prisma.$transaction(async (tx) => {
       // Clear previous chapters, topics and resources for this step
       await tx.stepChapter.deleteMany({ where: { stepId } });
       await tx.resource.deleteMany({ where: { stepId } });
 
+      const finalIntro: any = {
+        ...guidesResult.intro,
+        ...(sportsConditioningResult ? {
+          conditioningItems: sportsConditioningResult.conditioningItems,
+          stepNutrition: sportsConditioningResult.stepNutrition,
+        } : {}),
+      };
+
       // Save intro
       await tx.skillStep.update({
         where: { id: stepId },
         data: {
-          intro: guidesResult.intro as any,
+          intro: finalIntro,
           packStage: 'READY',
           packStatus: 'READY',
           packError: null,
