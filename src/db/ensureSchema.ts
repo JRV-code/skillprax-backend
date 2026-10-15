@@ -140,6 +140,26 @@ export async function runSchemaMigration() {
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS total_questions_attempted INT DEFAULT 0`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS total_questions_correct INT DEFAULT 0`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS avg_quiz_accuracy DOUBLE PRECISION DEFAULT 0`,
+
+    // AI Guide & Mentor Chat History Tables
+    `CREATE TABLE IF NOT EXISTS ai_chat_sessions (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      user_id TEXT NOT NULL,
+      title VARCHAR(255) DEFAULT 'New Conversation',
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_ai_chat_sessions_user_id ON ai_chat_sessions(user_id)`,
+    `CREATE TABLE IF NOT EXISTS ai_chat_messages (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      session_id TEXT NOT NULL REFERENCES ai_chat_sessions(id) ON DELETE CASCADE,
+      role VARCHAR(50) NOT NULL,
+      content TEXT NOT NULL,
+      used_tavily_search BOOLEAN DEFAULT FALSE,
+      sources JSONB DEFAULT NULL,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_session_id ON ai_chat_messages(session_id)`,
   ];
 
   for (const stmt of statements) {

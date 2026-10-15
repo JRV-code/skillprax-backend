@@ -16,6 +16,7 @@ import sportsRoutes from './routes/sports';
 import recommendationRoutes from './routes/recommendations';
 import skillsRoutes from './routes/skills';
 import { sportsWorkspaceRoutes } from './routes/sports/sportsWorkspace';
+import assistantRoutes from './routes/assistant';
 import { ensureDatabaseSchema } from './lib/ensureSchema';
 import { initializeReminderCron } from './jobs/reminderCron';
 import { sendDailyPracticeReminderEmail } from './services/emailService';
@@ -86,6 +87,7 @@ const start = async () => {
     await server.register(recommendationRoutes);
     await server.register(skillsRoutes);
     await server.register(sportsWorkspaceRoutes);
+    await server.register(assistantRoutes);
 
     // Test reminder email endpoint (Module 3)
     server.post('/api/reminders/send-test/:profileId', async (req, reply) => {

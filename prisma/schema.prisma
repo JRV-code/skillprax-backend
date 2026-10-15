@@ -763,6 +763,28 @@ model SportsEscrowTransaction {
   @@map("sports_escrow_transactions")
 }
 
+model AiChatSession {
+  id        String          @id @default(cuid())
+  userId    String          @map("user_id")
+  title     String          @default("New Conversation")
+  createdAt DateTime        @default(now()) @map("created_at")
+  updatedAt DateTime        @updatedAt @map("updated_at")
+  messages  AiChatMessage[]
 
+  @@index([userId])
+  @@map("ai_chat_sessions")
+}
 
+model AiChatMessage {
+  id               String        @id @default(cuid())
+  sessionId        String        @map("session_id")
+  role             String
+  content          String
+  usedTavilySearch Boolean       @default(false) @map("used_tavily_search")
+  sources          Json?
+  createdAt        DateTime      @default(now()) @map("created_at")
+  session          AiChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
+  @@index([sessionId])
+  @@map("ai_chat_messages")
+}
