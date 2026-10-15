@@ -4,6 +4,7 @@ import {
   enqueueSportsJob,
   runSportsPackBuild,
   getSportsStepPack,
+  sportsBuildProgress,
 } from '../../services/sports/sportsPackBuilder';
 import {
   generateLevelUpQuiz,
@@ -158,6 +159,7 @@ export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: Fastify
         packStatus: step.packStatus || 'NOT_BUILT',
         packStage: step.packStage || null,
         packError: step.packError || null,
+        buildProgress: sportsBuildProgress.get(step.id) || null,
       });
     } catch (err: any) {
       fastify.log.error(err, '[GetSportsPackStatus] Failed');

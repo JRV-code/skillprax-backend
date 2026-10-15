@@ -7,6 +7,7 @@ import {
   runPackBuild,
 } from '../../services/learning/packPipeline';
 import { runQuizBuild } from '../../services/learning/quiz';
+import { activeBuildProgress } from '../../services/learning/packBuilder';
 import {
   searchTavily,
   extractYouTubeId,
@@ -179,6 +180,7 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
       }
 
       if (!step) return reply.status(404).send({ error: 'Step not found' });
+      const currentProgress = activeBuildProgress.get(step.id) || null;
       return reply.send({
         locked: step.status === 'LOCKED',
         packStatus: step.packStatus,
@@ -186,6 +188,7 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         packError: step.packError,
         quizStatus: step.quizStatus,
         quizError: step.quizError,
+        buildProgress: currentProgress,
       });
     } catch (err: any) {
       fastify.log.error(err, '[GetStepStatus] Failed');
@@ -357,6 +360,7 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         };
       });
 
+      const currentProgress = activeBuildProgress.get(step.id) || null;
       return reply.send({
         id: step.id,
         stepIndex: step.stepIndex,
@@ -364,6 +368,7 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         difficultyTier: step.difficultyTier,
         packStatus: step.packStatus,
         packStage: step.packStage,
+        buildProgress: currentProgress,
         intro,
         chapters,
         videos: allVideos,

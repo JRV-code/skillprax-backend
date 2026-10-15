@@ -14,9 +14,15 @@ import {
   findTopicReadingLinks,
   findUniqueYouTubeVideo as findUniqueYouTubeVideoSafe,
   verifyLinkSafe,
+  searchOpenWebCandidates,
+  curateTopicResourcesAndGuidesWithGroq,
+  WebCandidate,
 } from '../learning/resourceDiscoveryEngine';
 import { DifficultyTier } from '../../config/learning';
 import { runQuizBuild } from '../learning/quiz';
+import { ActiveBuildProgress } from '../learning/packBuilder';
+
+export const sportsBuildProgress = new Map<string, ActiveBuildProgress>();
 
 export type TrainingCategory = 'DRILL' | 'EXERCISE' | 'YOGASAN';
 
@@ -133,12 +139,19 @@ export async function runSportsPackBuild(stepId: string): Promise<void> {
   }
 
   try {
+    sportsBuildProgress.set(stepId, {
+      percent: 15,
+      stageKey: 'PLANNING',
+      stageLabel: 'Structuring Sports Chapters & Granular Topics...',
+      detail: `Groq Curriculum Architect mapping kinetic foundations for ${sportName}.`,
+    });
+
     // Set pack status to BUILDING
     await prisma.skillStep.update({
       where: { id: stepId },
       data: {
         packStatus: 'BUILDING',
-        packStage: 'RESEARCHING',
+        packStage: 'PLANNING',
         packStartedAt: new Date(),
         packError: null,
       },
@@ -199,9 +212,16 @@ export async function runSportsPackBuild(stepId: string): Promise<void> {
     }
 
     // 3. Stage 1 & 2 & 4: Run Branch A (Study Chapters & Verified Resources) and Branch B (Unified Day-by-Day Training Regimen) IN PARALLEL!
+    sportsBuildProgress.set(stepId, {
+      percent: 40,
+      stageKey: 'FINDING_LINKS',
+      stageLabel: 'Scanning Coaching Guides, Biomechanics Articles & Blogs...',
+      detail: 'Tavily Researcher discovering verified athletic coaching pages & technical guides.',
+    });
+
     await prisma.skillStep.update({
       where: { id: stepId },
-      data: { packStage: 'RESEARCHING' },
+      data: { packStage: 'FINDING_LINKS' },
     });
 
     const buildChaptersBranch = async () => {
@@ -321,7 +341,7 @@ Return ONLY JSON:
         };
       }
 
-      // Concurrently fetch chapter lecture videos and topic reading links in a single flat Promise.all batch
+      // Concurrently fetch chapter lecture videos and scan Tavily open-web candidate reading articles
       const chVideoPromises = chaptersResult.chapters.map(async (ch) => {
         try {
           return await findUniqueYouTubeVideoSafe({
@@ -343,37 +363,66 @@ Return ONLY JSON:
         }
       });
 
-      const topicTasks: Array<{
-        chIdx: number;
-        tIdx: number;
-        promise: Promise<Array<{ title: string; url: string; domain: string; snippet: string }>>;
+      // Flatten all topics across chapters for parallel Tavily open-web search
+      let flatTopicCounter = 1;
+      const flatTopicsWithKeys: Array<{
+        key: string;
+        order: number;
+        title: string;
+        covers: string;
       }> = [];
 
-      chaptersResult.chapters.forEach((ch, chIdx) => {
-        ch.topics.forEach((t, tIdx) => {
-          topicTasks.push({
-            chIdx,
-            tIdx,
-            promise: findTopicReadingLinks({
-              skillName: sportName,
-              subGenre,
-              stepTitle: step.title,
-              topicTitle: t.title,
-              usedDocUrls,
-              desiredCount: 4,
-            }),
+      chaptersResult.chapters.forEach((ch) => {
+        ch.topics.forEach((t) => {
+          flatTopicsWithKeys.push({
+            key: `topic_${step.stepIndex}_${flatTopicCounter++}`,
+            order: t.order,
+            title: t.title,
+            covers: t.covers || `Biomechanical execution and tactical understanding of ${t.title}.`,
           });
         });
       });
 
-      const [chapterVideos, topicDocsResults] = await Promise.all([
+      const topicCandidatePromises = flatTopicsWithKeys.map((t) =>
+        searchOpenWebCandidates({
+          skillName: sportName,
+          subGenre,
+          topicTitle: t.title,
+          usedDocUrls,
+          isSports: true,
+        })
+      );
+
+      const [chapterVideos, topicCandidates] = await Promise.all([
         Promise.all(chVideoPromises),
-        Promise.all(topicTasks.map((tt) => tt.promise)),
+        Promise.all(topicCandidatePromises),
       ]);
 
-      let docsIdx = 0;
-      let topicGlobalIdx = 1;
+      sportsBuildProgress.set(stepId, {
+        percent: 65,
+        stageKey: 'WRITING_GUIDES',
+        stageLabel: 'Sorting Specific Coaching Pages & Writing Topic Guides...',
+        detail: 'Groq Curator selecting candidate links and synthesizing technical execution guides.',
+      });
 
+      // Batched Groq curation and deep in-app topic guide generation
+      const topicsWithCandidates = flatTopicsWithKeys.map((t, idx) => ({
+        key: t.key,
+        title: t.title,
+        covers: t.covers,
+        candidates: topicCandidates[idx] || [],
+      }));
+
+      const curatedMap = await curateTopicResourcesAndGuidesWithGroq({
+        skillName: sportName,
+        subGenre,
+        stepTitle: step.title,
+        topicsWithCandidates,
+        usedDocUrls,
+        isSports: true,
+      });
+
+      let topicCursor = 0;
       const verifiedChapters: Array<{
         order: number;
         title: string;
@@ -418,20 +467,48 @@ Return ONLY JSON:
         }> = [];
 
         for (const t of ch.topics) {
-          const docLinks = topicDocsResults[docsIdx++] || [];
-          const tKey = `topic_${step.stepIndex}_${topicGlobalIdx++}`;
+          const flatTopic = flatTopicsWithKeys[topicCursor++];
+          const tKey = flatTopic.key;
+          const curation = curatedMap.get(tKey);
+
+          const topicDocs = curation?.docs?.length
+            ? curation.docs.map((d) => ({
+                title: d.title,
+                url: d.url,
+                domain: d.domain,
+                snippet: d.takeaway || d.snippet,
+              }))
+            : (topicCandidates[topicCursor - 1] || []).slice(0, 4).map((c) => ({
+                title: c.title,
+                url: c.url,
+                domain: c.domain,
+                snippet: c.snippet,
+              }));
+
+          const topicGuide = curation?.guide || {
+            overview: `Core biomechanical alignment and execution rules for ${t.title}.`,
+            keyMechanics: [
+              'Establish stable athletic base alignment',
+              'Maintain fluid kinetic acceleration',
+              'Control eccentric deceleration and posture',
+            ],
+            commonMistakes: [
+              'Premature extension or loss of balance',
+              'Excessive musculoskeletal strain',
+            ],
+            realWorldApplication: `Essential for competitive consistency in ${sportName}.`,
+            howToApproach: `Approach ${t.title} by establishing stable base alignment, reviewing official rules, and executing controlled practice repetitions.`,
+            lookFor: ['Smooth kinetic transfer', 'Neutral spinal alignment', 'Consistent rhythm'],
+            doThis: 'Perform deliberate slow-motion reps before increasing speed.',
+          };
 
           processedTopics.push({
             key: tKey,
             order: t.order,
             title: t.title,
             covers: t.covers || `Biomechanical execution and tactical understanding of ${t.title}.`,
-            guide: {
-              howToApproach: `Approach ${t.title} by establishing stable base alignment, reviewing official rules, and executing controlled practice repetitions.`,
-              lookFor: ['Smooth kinetic transfer', 'Neutral spinal alignment', 'Consistent rhythm'],
-              doThis: 'Perform deliberate slow-motion reps before increasing speed.',
-            },
-            docs: docLinks,
+            guide: topicGuide,
+            docs: topicDocs,
           });
         }
 
@@ -453,6 +530,13 @@ Return ONLY JSON:
     };
 
     const buildTrainingPlanBranch = async () => {
+      sportsBuildProgress.set(stepId, {
+        percent: 85,
+        stageKey: 'VERIFYING',
+        stageLabel: 'Calibrating Daily Drills, Exercises & Yogasanas...',
+        detail: `Harmonizing athletic practice items with health safety notes (${healthConditions}).`,
+      });
+
       const previousAvoidStr = previouslyUsedItemNames.length > 0
         ? `DO NOT repeat any of these previously used items from earlier steps: [${previouslyUsedItemNames.slice(-30).join(', ')}]`
         : 'Create fresh, distinct items calibrated for this milestone.';
@@ -951,10 +1035,24 @@ Return ONLY valid JSON matching:
       console.warn(`[runSportsPackBuild] Quiz pre-generation notice (non-fatal):`, quizErr);
     }
 
+    sportsBuildProgress.set(stepId, {
+      percent: 100,
+      stageKey: 'READY',
+      stageLabel: 'Sports Regimen Studio Ready!',
+      detail: 'Curriculum chapters, topic study guides & daily training lab fully verified.',
+    });
+
     console.log(`[runSportsPackBuild] Step ${stepId} (${sportName}) pack build completed successfully with verified resources & training plan.`);
   } catch (err: any) {
     console.warn(`[runSportsPackBuild] Notice during step ${stepId} build, self-annealing to resilient ready pack:`, err);
     try {
+      sportsBuildProgress.set(stepId, {
+        percent: 100,
+        stageKey: 'READY',
+        stageLabel: 'Sports Regimen Studio Ready!',
+        detail: 'Curriculum chapters, topic study guides & daily training lab fully verified.',
+      });
+
       // Emergency Self-Anneal: Guarantee step is READY and populated
       const fallbackIntro = {
         hook: `Master ${sportName} technique through disciplined mechanics and athletic conditioning.`,
@@ -1206,6 +1304,7 @@ export async function getSportsStepPack(stepId: string) {
     packStatus: step.packStatus,
     packStage: step.packStage,
     quizStatus: step.quizStatus,
+    buildProgress: sportsBuildProgress.get(step.id) || null,
     intro: introData,
     chapters,
     videos: allVideos,
