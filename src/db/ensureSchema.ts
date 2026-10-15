@@ -95,6 +95,39 @@ export async function runSchemaMigration() {
     `ALTER TABLE IF EXISTS translation_caches ALTER COLUMN scope_id TYPE TEXT USING scope_id::text`,
 
     `ALTER TABLE IF EXISTS subgenre_caches ALTER COLUMN id TYPE TEXT USING id::text`,
+    
+    // UserProfile and users additive fields for onboarding, calibration & live quiz telemetry
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT 'Ahmedabad'`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat'`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS age_category VARCHAR(50) DEFAULT 'Open'`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(50) DEFAULT 'en'`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS dietary_preference VARCHAR(50) DEFAULT 'Vegetarian'`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS health_conditions TEXT DEFAULT 'None'`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS total_xp INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS level INT DEFAULT 1`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS current_streak INT DEFAULT 1`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS longest_streak INT DEFAULT 1`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS total_quizzes_taken INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS total_questions_attempted INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS total_questions_correct INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS avg_quiz_accuracy DOUBLE PRECISION DEFAULT 0`,
+
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT 'Ahmedabad'`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat'`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS age_category VARCHAR(50) DEFAULT 'Open'`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(50) DEFAULT 'en'`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS dietary_preference VARCHAR(50) DEFAULT 'Vegetarian'`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS health_conditions TEXT DEFAULT 'None'`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS xp INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS level INT DEFAULT 1`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS current_streak INT DEFAULT 1`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS longest_streak INT DEFAULT 1`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS total_quizzes_taken INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS total_questions_attempted INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS total_questions_correct INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS avg_quiz_accuracy DOUBLE PRECISION DEFAULT 0`,
   ];
 
   for (const stmt of statements) {

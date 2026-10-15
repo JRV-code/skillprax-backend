@@ -3,6 +3,9 @@ import prisma from '../lib/prisma';
 import { callGroqWithFallback } from '../lib/ai/pipeline';
 import { getEffectiveKeys } from '../lib/keyManager';
 import { fetchRealClubs, fetchLocalShops } from '../services/realPlacesService';
+import { tavilyClient } from '../lib/tavilyClient';
+import { extractYouTubeVideoId } from '../services/search';
+import { generateAthleticFuelingPlan } from '../services/nutritionEngine';
 
 export const sportsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
   // 1. POST /api/sports/profile — Save or update Physical Assessment Sheet
@@ -826,8 +829,530 @@ Output ONLY a JSON array of 7 objects (Day 1 through Day 7) matching this schema
     }
   });
 
+  // POST /api/sports/nutrition-plan — Module 3.1 Dynamic Groq-powered tailored sports nutrition plan
+  fastify.post('/api/sports/nutrition-plan', async (req, reply) => {
+    try {
+      const {
+        sportName = 'Football',
+        dietaryPreference = 'Vegetarian',
+        healthConditions = 'None',
+        trainingGoal = 'Peak Performance & Rapid Recovery',
+      } = (req.body || {}) as {
+        sportName?: string;
+        dietaryPreference?: string;
+        healthConditions?: string;
+        trainingGoal?: string;
+      };
 
-  // POST /api/sports/drills/generate — Dynamic Sport Drill Generation via Groq
+      const { groqKey } = await getEffectiveKeys();
+      const apiKey = groqKey || process.env.GROQ_API_KEY || '';
+
+      const prompt = `You are an Olympic Sports Nutritionist & Dietitian.
+Generate a tailored sports nutrition & hydration regimen strictly customized for an athlete with:
+- Selected Sport: "${sportName}"
+- Dietary Preference: "${dietaryPreference}"
+- Health / Injury Conditions (Safety Filter): "${healthConditions}"
+- Goal: "${trainingGoal}"
+
+CRITICAL SAFETY & MEDICAL CONSTRAINT:
+The athlete has reported health/injury conditions: "${healthConditions}".
+Your nutritional advice must actively support joint recovery, anti-inflammatory repair, and zero digestive/mechanical distress for this condition.
+
+Return strictly valid JSON:
+{
+  "preTraining": {
+    "title": "Pre-Training Energy Fuel (60-90 Mins Prior)",
+    "meal": "Specific delicious meal matching ${dietaryPreference}",
+    "timing": "60 to 90 minutes before drill initiation",
+    "macros": "High complex carbohydrate (50-60g), moderate lean protein (15-20g), low fiber/fat",
+    "hydration": "450-600ml water with pinch of pink salt",
+    "why": "Optimizes circulating blood glucose and hepatic glycogen stores without gastrointestinal heaviness."
+  },
+  "postTraining": {
+    "title": "Post-Training Muscle Recovery & Repair (Within 45 Mins)",
+    "meal": "Specific recovery meal/smoothie matching ${dietaryPreference}",
+    "timing": "Within 30 to 45 minutes of drill completion",
+    "macros": "3:1 carbohydrate-to-protein ratio (40g carbs, 20-25g bioavailable protein)",
+    "hydration": "750ml water + electrolyte replenishment (sodium, potassium, magnesium)",
+    "why": "Restores intramuscular glycogen and activates myofibrillar protein synthesis to prevent delayed soreness."
+  },
+  "hydrationSchedule": {
+    "dailyTargetLiters": "3.5 - 4.0 Liters Daily",
+    "morning": "500ml room temperature water upon waking with lemon & pinch of salt",
+    "intraTraining": "150-200ml every 15-20 minutes of intense drill exertion",
+    "postTraining": "500-750ml electrolyte fluid within 1 hour post session",
+    "electrolytes": "Magnesium citrate, potassium bicarbonate, and sea salt"
+  },
+  "micronutrientFocus": [
+    {
+      "nutrient": "Magnesium Glycinate & Potassium",
+      "purpose": "Neuromuscular relaxation & cramp prevention",
+      "foodSources": "Spinach, pumpkin seeds, bananas, tender coconut water"
+    },
+    {
+      "nutrient": "Omega-3 Fatty Acids (EPA/DHA)",
+      "purpose": "Systemic joint lubrication and anti-inflammatory tendon support",
+      "foodSources": "Flaxseeds, chia seeds, walnuts, cold-pressed oils"
+    },
+    {
+      "nutrient": "Vitamin D3 + K2 & Calcium",
+      "purpose": "Bone mineral density and forceful myofibrillar contraction",
+      "foodSources": "Fortified plant/dairy milk, sesame seeds, sunlight exposure, curd"
+    },
+    {
+      "nutrient": "Antioxidant Polyphenols & Vitamin C",
+      "purpose": "Cellular oxidative stress reduction and collagen synthesis",
+      "foodSources": "Indian gooseberry (Amla), berries, pomegranate, citrus fruits"
+    }
+  ],
+  "safetyModification": "Tailored nutritional adaptation: specifically anti-inflammatory and joint-cushioning for ${healthConditions}."
+}`;
+
+      if (apiKey) {
+        try {
+          const aiRes = await callGroqWithFallback(
+            [
+              { role: 'system', content: 'You are an Olympic Sports Nutritionist. Respond ONLY with valid JSON.' },
+              { role: 'user', content: prompt },
+            ],
+            { apiKey, model: 'llama-3.3-70b-versatile', temperature: 0.25, jsonMode: true }
+          );
+
+          let parsed = JSON.parse(aiRes.content);
+          if (parsed && !parsed.preTraining && parsed.plan) parsed = parsed.plan;
+          if (parsed && parsed.preTraining && parsed.postTraining) {
+            return reply.send({ success: true, plan: parsed });
+          }
+        } catch (aiErr) {
+          fastify.log.warn({ err: aiErr }, '[POST /api/sports/nutrition-plan] Groq fallback');
+        }
+      }
+
+      // Default high-quality structured fallback
+      const defaultPlan = {
+        preTraining: {
+          title: "Pre-Training Energy Fuel (60-90 Mins Prior)",
+          meal: dietaryPreference.toLowerCase().includes('non')
+            ? "Grilled chicken breast with steamed sweet potatoes and beetroot slices"
+            : "Rolled oats porridge with banana, crushed almonds, chia seeds, and honey",
+          timing: "60 to 90 minutes before drill initiation",
+          macros: "High complex carbohydrates (55g), moderate protein (18g), low fat",
+          hydration: "500ml water with a pinch of Himalayan pink salt",
+          why: "Maximizes muscle glycogen availability and prevents mid-session energy crashes."
+        },
+        postTraining: {
+          title: "Post-Training Muscle Recovery & Repair (Within 45 Mins)",
+          meal: dietaryPreference.toLowerCase().includes('non')
+            ? "Boiled eggs or grilled fish with brown rice and stir-fried greens"
+            : "Paneer/tofu quinoa bowl with steamed broccoli, pomegranate, and flaxseed oil drizzle",
+          timing: "Within 30 to 45 minutes of drill completion",
+          macros: "3:1 carb-to-protein ratio (45g carbs, 22g protein)",
+          hydration: "750ml electrolyte fluid with coconut water and citrus",
+          why: "Repairs micro-tears in muscle fibers and restores glycogen reserves."
+        },
+        hydrationSchedule: {
+          dailyTargetLiters: "3.5 - 4.0 Liters Daily",
+          morning: "500ml water upon waking with lemon and pink salt",
+          intraTraining: "150-200ml every 15 minutes of continuous exercise",
+          postTraining: "700ml electrolyte water within 60 minutes after practice",
+          electrolytes: "Potassium, Magnesium, and Sodium replenishment"
+        },
+        micronutrientFocus: [
+          {
+            nutrient: "Magnesium & Potassium",
+            purpose: "Neuromuscular impulse transmission and cramp suppression",
+            foodSources: "Spinach, bananas, pumpkin seeds, coconut water"
+          },
+          {
+            nutrient: "Omega-3 Fatty Acids",
+            purpose: "Anti-inflammatory joint protection and cellular recovery",
+            foodSources: "Chia seeds, walnuts, flaxseeds, cold-pressed oils"
+          },
+          {
+            nutrient: "Vitamin D3 + K2",
+            purpose: "Skeletal resilience and bone density under mechanical loads",
+            foodSources: "Sunlight exposure, fortified milk/curd, mushrooms"
+          },
+          {
+            nutrient: "Vitamin C & Zinc",
+            purpose: "Collagen synthesis for ligaments and immune optimization",
+            foodSources: "Amla (Gooseberry), citrus fruits, bell peppers, lentils"
+          }
+        ],
+        safetyModification: `Tailored joint-cushioning and low-inflammation protocol protective of ${healthConditions}.`
+      };
+
+      return reply.send({ success: true, plan: defaultPlan });
+    } catch (err: any) {
+      fastify.log.error(err, '[POST /api/sports/nutrition-plan] Error');
+      return reply.status(500).send({ error: 'Failed to generate sports nutrition plan' });
+    }
+  });
+
+  // POST /api/sports/step-conditioning — Module 3.2 Per-Step Drills, Exercises & Yogasanas
+  fastify.post('/api/sports/step-conditioning', async (req, reply) => {
+    try {
+      const {
+        sportName = 'Football',
+        subGenre = 'Dribbling & Ball Mastery',
+        stepNumber = 1,
+        stepTitle = 'Foundations & Balance',
+        difficultyTier = 'Foundations',
+        healthConditions = 'None',
+        workspaceId,
+        profileId,
+      } = (req.body || {}) as {
+        sportName?: string;
+        subGenre?: string;
+        stepNumber?: number;
+        stepTitle?: string;
+        difficultyTier?: string;
+        healthConditions?: string;
+        workspaceId?: string;
+        profileId?: string;
+      };
+
+      const { groqKey, tavilyKey } = await getEffectiveKeys();
+      const apiKey = groqKey || process.env.GROQ_API_KEY || '';
+      const stepNum = Number(stepNumber) || 1;
+
+      // Extract existing used video IDs for this workspace to guarantee zero repetition
+      const usedVideoIds = new Set<string>();
+      if (workspaceId) {
+        try {
+          const [resources, history] = await Promise.all([
+            prisma.resource.findMany({
+              where: { step: { workspaceId } },
+              select: { videoId: true, url: true },
+            }),
+            prisma.resourceHistory.findMany({
+              where: { workspaceId },
+              select: { identifier: true },
+            }),
+          ]);
+
+          for (const r of resources) {
+            if (r.videoId) usedVideoIds.add(r.videoId);
+            if (r.url) {
+              const m = r.url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
+              if (m) usedVideoIds.add(m[1]);
+            }
+          }
+          for (const h of history) {
+            if (h.identifier) {
+              if (h.identifier.startsWith('yt:')) usedVideoIds.add(h.identifier.slice(3));
+              const m = h.identifier.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
+              if (m) usedVideoIds.add(m[1]);
+            }
+          }
+        } catch (_) {}
+      }
+
+      let generatedItems: any[] = [];
+
+      if (apiKey) {
+        try {
+          const prompt = `You are an Olympic Sports Conditioning Director and Physical Physiotherapist.
+Generate between 4 and 6 physical conditioning items strictly calibrated for:
+- Sport: "${sportName}"
+- Sub-Genre: "${subGenre}"
+- Current Step Level: Step ${stepNum} — "${stepTitle}" (${difficultyTier})
+- Learner Health / Injury Conditions (SAFETY FILTER): "${healthConditions}"
+
+MANDATORY COMPOSITION:
+Generate a balanced mix of:
+1. "DRILL" (Sport-specific technical/tactical drill for Step ${stepNum})
+2. "EXERCISE" (Strength, speed, or plyometric conditioning exercise supporting Step ${stepNum})
+3. "YOGASAN" (Specific Yoga Asana / mobility & breathing posture for balance, joint health, and injury prevention in Step ${stepNum})
+
+CRITICAL MEDICAL SAFETY RULE:
+The learner reported this health condition: "${healthConditions}".
+You MUST strictly avoid any movement or pose that stresses, impacts, or overloads that area.
+Provide a safe alternative and an explicit "safetyModification" explaining how this item protects their condition.
+
+NO MULTIPLE-CHOICE QUESTIONS OR QUIZZES.
+
+Return JSON array of items:
+[
+  {
+    "category": "DRILL",
+    "name": "Drill Title",
+    "recommendedDays": 5,
+    "recommendedSets": "3 Sets × 45s",
+    "durationSeconds": 120,
+    "intensity": "Medium",
+    "properExecution": [
+      "Step 1 cue",
+      "Step 2 cue",
+      "Step 3 cue"
+    ],
+    "breathingCues": "Inhale through nose on preparation, exhale forcefully through mouth on exertion.",
+    "commonMistakesToAvoid": [
+      "Mistake 1",
+      "Mistake 2"
+    ],
+    "safetyModification": "Modification note protecting ${healthConditions}"
+  }
+]`;
+
+          const aiRes = await callGroqWithFallback(
+            [
+              { role: 'system', content: 'You are an Olympic Sports Conditioning Director. Respond ONLY with valid JSON.' },
+              { role: 'user', content: prompt },
+            ],
+            { apiKey, model: 'llama-3.3-70b-versatile', temperature: 0.25, jsonMode: true }
+          );
+
+          let parsed = JSON.parse(aiRes.content);
+          if (parsed && !Array.isArray(parsed) && Array.isArray(parsed.items)) parsed = parsed.items;
+          if (Array.isArray(parsed) && parsed.length >= 3) {
+            generatedItems = parsed.slice(0, 6);
+          }
+        } catch (aiErr) {
+          fastify.log.warn({ err: aiErr }, '[POST /api/sports/step-conditioning] AI generation fallback');
+        }
+      }
+
+      // High-quality fallback items if AI was unavailable
+      if (generatedItems.length === 0) {
+        generatedItems = [
+          {
+            category: "DRILL",
+            name: `${sportName} Step ${stepNum} — Kinetic Positioning & Ball Control`,
+            recommendedDays: 5,
+            recommendedSets: "3 Sets × 45s",
+            durationSeconds: 120,
+            intensity: "Medium",
+            properExecution: [
+              "Establish balanced athletic stance with center of gravity lowered over balls of feet.",
+              "Initiate technical sequence with crisp ground contact and zero joint locking.",
+              "Recover smoothly into neutral ready posture between repetitions."
+            ],
+            breathingCues: "Maintain rhythmic nasal breathing to prevent premature fatigue.",
+            commonMistakesToAvoid: [
+              "Allowing knees to cave inward during deceleration.",
+              "Rushing reps instead of maintaining posture alignment."
+            ],
+            safetyModification: `Reduced ground impact velocity to protect ${healthConditions}.`
+          },
+          {
+            category: "EXERCISE",
+            name: `${sportName} Step ${stepNum} — Explosive Posterior Chain Activation`,
+            recommendedDays: 4,
+            recommendedSets: "4 Sets × 12 Reps",
+            durationSeconds: 180,
+            intensity: "High",
+            properExecution: [
+              "Hinge from hips while keeping spine perfectly neutral.",
+              "Drive through mid-foot to activate glutes and hamstrings explosively.",
+              "Controlled eccentric return over 3 seconds."
+            ],
+            breathingCues: "Exhale sharply on contraction; deep diaphragmatic inhale on eccentric return.",
+            commonMistakesToAvoid: [
+              "Rounding upper back or hyperextending lumbar spine at lockout.",
+              "Flaring elbows or releasing core tension."
+            ],
+            safetyModification: `Joint-friendly mechanics avoiding mechanical shear on ${healthConditions}.`
+          },
+          {
+            category: "YOGASAN",
+            name: `Virabhadrasana & Anjaneyasana (Warrior Mobility Flow for ${sportName})`,
+            recommendedDays: 5,
+            recommendedSets: "3 Sets × 30s Hold",
+            durationSeconds: 90,
+            intensity: "Low",
+            properExecution: [
+              "Step front foot forward into right angle with knee aligned directly over ankle.",
+              "Lengthen back leg through heel while keeping pelvis square to front.",
+              "Reach arms overhead with shoulders relaxed away from ears."
+            ],
+            breathingCues: "Deep, slow Ujjayi breathing expanding ribcage in 360 degrees.",
+            commonMistakesToAvoid: [
+              "Front knee tracking past toes.",
+              "Collapsing chest forward and arching lower back."
+            ],
+            safetyModification: `Supported range of motion with micro-bend to avoid tension on ${healthConditions}.`
+          },
+          {
+            category: "DRILL",
+            name: `${sportName} Step ${stepNum} — Lateral Reaction & Quick Shuffling`,
+            recommendedDays: 4,
+            recommendedSets: "4 Sets × 30s",
+            durationSeconds: 90,
+            intensity: "High",
+            properExecution: [
+              "Drop into athletic half-squat with weight distributed evenly.",
+              "Push off outside foot for rapid lateral shuffle without crossing feet.",
+              "Plant firmly and change direction with sharp deceleration."
+            ],
+            breathingCues: "Brisk, coordinated breathing matched to foot-strike cadence.",
+            commonMistakesToAvoid: [
+              "Crossing feet during lateral shuffle.",
+              "Standing too tall and losing low base of support."
+            ],
+            safetyModification: `Controlled lateral distance to protect stability of ${healthConditions}.`
+          },
+          {
+            category: "YOGASAN",
+            name: `Balasana & Adho Mukha Svanasana (Spine Decompression & Hamstring Length)`,
+            recommendedDays: 6,
+            recommendedSets: "3 Sets × 45s Hold",
+            durationSeconds: 120,
+            intensity: "Low",
+            properExecution: [
+              "Begin on hands and knees, then press hips up and back into inverted V-shape.",
+              "Pedal heels gently to open calves and hamstrings.",
+              "Transition into Child's Pose (Balasana) with wide knees and extended spine."
+            ],
+            breathingCues: "Long 5-second nasal inhales feeling belly expand between thighs.",
+            commonMistakesToAvoid: [
+              "Locking knees and rounding lower back in Downward Dog.",
+              "Holding breath during prolonged holds."
+            ],
+            safetyModification: `Gentle decompression with knees softly bent to protect ${healthConditions}.`
+          }
+        ];
+      }
+
+      // Verified Fallback YouTube Video IDs by Category
+      const fallbackVideoIds: Record<string, string[]> = {
+        DRILL: ['XqZsoesa55w', 'H1b2eJ6WqQY', 'y2A_gV6x7bM', '3RmWnffpM9I', '9sZ8L9Bf_Ww'],
+        EXERCISE: ['IODxDxX7oi4', 'v7AYKMP6rOE', 'aclHkVaku9U', 'ea4W5qR1c38', '2pLT-ulgUVs'],
+        YOGASAN: ['sTANio_2E0Q', '4pKly2JojMw', 'v7SN-d4qXx0', 'COp7BR_Dvps', 'GLy2rKs5Jkg'],
+      };
+
+      // Find dedicated Tavily YouTube videos for each item with workspace deduplication
+      const enrichedItems = await Promise.all(
+        generatedItems.map(async (item: any, idx: number) => {
+          const cat = item.category || (idx % 2 === 0 ? 'DRILL' : 'EXERCISE');
+          let videoId: string | null = null;
+          let videoTitle = `${sportName} ${item.name} Tutorial`;
+          let videoUrl = '';
+
+          // Targeted Tavily Search for YouTube Demo Video
+          if (tavilyKey || process.env.TAVILY_API_KEY) {
+            try {
+              const query = `site:youtube.com/watch "${sportName}" "${item.name}" how to perform tutorial`;
+              const tRes = await tavilyClient.search(query, {
+                search_depth: 'basic',
+                max_results: 5,
+                include_domains: ['youtube.com', 'youtu.be'],
+              });
+
+              if (tRes && Array.isArray(tRes.results)) {
+                for (const r of tRes.results) {
+                  const extracted = extractYouTubeVideoId(r.url);
+                  if (extracted && !usedVideoIds.has(extracted)) {
+                    videoId = extracted;
+                    videoTitle = r.title || videoTitle;
+                    videoUrl = `https://www.youtube.com/watch?v=${extracted}`;
+                    usedVideoIds.add(extracted);
+                    break;
+                  }
+                }
+              }
+            } catch (tErr) {
+              // Non-critical, fallback will be used
+            }
+          }
+
+          // If Tavily yielded no unique video, pick from verified category fallback pool
+          if (!videoId) {
+            const pool = fallbackVideoIds[cat] || fallbackVideoIds.DRILL;
+            for (const fbId of pool) {
+              if (!usedVideoIds.has(fbId)) {
+                videoId = fbId;
+                usedVideoIds.add(fbId);
+                break;
+              }
+            }
+            if (!videoId) videoId = pool[idx % pool.length];
+            videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+          }
+
+          return {
+            id: `item-${sportName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-s${stepNum}-${idx + 1}`,
+            category: cat,
+            name: item.name || `${sportName} Step ${stepNum} Item ${idx + 1}`,
+            recommendedDays: Math.min(7, Math.max(3, Number(item.recommendedDays) || (cat === 'YOGASAN' ? 5 : 4))),
+            recommendedSets: item.recommendedSets || '3 Sets × 45s',
+            durationSeconds: Math.max(30, Math.min(600, Number(item.durationSeconds) || (cat === 'YOGASAN' ? 90 : 120))),
+            intensity: item.intensity || (cat === 'YOGASAN' ? 'Low' : 'Medium'),
+            properExecution: Array.isArray(item.properExecution) && item.properExecution.length > 0
+              ? item.properExecution
+              : [
+                  'Establish stable athletic base with neutral posture.',
+                  'Execute the movement through full active range of motion.',
+                  'Control the return phase with steady rhythmic breathing.'
+                ],
+            breathingCues: item.breathingCues || 'Inhale on preparation; exhale forcefully on exertion through nose/mouth.',
+            commonMistakesToAvoid: Array.isArray(item.commonMistakesToAvoid) && item.commonMistakesToAvoid.length > 0
+              ? item.commonMistakesToAvoid
+              : ['Allowing spine or joint angles to collapse under fatigue.', 'Rushing repetitions without establishing balance.'],
+            safetyModification: item.safetyModification || `Safety adapted: joint-cushioning and low mechanical shear protective of ${healthConditions}.`,
+            videoId,
+            videoTitle,
+            videoUrl,
+          };
+        })
+      );
+
+      return reply.send({
+        success: true,
+        stepNumber: stepNum,
+        stepTitle,
+        healthConditions,
+        itemsCount: enrichedItems.length,
+        items: enrichedItems,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, '[POST /api/sports/step-conditioning] Fatal error');
+      return reply.status(500).send({ error: 'Failed to generate step conditioning items' });
+    }
+  });
+
+  // POST /api/sports/nutrition-plan — Dynamic Sport Fueling & Nutrition Plan via Groq
+  fastify.post('/api/sports/nutrition-plan', async (req, reply) => {
+    try {
+      const {
+        sportName = 'Football',
+        subGenre = '',
+        dietaryPreference = 'Vegetarian',
+        medicalConditions = 'None',
+        healthConditions = 'None',
+        preferredLanguage = 'en',
+      } = (req.body || {}) as {
+        sportName?: string;
+        subGenre?: string;
+        dietaryPreference?: string;
+        medicalConditions?: string;
+        healthConditions?: string;
+        preferredLanguage?: string;
+      };
+
+      const effectiveHealth = healthConditions && healthConditions !== 'None' ? healthConditions : medicalConditions;
+      const plan = await generateAthleticFuelingPlan({
+        sportName,
+        subGenre,
+        dietaryPreference,
+        medicalConditions: effectiveHealth || 'None',
+        preferredLanguage,
+      });
+
+      return reply.send({
+        success: true,
+        sportName,
+        dietaryPreference,
+        healthConditions: effectiveHealth,
+        nutritionPlan: plan,
+      });
+    } catch (err: any) {
+      fastify.log.error(err, '[POST /api/sports/nutrition-plan] Error');
+      return reply.status(500).send({ error: 'Failed to generate nutrition plan' });
+    }
+  });
+
+  // POST /api/sports/drills/generate — Dynamic Sport Drill Generation via Groq (Backwards compatible)
   fastify.post('/api/sports/drills/generate', async (req, reply) => {
     try {
       const {

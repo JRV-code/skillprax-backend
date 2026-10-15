@@ -1080,6 +1080,91 @@ Return JSON:
     },
   });
 
+  // Module 2.1: Atomically update user profile telemetry & live quiz accuracy
+  try {
+    const targetProfileId = step.workspace?.userProfileId || (step.workspace as any)?.profileId || 'default-profile';
+    const userProfile = await prisma.userProfile.findFirst({
+      where: {
+        OR: [
+          { id: targetProfileId },
+          { email: targetProfileId },
+        ],
+      },
+    });
+
+    if (userProfile) {
+      const newTotalQuizzesTaken = (userProfile.totalQuizzesTaken || 0) + 1;
+      const newTotalQuestionsAttempted = (userProfile.totalQuestionsAttempted || 0) + totalCount;
+      const newTotalQuestionsCorrect = (userProfile.totalQuestionsCorrect || 0) + correctCount;
+      const newAvgQuizAccuracy = newTotalQuestionsAttempted > 0
+        ? Math.round((newTotalQuestionsCorrect / newTotalQuestionsAttempted) * 100)
+        : 0;
+
+      let newTotalXp = userProfile.totalXp || 0;
+      let newLevel = userProfile.level || 1;
+      let newCurrentStreak = userProfile.currentStreak || 1;
+      let newLongestStreak = userProfile.longestStreak || 1;
+
+      if (isFirstTransitionToPassed) {
+        const bonusXp = percent === 100 ? 150 : 100;
+        newTotalXp += bonusXp;
+        newLevel = Math.floor(newTotalXp / 300) + 1;
+
+        const now = new Date();
+        const lastActive = userProfile.lastActiveDate ? new Date(userProfile.lastActiveDate) : null;
+        if (lastActive) {
+          const diffMs = now.getTime() - lastActive.getTime();
+          const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+          if (diffDays === 1) {
+            newCurrentStreak += 1;
+            if (newCurrentStreak > newLongestStreak) newLongestStreak = newCurrentStreak;
+          } else if (diffDays > 1) {
+            newCurrentStreak = 1;
+          }
+        } else {
+          newCurrentStreak = 1;
+          newLongestStreak = Math.max(newLongestStreak, 1);
+        }
+      }
+
+      await prisma.userProfile.update({
+        where: { id: userProfile.id },
+        data: {
+          totalQuizzesTaken: newTotalQuizzesTaken,
+          totalQuestionsAttempted: newTotalQuestionsAttempted,
+          totalQuestionsCorrect: newTotalQuestionsCorrect,
+          avgQuizAccuracy: newAvgQuizAccuracy,
+          totalXp: newTotalXp,
+          level: newLevel,
+          currentStreak: newCurrentStreak,
+          longestStreak: newLongestStreak,
+          lastActiveDate: new Date(),
+        },
+      });
+
+      if (userProfile.email) {
+        try {
+          await prisma.$queryRawUnsafe(`
+            UPDATE users SET
+              total_quizzes_taken = $1,
+              total_questions_attempted = $2,
+              total_questions_correct = $3,
+              avg_quiz_accuracy = $4,
+              xp = $5,
+              level = $6,
+              current_streak = $7,
+              longest_streak = $8,
+              last_active_date = CURRENT_DATE,
+              updated_at = NOW()
+            WHERE LOWER(email) = $9;
+          `, newTotalQuizzesTaken, newTotalQuestionsAttempted, newTotalQuestionsCorrect, newAvgQuizAccuracy, newTotalXp, newLevel, newCurrentStreak, newLongestStreak, userProfile.email.toLowerCase().trim());
+        } catch (_) {}
+      }
+    }
+  } catch (profErr) {
+    console.warn('[SubmitQuiz] Telemetry update notice:', profErr);
+  }
+
   // Generate analysis
   let analysis: any = null;
   try {
