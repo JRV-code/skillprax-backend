@@ -11,6 +11,9 @@ import {
   GroqConfigError,
 } from "../lib/ai/pipeline";
 import { generateMasteryTrajectory } from "../services/learning/trajectory";
+import { runPackBuild, claimPackBuild, claimQuizBuild } from "../services/learning/packBuilder";
+import { runQuizBuild } from "../services/learning/quiz";
+import { runSportsPackBuild } from "../services/sports/sportsPackBuilder";
 
 const ADMIN_CONFIG_ID = "global";
 
@@ -257,6 +260,24 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
       });
 
       const formatted = formatWorkspaceClientSafe(fullWorkspace);
+
+      // Trigger Step 1 build immediately in background (fire-and-forget, non-blocking)
+      const step1 = fullWorkspace?.steps?.[0];
+      if (step1) {
+        if (section === "SPORTS") {
+          void Promise.allSettled([runSportsPackBuild(step1.id)]);
+        } else {
+          void Promise.allSettled([
+            claimPackBuild(step1.id).then((c) => {
+              if (c) return runPackBuild(step1.id);
+            }),
+            claimQuizBuild(step1.id).then((c) => {
+              if (c) return runQuizBuild(step1.id);
+            }),
+          ]);
+        }
+      }
+
       return reply.status(201).send({
         id: result.workspaceId,
         workspace: formatted,

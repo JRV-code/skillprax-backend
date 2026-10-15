@@ -110,6 +110,11 @@ interface PlanningResult {
 }
 
 export async function runPackBuild(stepId: string): Promise<void> {
+  const { runPackBuild: fastBuild } = await import('./packBuilder');
+  return fastBuild(stepId);
+}
+
+export async function runLegacyPackBuild(stepId: string): Promise<void> {
   const step = await prisma.skillStep.findUnique({
     where: { id: stepId },
     include: {

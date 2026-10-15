@@ -20,8 +20,8 @@ import {
 } from '../../services/learning/foundation';
 
 export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
-  // 1. POST /api/steps/:stepId/level-up-resources — Click-triggered pack build
-  fastify.post('/api/steps/:stepId/level-up-resources', async (req, reply) => {
+  // 1. POST /api/steps/:stepId/level-up-resources, build-pack, prefetch-pack
+  const handlePackBuildRequest = async (req: any, reply: any) => {
     const { stepId } = req.params as { stepId: string };
     try {
       let step = await prisma.skillStep.findUnique({
@@ -63,7 +63,11 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
       fastify.log.error(err, '[CurriculumBuild] Failed');
       return reply.status(500).send({ error: err.message || 'Failed to start pack build' });
     }
-  });
+  };
+
+  fastify.post('/api/steps/:stepId/level-up-resources', handlePackBuildRequest);
+  fastify.post('/api/steps/:stepId/build-pack', handlePackBuildRequest);
+  fastify.post('/api/steps/:stepId/prefetch-pack', handlePackBuildRequest);
 
   // 2. POST /api/steps/:stepId/engaged — Silent prefetch trigger (T-B)
   fastify.post('/api/steps/:stepId/engaged', async (req, reply) => {

@@ -5,6 +5,10 @@ import {
   runSportsPackBuild,
   getSportsStepPack,
 } from '../../services/sports/sportsPackBuilder';
+import {
+  generateLevelUpQuiz,
+  submitQuizAnswers,
+} from '../../services/learning/quiz';
 
 export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
   // GET /api/sports-workspace/:workspaceId — Get full sports workspace data
@@ -39,9 +43,10 @@ export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: Fastify
     }
   });
 
-  // POST /api/sports-workspace/steps/:stepId/build-pack — Trigger pack generation
-  fastify.post('/api/sports-workspace/steps/:stepId/build-pack', async (req, reply) => {
+  // Common pack builder handler
+  const handleSportsPackBuild = async (req: any, reply: any) => {
     const { stepId } = req.params as { stepId: string };
+    const body = (req.body || {}) as { prefetch?: boolean };
 
     try {
       let step = await prisma.skillStep.findUnique({
@@ -62,6 +67,15 @@ export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: Fastify
 
       if (!step) {
         return reply.status(404).send({ error: 'Step not found' });
+      }
+
+      if (step.packStatus === 'READY') {
+        return reply.status(200).send({
+          message: 'Sports pack already built',
+          stepId: step.id,
+          packStatus: 'READY',
+          packStage: 'READY',
+        });
       }
 
       if (step.packStatus === 'BUILDING') {
@@ -100,7 +114,11 @@ export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: Fastify
       fastify.log.error(err, '[BuildSportsPack] Failed');
       return reply.status(500).send({ error: err.message || 'Failed to start sports pack build' });
     }
-  });
+  };
+
+  // POST /api/sports-workspace/steps/:stepId/build-pack & /prefetch-pack — Trigger pack generation
+  fastify.post('/api/sports-workspace/steps/:stepId/build-pack', handleSportsPackBuild);
+  fastify.post('/api/sports-workspace/steps/:stepId/prefetch-pack', handleSportsPackBuild);
 
   // GET /api/sports-workspace/steps/:stepId/pack-status — Poll status
   fastify.get('/api/sports-workspace/steps/:stepId/pack-status', async (req, reply) => {
@@ -185,6 +203,115 @@ export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: Fastify
     } catch (err: any) {
       fastify.log.error(err, '[CompleteSportsDay] Failed');
       return reply.status(500).send({ error: err.message || 'Failed to log day completion' });
+    }
+  });
+
+  // GET /api/sports-workspace/steps/:stepId/quiz & level-up-quiz
+  const handleSportsGetQuiz = async (req: any, reply: any) => {
+    const { stepId } = req.params as { stepId: string };
+    const queryMode = req.query?.mode as 'initial' | 'retest' | 'perfection' | undefined;
+    try {
+      let step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { id: true, status: true } });
+      if (!step) {
+        const ws = await prisma.workspace.findUnique({
+          where: { id: stepId },
+          include: { steps: { orderBy: { stepIndex: 'asc' } } },
+        });
+        if (ws && ws.steps.length > 0) {
+          const activeS = ws.steps.find((s) => s.status !== 'PASSED') || ws.steps[0];
+          step = activeS;
+        }
+      }
+      if (!step) return reply.status(404).send({ error: 'Step not found' });
+      const quiz = await generateLevelUpQuiz(step.id, { mode: queryMode || 'initial' });
+      return reply.send(quiz);
+    } catch (err: any) {
+      fastify.log.error(err, '[SportsGetQuiz] Failed');
+      return reply.status(err.statusCode || 500).send({
+        error: err.message || 'Failed to retrieve sports quiz',
+      });
+    }
+  };
+
+  fastify.get('/api/sports-workspace/steps/:stepId/quiz', handleSportsGetQuiz);
+  fastify.get('/api/sports-workspace/steps/:stepId/level-up-quiz', handleSportsGetQuiz);
+
+  // POST /api/sports-workspace/steps/:stepId/quiz & level-up-quiz
+  const handleSportsPostQuiz = async (req: any, reply: any) => {
+    const { stepId } = req.params as { stepId: string };
+    const queryMode = req.query?.mode;
+    const body = (req.body || {}) as {
+      mode?: 'initial' | 'retest' | 'perfection';
+      retestMode?: boolean;
+      perfectionMode?: boolean;
+      failedQuestionIds?: string[];
+    };
+    const effectiveMode = body.mode || queryMode || (body.retestMode ? 'retest' : body.perfectionMode ? 'perfection' : 'initial');
+
+    try {
+      let step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { id: true, status: true } });
+      if (!step) {
+        const ws = await prisma.workspace.findUnique({
+          where: { id: stepId },
+          include: { steps: { orderBy: { stepIndex: 'asc' } } },
+        });
+        if (ws && ws.steps.length > 0) {
+          const activeS = ws.steps.find((s) => s.status !== 'PASSED') || ws.steps[0];
+          step = activeS;
+        }
+      }
+      if (!step) return reply.status(404).send({ error: 'Step not found' });
+      const quiz = await generateLevelUpQuiz(step.id, {
+        mode: effectiveMode,
+        retestMode: body.retestMode || effectiveMode === 'retest',
+        perfectionMode: body.perfectionMode || effectiveMode === 'perfection',
+        failedQuestionIds: body.failedQuestionIds,
+      });
+      return reply.send(quiz);
+    } catch (err: any) {
+      fastify.log.error(err, '[SportsGenerateQuiz] Failed');
+      return reply.status(err.statusCode || 500).send({
+        error: err.message || 'Failed to generate sports quiz',
+      });
+    }
+  };
+
+  fastify.post('/api/sports-workspace/steps/:stepId/quiz', handleSportsPostQuiz);
+  fastify.post('/api/sports-workspace/steps/:stepId/level-up-quiz', handleSportsPostQuiz);
+
+  // POST /api/sports-workspace/steps/:stepId/submit-quiz
+  fastify.post('/api/sports-workspace/steps/:stepId/submit-quiz', async (req, reply) => {
+    const { stepId } = req.params as { stepId: string };
+    const { attemptId, answers, questionIds, mode } = (req.body || {}) as {
+      attemptId?: string;
+      answers: Record<string, string> | Array<{ questionId: string; selectedOptionId: string }>;
+      questionIds?: string[];
+      mode?: string;
+    };
+
+    try {
+      let normalizedAnswers: Record<string, string> = {};
+      if (Array.isArray(answers)) {
+        answers.forEach((a) => {
+          if (a?.questionId) normalizedAnswers[a.questionId] = String(a.selectedOptionId);
+        });
+      } else if (typeof answers === 'object' && answers !== null) {
+        normalizedAnswers = answers;
+      }
+
+      const graded = await submitQuizAnswers(stepId, {
+        attemptId,
+        answers: normalizedAnswers,
+        questionIds: Array.isArray(questionIds) ? questionIds.map(String) : undefined,
+        mode: typeof mode === 'string' ? mode : undefined,
+      });
+
+      return reply.send(graded);
+    } catch (err: any) {
+      fastify.log.error(err, '[SportsSubmitQuiz] Failed');
+      return reply.status(500).send({
+        error: err.message || 'Failed to evaluate sports quiz submission',
+      });
     }
   });
 };

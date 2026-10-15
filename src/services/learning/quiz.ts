@@ -1,4 +1,5 @@
 import prisma from '../../lib/prisma';
+import { claimQuizBuild } from './packPipeline';
 import { LEARNING_CONFIG, calculatePersonalizedQuestionCount } from '../../config/learning';
 import {
   callGroqJson,
@@ -394,7 +395,7 @@ Return ONLY JSON:
 
     let rawQuestions: any[] = [];
     try {
-      const groqRes = await callGroqJson<{ questions: any[] }>(promptSystem, promptUser, {
+      const groqPromise = callGroqJson<{ questions: any[] }>(promptSystem, promptUser, {
         validate: (data: any) => {
           assertNoUrls(data, 'Quiz Questions');
           if (!data || !Array.isArray(data.questions)) throw new Error('Missing questions array');
@@ -403,6 +404,10 @@ Return ONLY JSON:
         maxTokens: 5500,
         temperature: 0.2,
       });
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Groq quiz timeout after 6500ms')), 6500)
+      );
+      const groqRes = await Promise.race([groqPromise, timeoutPromise]);
       rawQuestions = groqRes.questions;
     } catch (gErr) {
       console.warn('[runQuizBuild] Groq generation fallback used:', gErr);
@@ -873,14 +878,15 @@ export async function submitQuizAnswers(
     return { topicKey, correct: c, total: rs.length, percent: Math.floor((c * 100) / rs.length) };
   });
 
-  // Fast AI Enrichment (Groq Mistake Analysis + Tavily Remediation) wrapped in strict 5s timeout
-  try {
-    const enrichPromise = async () => {
-      // 1. Groq Mistake Analysis
-      if (wrongQuestions.length > 0) {
-        try {
-          const groqMistakeRes = await callGroqJson<{ analyses: Array<{ questionId: string; mistakeExplanation: string }> }>(
-            `You are a Senior Socratic Evaluator. Analyze the learner's incorrect quiz answers.
+  // Bounded AI Enrichment: Skip completely on pass (zero delay); cap at 3500ms on fail
+  if (!passed) {
+    try {
+      const enrichPromise = async () => {
+        // 1. Groq Mistake Analysis
+        if (wrongQuestions.length > 0) {
+          try {
+            const groqMistakeRes = await callGroqJson<{ analyses: Array<{ questionId: string; mistakeExplanation: string }> }>(
+              `You are a Senior Socratic Evaluator. Analyze the learner's incorrect quiz answers.
 For each question, provide a concise, personalized mistakeExplanation (1-2 sentences) explaining:
 1. Why their selected answer is incorrect or reflects a misconception
 2. The core principle behind the correct answer
@@ -892,44 +898,43 @@ Return JSON:
     { "questionId": "...", "mistakeExplanation": "..." }
   ]
 }`,
-            JSON.stringify({
-              stepTitle: step.title,
-              mistakes: wrongQuestions.map((wq) => ({
-                questionId: wq.id,
-                question: wq.question,
-                userSelected: wq.chosenText,
-                correctAnswer: wq.correctText,
-                topic: wq.topicTitle,
-              })),
-            }),
-            {
-              validate: (data: any) => {
-                if (!data || typeof data !== 'object') throw new Error('Invalid JSON response');
-                return data;
-              },
-              maxTokens: 1500,
-              temperature: 0.3,
+              JSON.stringify({
+                stepTitle: step.title,
+                mistakes: wrongQuestions.map((wq) => ({
+                  questionId: wq.id,
+                  question: wq.question,
+                  userSelected: wq.chosenText,
+                  correctAnswer: wq.correctText,
+                  topic: wq.topicTitle,
+                })),
+              }),
+              {
+                validate: (data: any) => {
+                  if (!data || typeof data !== 'object') throw new Error('Invalid JSON response');
+                  return data;
+                },
+                maxTokens: 1500,
+                temperature: 0.3,
+              }
+            );
+
+            if (Array.isArray(groqMistakeRes?.analyses)) {
+              const analysisMap = new Map(groqMistakeRes.analyses.map((a) => [a.questionId, a.mistakeExplanation]));
+              wrongQuestionsWithAi = wrongQuestionsWithAi.map((wq) => ({
+                ...wq,
+                mistakeExplanation: analysisMap.get(wq.questionId) || wq.explanation,
+              }));
             }
-          );
+          } catch (_) {}
+        }
 
-          if (Array.isArray(groqMistakeRes?.analyses)) {
-            const analysisMap = new Map(groqMistakeRes.analyses.map((a) => [a.questionId, a.mistakeExplanation]));
-            wrongQuestionsWithAi = wrongQuestionsWithAi.map((wq) => ({
-              ...wq,
-              mistakeExplanation: analysisMap.get(wq.questionId) || wq.explanation,
-            }));
-          }
-        } catch (_) {}
-      }
-
-      // 2. Tavily Remediation Search if failed
-      if (!passed) {
+        // 2. Parallel Tavily Remediation Search for failed step
         try {
           const weakTopics = Array.from(new Set(wrongQuestions.map((w) => w.topicTitle))).slice(0, 2);
           const workspaceSkill = (step.workspace as any)?.skillName || step.workspace?.title || step.title;
           const freshRemediation: typeof remediationResources = [];
 
-          for (const topicTitle of weakTopics) {
+          const topicSearchPromises = weakTopics.map(async (topicTitle) => {
             const vidQuery = `site:youtube.com/watch "${workspaceSkill}" "${topicTitle}" mistakes tutorial`;
             const docQuery = `"${workspaceSkill}" "${topicTitle}" guide examples -site:youtube.com`;
 
@@ -970,19 +975,21 @@ Return JSON:
                 break;
               }
             }
-          }
+          });
+
+          await Promise.all(topicSearchPromises);
 
           if (freshRemediation.length > 0) {
             remediationResources = freshRemediation;
           }
         } catch (_) {}
-      }
-    };
+      };
 
-    const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 4500));
-    await Promise.race([enrichPromise(), timeoutPromise]);
-  } catch (enrichErr) {
-    console.warn('[SubmitQuiz] Bounded AI enrichment skipped:', enrichErr);
+      const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 3500));
+      await Promise.race([enrichPromise(), timeoutPromise]);
+    } catch (enrichErr) {
+      console.warn('[SubmitQuiz] Bounded AI enrichment notice:', enrichErr);
+    }
   }
 
 
@@ -1112,11 +1119,27 @@ Return JSON:
     console.warn('[SubmitQuiz] Telemetry update notice:', profErr);
   }
 
-  // Generate analysis
-  let analysis: any = null;
-  try {
-    analysis = await generateEvaluationAnalysis(attemptResult.id);
-  } catch (_) {}
+  // Instant structured analysis (non-blocking, 0ms latency)
+  const analysis = {
+    headline: passed
+      ? (percent === 100 ? 'Flawless Socratic Gate Performance (100%)' : `Milestone Verified at ${percent}% Threshold`)
+      : `Threshold Not Met (${percent}%) — Remediation Required`,
+    summary: passed
+      ? `Demonstrated verified operational grasp of ${step.title}. You have met the 70% threshold.`
+      : `Scored ${percent}%. Socratic gate requires 70% to unlock milestone progression. Complete the targeted remediation items below.`,
+    strengthAreas: scoredByTopic.filter((t) => t.percent >= 70).map((t) => t.topicKey),
+    growthAreas: scoredByTopic.filter((t) => t.percent < 70).map((t) => t.topicKey),
+    recommendation: passed ? 'Proceed to next milestone or take targeted perfection quiz for 100%.' : 'Review weak topics and retest.',
+  };
+
+  // If passed and next step is unlocked, prefetch Step N+1's quiz in the background
+  if (passed && unlockedNextStepId) {
+    void Promise.allSettled([
+      claimQuizBuild(unlockedNextStepId).then((c) => {
+        if (c) return runQuizBuild(unlockedNextStepId);
+      }),
+    ]);
+  }
 
   return {
     id: attemptResult.id,

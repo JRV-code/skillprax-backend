@@ -16,6 +16,7 @@ import {
   verifyLinkSafe,
 } from '../learning/resourceDiscoveryEngine';
 import { DifficultyTier } from '../../config/learning';
+import { runQuizBuild } from '../learning/quiz';
 
 export type TrainingCategory = 'DRILL' | 'EXERCISE' | 'YOGASAN';
 
@@ -197,27 +198,14 @@ export async function runSportsPackBuild(stepId: string): Promise<void> {
       }
     }
 
-    // 3. Stage 1: Build Study Chapters (Grounded Athletic Theory & Officiating/Rules)
+    // 3. Stage 1 & 2 & 4: Run Branch A (Study Chapters & Verified Resources) and Branch B (Unified Day-by-Day Training Regimen) IN PARALLEL!
     await prisma.skillStep.update({
       where: { id: stepId },
-      data: { packStage: 'PLANNING_CHAPTERS' },
+      data: { packStage: 'RESEARCHING' },
     });
 
-    let chaptersResult: {
-      chapters: Array<{
-        title: string;
-        order: number;
-        summary?: string;
-        topics: Array<{
-          title: string;
-          order: number;
-          covers?: string;
-        }>;
-      }>;
-    };
-
-    try {
-      chaptersResult = await callGroqJson<{
+    const buildChaptersBranch = async () => {
+      let chaptersResult: {
         chapters: Array<{
           title: string;
           order: number;
@@ -228,8 +216,22 @@ export async function runSportsPackBuild(stepId: string): Promise<void> {
             covers?: string;
           }>;
         }>;
-      }>(
-        `You are an elite Sports Biomechanics & Athletic Performance Director.
+      };
+
+      try {
+        const groqCall = callGroqJson<{
+          chapters: Array<{
+            title: string;
+            order: number;
+            summary?: string;
+            topics: Array<{
+              title: string;
+              order: number;
+              covers?: string;
+            }>;
+          }>;
+        }>(
+          `You are an elite Sports Biomechanics & Athletic Performance Director.
 Plan exactly 2 focused study chapters for:
 Sport: "${sportName}"
 Discipline / Sub-genre: "${subGenre}"
@@ -258,224 +260,254 @@ Return ONLY JSON:
     }
   ]
 }`,
-        JSON.stringify({ sportName, subGenre, stepTitle: step.title }),
-        {
-          validate: (data: any) => {
-            if (!Array.isArray(data?.chapters) || data.chapters.length === 0) {
-              throw new Error('Invalid chapters structure');
-            }
-            return data;
-          },
-          temperature: 0.3,
-          maxTokens: 1500,
-        }
-      );
-    } catch (chErr) {
-      console.warn('[runSportsPackBuild] Chapters Groq call warning, using calibrated fallback:', chErr);
-      chaptersResult = {
-        chapters: [
+          JSON.stringify({ sportName, subGenre, stepTitle: step.title }),
           {
-            title: `${sportName}: Biomechanical Foundations & Tactical Rules`,
-            summary: `Core kinematic posture, kinetic chain sequencing, and regulatory rules for ${step.title}.`,
-            order: 1,
-            topics: [
-              {
-                title: `${sportName} Kinetic Stance & Base Alignment`,
-                covers: `Optimal center of gravity, footwork positioning, and postural invariants in ${subGenre}.`,
-                order: 1,
-              },
-              {
-                title: `Officiating Rules, Bounds, & Tactical Regulations`,
-                covers: `Essential match rules, boundary limitations, and legal execution requirements.`,
-                order: 2,
-              },
-            ],
-          },
-          {
-            title: `${sportName}: Execution Precision & Situational Drills`,
-            summary: `Practical execution mechanics, neuromuscular drills, and situational mastery for ${step.title}.`,
-            order: 2,
-            topics: [
-              {
-                title: `Kinetic Acceleration & Deceleration Control`,
-                covers: `Controlling dynamic velocity and safe deceleration patterns.`,
-                order: 1,
-              },
-              {
-                title: `Situational Drills & Error Diagnostics`,
-                covers: `Common execution flaws, injury mitigation, and tactical response drills.`,
-                order: 2,
-              },
-            ],
-          },
-        ],
-      };
-    }
+            validate: (data: any) => {
+              if (!Array.isArray(data?.chapters) || data.chapters.length === 0) {
+                throw new Error('Invalid chapters structure');
+              }
+              return data;
+            },
+            temperature: 0.3,
+            maxTokens: 1500,
+          }
+        );
 
-    // Stage 2: Sourcing Verified Resources (Doc links + Chapter YouTube Lectures)
-    await prisma.skillStep.update({
-      where: { id: stepId },
-      data: { packStage: 'SOURCING_RESOURCES' },
-    });
+        // Strict 6s timeout on chapter planning Groq call
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Chapters Groq timeout after 6000ms')), 6000)
+        );
 
-    const verifiedChapters: Array<{
-      order: number;
-      title: string;
-      summary: string;
-      video: {
-        videoId: string;
-        title: string;
-        channelName: string;
-        url: string;
-      };
-      topics: Array<{
-        key: string;
-        order: number;
-        title: string;
-        covers: string;
-        guide: any;
-        docs: Array<{
-          title: string;
-          url: string;
-          domain: string;
-          snippet: string;
-        }>;
-      }>;
-    }> = [];
-
-    const allStepVideos: Array<{
-      videoId: string;
-      title: string;
-      channelName: string;
-      url: string;
-      chapterTitle: string;
-    }> = [];
-
-    let topicIdx = 1;
-    for (const ch of chaptersResult.chapters) {
-      // Find chapter lecture video using 3-stage finder
-      let chVid: { videoId: string; title: string; channelTitle: string; url: string; thumbnailUrl: string };
-      try {
-        chVid = await findUniqueYouTubeVideoSafe({
-          skillName: sportName,
-          subGenre,
-          topicOrChapterTitle: ch.title,
-          usedVideoIds,
-        });
-      } catch {
-        chVid = {
-          videoId: 'IODxDxX7oi4',
-          title: `${ch.title} — Tactical Masterclass`,
-          channelTitle: `${sportName} Coaching Academy`,
-          url: 'https://www.youtube.com/watch?v=IODxDxX7oi4',
-          thumbnailUrl: 'https://i.ytimg.com/vi/IODxDxX7oi4/hqdefault.jpg',
+        chaptersResult = await Promise.race([groqCall, timeoutPromise]);
+      } catch (chErr) {
+        console.warn('[runSportsPackBuild] Chapters planning notice, using calibrated fallback:', chErr);
+        chaptersResult = {
+          chapters: [
+            {
+              title: `${sportName}: Biomechanical Foundations & Tactical Rules`,
+              summary: `Core kinematic posture, kinetic chain sequencing, and regulatory rules for ${step.title}.`,
+              order: 1,
+              topics: [
+                {
+                  title: `${sportName} Kinetic Stance & Base Alignment`,
+                  covers: `Optimal center of gravity, footwork positioning, and postural invariants in ${subGenre}.`,
+                  order: 1,
+                },
+                {
+                  title: `Officiating Rules, Bounds, & Tactical Regulations`,
+                  covers: `Essential match rules, boundary limitations, and legal execution requirements.`,
+                  order: 2,
+                },
+              ],
+            },
+            {
+              title: `${sportName}: Execution Precision & Situational Drills`,
+              summary: `Practical execution mechanics, neuromuscular drills, and situational mastery for ${step.title}.`,
+              order: 2,
+              topics: [
+                {
+                  title: `Kinetic Acceleration & Deceleration Control`,
+                  covers: `Controlling dynamic velocity and safe deceleration patterns.`,
+                  order: 1,
+                },
+                {
+                  title: `Situational Drills & Error Diagnostics`,
+                  covers: `Common execution flaws, injury mitigation, and tactical response drills.`,
+                  order: 2,
+                },
+              ],
+            },
+          ],
         };
       }
 
-      allStepVideos.push({
-        videoId: chVid.videoId,
-        title: chVid.title,
-        channelName: chVid.channelTitle,
-        url: chVid.url,
-        chapterTitle: ch.title,
+      // Concurrently fetch chapter lecture videos and topic reading links in a single flat Promise.all batch
+      const chVideoPromises = chaptersResult.chapters.map(async (ch) => {
+        try {
+          return await findUniqueYouTubeVideoSafe({
+            skillName: sportName,
+            subGenre,
+            topicOrChapterTitle: ch.title,
+            usedVideoIds,
+          });
+        } catch {
+          const fallbackId = 'IODxDxX7oi4';
+          usedVideoIds.add(fallbackId);
+          return {
+            videoId: fallbackId,
+            title: `${ch.title} — Tactical Masterclass`,
+            channelTitle: `${sportName} Coaching Academy`,
+            url: `https://www.youtube.com/watch?v=${fallbackId}`,
+            thumbnailUrl: `https://i.ytimg.com/vi/${fallbackId}/hqdefault.jpg`,
+          };
+        }
       });
 
-      const processedTopics: Array<{
-        key: string;
+      const topicTasks: Array<{
+        chIdx: number;
+        tIdx: number;
+        promise: Promise<Array<{ title: string; url: string; domain: string; snippet: string }>>;
+      }> = [];
+
+      chaptersResult.chapters.forEach((ch, chIdx) => {
+        ch.topics.forEach((t, tIdx) => {
+          topicTasks.push({
+            chIdx,
+            tIdx,
+            promise: findTopicReadingLinks({
+              skillName: sportName,
+              subGenre,
+              stepTitle: step.title,
+              topicTitle: t.title,
+              usedDocUrls,
+              desiredCount: 4,
+            }),
+          });
+        });
+      });
+
+      const [chapterVideos, topicDocsResults] = await Promise.all([
+        Promise.all(chVideoPromises),
+        Promise.all(topicTasks.map((tt) => tt.promise)),
+      ]);
+
+      let docsIdx = 0;
+      let topicGlobalIdx = 1;
+
+      const verifiedChapters: Array<{
         order: number;
         title: string;
-        covers: string;
-        guide: any;
-        docs: Array<{
+        summary: string;
+        video: {
+          videoId: string;
           title: string;
+          channelName: string;
           url: string;
-          domain: string;
-          snippet: string;
+        };
+        topics: Array<{
+          key: string;
+          order: number;
+          title: string;
+          covers: string;
+          guide: any;
+          docs: Array<{
+            title: string;
+            url: string;
+            domain: string;
+            snippet: string;
+          }>;
         }>;
       }> = [];
 
-      for (const t of ch.topics) {
-        const tKey = `topic_${step.stepIndex}_${topicIdx++}`;
+      for (let cIdx = 0; cIdx < chaptersResult.chapters.length; cIdx++) {
+        const ch = chaptersResult.chapters[cIdx];
+        const chVid = chapterVideos[cIdx];
 
-        // Find 3-4 verified reading links using high-recall Tavily queries + guaranteed educational fallbacks
-        const docLinks = await findTopicReadingLinks({
-          skillName: sportName,
-          subGenre,
-          stepTitle: step.title,
-          topicTitle: t.title,
-          usedDocUrls,
-          desiredCount: 4,
-        });
+        const processedTopics: Array<{
+          key: string;
+          order: number;
+          title: string;
+          covers: string;
+          guide: any;
+          docs: Array<{
+            title: string;
+            url: string;
+            domain: string;
+            snippet: string;
+          }>;
+        }> = [];
 
-        processedTopics.push({
-          key: tKey,
-          order: t.order,
-          title: t.title,
-          covers: t.covers || `Biomechanical execution and tactical understanding of ${t.title}.`,
-          guide: {
-            howToApproach: `Approach ${t.title} by establishing stable base alignment, reviewing official rules, and executing controlled practice repetitions.`,
-            lookFor: ['Smooth kinetic transfer', 'Neutral spinal alignment', 'Consistent rhythm'],
-            doThis: 'Perform deliberate slow-motion reps before increasing speed.',
+        for (const t of ch.topics) {
+          const docLinks = topicDocsResults[docsIdx++] || [];
+          const tKey = `topic_${step.stepIndex}_${topicGlobalIdx++}`;
+
+          processedTopics.push({
+            key: tKey,
+            order: t.order,
+            title: t.title,
+            covers: t.covers || `Biomechanical execution and tactical understanding of ${t.title}.`,
+            guide: {
+              howToApproach: `Approach ${t.title} by establishing stable base alignment, reviewing official rules, and executing controlled practice repetitions.`,
+              lookFor: ['Smooth kinetic transfer', 'Neutral spinal alignment', 'Consistent rhythm'],
+              doThis: 'Perform deliberate slow-motion reps before increasing speed.',
+            },
+            docs: docLinks,
+          });
+        }
+
+        verifiedChapters.push({
+          order: ch.order,
+          title: ch.title,
+          summary: ch.summary || `${ch.title} tactical overview and execution guidelines.`,
+          video: {
+            videoId: chVid.videoId,
+            title: chVid.title,
+            channelName: chVid.channelTitle,
+            url: chVid.url,
           },
-          docs: docLinks,
+          topics: processedTopics,
         });
       }
 
-      verifiedChapters.push({
-        order: ch.order,
-        title: ch.title,
-        summary: ch.summary || `${ch.title} tactical overview and execution guidelines.`,
-        video: {
-          videoId: chVid.videoId,
-          title: chVid.title,
-          channelName: chVid.channelTitle,
-          url: chVid.url,
-        },
-        topics: processedTopics,
-      });
-    }
+      return verifiedChapters;
+    };
 
-    // Stage 3: Synthesizing Guides & Intro
-    await prisma.skillStep.update({
-      where: { id: stepId },
-      data: { packStage: 'SYNTHESIZING_GUIDES' },
-    });
+    const buildTrainingPlanBranch = async () => {
+      const previousAvoidStr = previouslyUsedItemNames.length > 0
+        ? `DO NOT repeat any of these previously used items from earlier steps: [${previouslyUsedItemNames.slice(-30).join(', ')}]`
+        : 'Create fresh, distinct items calibrated for this milestone.';
 
-    // Stage 4: Dedicated Unified Sports Day-by-Day Training Engine
-    await prisma.skillStep.update({
-      where: { id: stepId },
-      data: { packStage: 'SYNTHESIZING_TRAINING_PLAN' },
-    });
-
-    const previousAvoidStr = previouslyUsedItemNames.length > 0
-      ? `DO NOT repeat any of these previously used items from earlier steps: [${previouslyUsedItemNames.slice(-30).join(', ')}]`
-      : 'Create fresh, distinct items calibrated for this milestone.';
-
-    const trainingPlanRaw = await callGroqJson<{
-      totalDays: number;
-      days: Array<{
-        dayNumber: number;
-        title: string;
-        focusDescription: string;
-        items: Array<{
-          category: 'DRILL' | 'EXERCISE' | 'YOGASAN';
-          name: string;
-          setsAndReps: string;
-          timerSeconds: number;
-          customDayAiGuide: string;
-          howToSteps: string[];
-          breathingCue: string;
-          medicalSafetyNote: string;
-          youtubeQuery: string;
+      let trainingPlanRaw: {
+        totalDays: number;
+        days: Array<{
+          dayNumber: number;
+          title: string;
+          focusDescription: string;
+          items: Array<{
+            category: 'DRILL' | 'EXERCISE' | 'YOGASAN';
+            name: string;
+            setsAndReps: string;
+            timerSeconds: number;
+            customDayAiGuide: string;
+            howToSteps: string[];
+            breathingCue: string;
+            medicalSafetyNote: string;
+            youtubeQuery: string;
+          }>;
         }>;
-      }>;
-      stepNutrition: {
-        preSessionFuel: string;
-        postSessionRecovery: string;
-        hydrationTip: string;
+        stepNutrition: {
+          preSessionFuel: string;
+          postSessionRecovery: string;
+          hydrationTip: string;
+        };
       };
-    }>(
-      `You are the Chief Athletic Conditioning Officer & Olympic Sports Physiologist.
+
+      try {
+        const groqCall = callGroqJson<{
+          totalDays: number;
+          days: Array<{
+            dayNumber: number;
+            title: string;
+            focusDescription: string;
+            items: Array<{
+              category: 'DRILL' | 'EXERCISE' | 'YOGASAN';
+              name: string;
+              setsAndReps: string;
+              timerSeconds: number;
+              customDayAiGuide: string;
+              howToSteps: string[];
+              breathingCue: string;
+              medicalSafetyNote: string;
+              youtubeQuery: string;
+            }>;
+          }>;
+          stepNutrition: {
+            preSessionFuel: string;
+            postSessionRecovery: string;
+            hydrationTip: string;
+          };
+        }>(
+          `You are the Chief Athletic Conditioning Officer & Olympic Sports Physiologist.
 Design a cohesive, step-specific **Unified Day-by-Day Training Plan** for:
 Sport: "${sportName}"
 Sub-Genre: "${subGenre}"
@@ -539,152 +571,290 @@ Return ONLY valid JSON matching:
     "hydrationTip": "..."
   }
 }`,
-      JSON.stringify({ sportName, stepTitle: step.title, healthConditions, dietaryPreference }),
-      {
-        validate: (data: any) => {
-          if (!Array.isArray(data?.days) || data.days.length === 0) {
-            throw new Error('Invalid training plan days');
+          JSON.stringify({ sportName, stepTitle: step.title, healthConditions, dietaryPreference }),
+          {
+            validate: (data: any) => {
+              if (!Array.isArray(data?.days) || data.days.length === 0) {
+                throw new Error('Invalid training plan days');
+              }
+              return data;
+            },
+            temperature: 0.4,
+            maxTokens: 3500,
           }
-          return data;
-        },
-        temperature: 0.4,
-        maxTokens: 4000,
+        );
+
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Training plan Groq timeout after 6500ms')), 6500)
+        );
+
+        trainingPlanRaw = await Promise.race([groqCall, timeoutPromise]);
+      } catch (tpErr) {
+        console.warn('[runSportsPackBuild] Training plan Groq notice, using calibrated fallback:', tpErr);
+        trainingPlanRaw = {
+          totalDays: 3,
+          days: [
+            {
+              dayNumber: 1,
+              title: 'Day 1 — Kinetic Alignment & Movement Fundamentals',
+              focusDescription: `Establish neuromuscular stability and fundamental kinetic posture for ${sportName}.`,
+              items: [
+                {
+                  category: 'DRILL',
+                  name: `${sportName} Kinetic Stance & Balance Drill`,
+                  setsAndReps: '3 Sets × 60 sec',
+                  timerSeconds: 60,
+                  customDayAiGuide: 'Focus on balanced weight distribution, knee tracking, and neutral posture.',
+                  howToSteps: ['Establish shoulder-width base', 'Maintain relaxed center of mass', 'Execute controlled movements'],
+                  breathingCue: 'Steady diaphragmatic breathing.',
+                  medicalSafetyNote: `Protected execution tailored to ${healthConditions}.`,
+                  youtubeQuery: `${sportName} technique tutorial`,
+                },
+                {
+                  category: 'EXERCISE',
+                  name: `Core Rotational Stability for ${sportName}`,
+                  setsAndReps: '3 Sets × 45 sec',
+                  timerSeconds: 45,
+                  customDayAiGuide: 'Engage core stabilizers to support dynamic athletic rotation.',
+                  howToSteps: ['Engage abdominal wall', 'Control rotational arc', 'Pause at end range'],
+                  breathingCue: 'Exhale through exertion.',
+                  medicalSafetyNote: `Low shear forces protective of ${healthConditions}.`,
+                  youtubeQuery: `${sportName} core conditioning`,
+                },
+                {
+                  category: 'YOGASAN',
+                  name: `Hip & Shoulder Mobility Flow (Anjaneyasana)`,
+                  setsAndReps: '3 Holds × 45 sec',
+                  timerSeconds: 45,
+                  customDayAiGuide: 'Release hip flexor tension and enhance spinal mobility.',
+                  howToSteps: ['Step into gentle lunge', 'Square hips forward', 'Breathe deeply and elongate'],
+                  breathingCue: 'Slow deep inhalations and exhalations.',
+                  medicalSafetyNote: `Gentle mobility suitable for ${healthConditions}.`,
+                  youtubeQuery: 'yoga mobility for athletic recovery',
+                },
+              ],
+            },
+            {
+              dayNumber: 2,
+              title: 'Day 2 — Dynamic Acceleration & Deceleration Mastery',
+              focusDescription: `Develop explosive concentric power and safe eccentric deceleration in ${sportName}.`,
+              items: [
+                {
+                  category: 'DRILL',
+                  name: `${sportName} Linear Acceleration & Stop Drill`,
+                  setsAndReps: '4 Sets × 45 sec',
+                  timerSeconds: 45,
+                  customDayAiGuide: 'Drive explosively off the front foot and decelerate in 2 clean steps.',
+                  howToSteps: ['Lower hip height before burst', 'Explode with high knee drive', 'Sink hips to decelerate'],
+                  breathingCue: 'Sharp exhale upon sprint initiation.',
+                  medicalSafetyNote: `Absorb impact through quadriceps and glutes; safe for ${healthConditions}.`,
+                  youtubeQuery: `${sportName} footwork and agility drill`,
+                },
+                {
+                  category: 'EXERCISE',
+                  name: 'Eccentric Hamstring & Posterior Chain Load',
+                  setsAndReps: '3 Sets × 10 Reps',
+                  timerSeconds: 60,
+                  customDayAiGuide: 'Strengthen the braking musculature to prevent deceleration injuries.',
+                  howToSteps: ['Hinge cleanly at hips', 'Keep back flat', 'Drive through heels to stand'],
+                  breathingCue: 'Inhale on descent, exhale on drive.',
+                  medicalSafetyNote: `Neutral lumbar curvature maintained for ${healthConditions}.`,
+                  youtubeQuery: 'athletic posterior chain exercises',
+                },
+                {
+                  category: 'YOGASAN',
+                  name: 'Adho Mukha Svanasana & Dynamic Calf Stretch',
+                  setsAndReps: '3 Holds × 60 sec',
+                  timerSeconds: 60,
+                  customDayAiGuide: 'Decompress lumbar spine and lengthen Achilles tendons.',
+                  howToSteps: ['Press palms firmly into mat', 'Lift tailbone high', 'Alternate heel presses gently'],
+                  breathingCue: 'Even 4-count breathing.',
+                  medicalSafetyNote: `Gentle inversion calibrated safely for ${healthConditions}.`,
+                  youtubeQuery: 'yoga for athlete leg recovery',
+                },
+              ],
+            },
+            {
+              dayNumber: 3,
+              title: 'Day 3 — Tactical Simulation & Kinetic Fluency',
+              focusDescription: `Synthesize mechanics, tactical decision-making, and full-effort game simulation.`,
+              items: [
+                {
+                  category: 'DRILL',
+                  name: `${sportName} Full Tactical Repetition Sequence`,
+                  setsAndReps: '4 Sets × 90 sec',
+                  timerSeconds: 90,
+                  customDayAiGuide: 'Execute match-speed repetitions with zero loss of fundamental form.',
+                  howToSteps: ['Set up in active ready position', 'Read the simulated cue', 'Execute full technique sequence'],
+                  breathingCue: 'Maintain rhythmic recovery breaths between reps.',
+                  medicalSafetyNote: `Stop reps if fatigue causes postural breakdown. Calibrated for ${healthConditions}.`,
+                  youtubeQuery: `${sportName} advanced tactical drill`,
+                },
+                {
+                  category: 'EXERCISE',
+                  name: 'Full Kinetic Chain Power Transfer',
+                  setsAndReps: '3 Sets × 12 Reps',
+                  timerSeconds: 60,
+                  customDayAiGuide: 'Transfer energy cleanly from ground contact to terminal athletic release.',
+                  howToSteps: ['Initiate from ankle/knee flex', 'Rotate hips with torque', 'Follow through smoothly'],
+                  breathingCue: 'Explosive exhale at peak power.',
+                  medicalSafetyNote: `Calibrated with controlled resistance for ${healthConditions}.`,
+                  youtubeQuery: 'kinetic chain power development',
+                },
+                {
+                  category: 'YOGASAN',
+                  name: 'Supta Matsyendrasana (Supine Spinal Twist & Reset)',
+                  setsAndReps: '2 Holds × 60 sec per side',
+                  timerSeconds: 60,
+                  customDayAiGuide: 'Restore spinal rotational symmetry and trigger parasympathetic recovery.',
+                  howToSteps: ['Lie flat on back', 'Draw right knee toward chest', 'Gently drop knee across body'],
+                  breathingCue: 'Slow 5-second belly breaths.',
+                  medicalSafetyNote: `Zero joint torque on lower back for ${healthConditions}.`,
+                  youtubeQuery: 'restorative yoga for athletic cool down',
+                },
+              ],
+            },
+          ],
+          stepNutrition: {
+            preSessionFuel: `Optimal ${dietaryPreference} pre-workout hydration and light carbohydrate intake 45 minutes prior.`,
+            postSessionRecovery: `20-30g ${dietaryPreference} protein for tissue repair within 45 minutes of training.`,
+            hydrationTip: 'Maintain continuous fluid balance with sodium and magnesium electrolytes.',
+          },
+        };
       }
-    );
 
-    // Stage 5: Find unique YouTube video for EVERY training item in every day
-    const verifiedDays: TrainingDay[] = [];
-    const totalDays = Math.max(3, Math.min(5, Number(trainingPlanRaw.totalDays) || trainingPlanRaw.days.length || 3));
+      const totalDays = Math.max(3, Math.min(5, Number(trainingPlanRaw.totalDays) || trainingPlanRaw.days.length || 3));
 
-    const categoryFallbackPool: Record<TrainingCategory, string[]> = {
-      DRILL: ['XqZsoesa55w', 'H1b2eJ6WqQY', 'y2A_gV6x7bM', '3RmWnffpM9I', '9sZ8L9Bf_Ww'],
-      EXERCISE: ['IODxDxX7oi4', 'v7AYKMP6rOE', 'aclHkVaku9U', 'ea4W5qR1c38', '2pLT-ulgUVs'],
-      YOGASAN: ['sTANio_2E0Q', '4pKly2JojMw', 'v7SN-d4qXx0', 'COp7BR_Dvps', 'GLy2rKs5Jkg'],
-    };
+      // Deduplicate unique item names across all days and fetch their demonstration YouTube videos concurrently!
+      const uniqueItems = new Map<string, { query: string; category: TrainingCategory; name: string }>();
 
-    for (let dIdx = 0; dIdx < totalDays; dIdx++) {
-      const rawDay = trainingPlanRaw.days[dIdx] || {
-        dayNumber: dIdx + 1,
-        title: `Day ${dIdx + 1} — Athletic Focus & Biomechanical Precision`,
-        focusDescription: `Establish neuromuscular adaptations for Step ${step.stepIndex}.`,
-        items: [],
+      for (let dIdx = 0; dIdx < totalDays; dIdx++) {
+        const rawDay = trainingPlanRaw.days[dIdx];
+        if (!rawDay || !Array.isArray(rawDay.items)) continue;
+        for (const item of rawDay.items) {
+          const cleanName = (item.name || `${sportName} Movement`).trim();
+          const cat = (item.category || 'DRILL').toUpperCase() as TrainingCategory;
+          const key = cleanName.toLowerCase();
+          if (!uniqueItems.has(key)) {
+            uniqueItems.set(key, {
+              query: item.youtubeQuery || `${sportName} ${cleanName} tutorial`,
+              category: cat,
+              name: cleanName,
+            });
+          }
+        }
+      }
+
+      const categoryFallbackPool: Record<TrainingCategory, string[]> = {
+        DRILL: ['XqZsoesa55w', 'H1b2eJ6WqQY', 'y2A_gV6x7bM', '3RmWnffpM9I', '9sZ8L9Bf_Ww'],
+        EXERCISE: ['IODxDxX7oi4', 'v7AYKMP6rOE', 'aclHkVaku9U', 'ea4W5qR1c38', '2pLT-ulgUVs'],
+        YOGASAN: ['sTANio_2E0Q', '4pKly2JojMw', 'v7SN-d4qXx0', 'COp7BR_Dvps', 'GLy2rKs5Jkg'],
       };
 
-      const dayNumber = dIdx + 1;
-      const rawItems = Array.isArray(rawDay.items) && rawDay.items.length > 0 ? rawDay.items : [
-        {
-          category: 'DRILL' as const,
-          name: `${sportName} Step ${step.stepIndex} Kinetic Drill`,
-          setsAndReps: '3 Sets × 60 sec',
-          timerSeconds: 60,
-          customDayAiGuide: `Focus on clean balance and kinetic alignment today.`,
-          howToSteps: ['Set shoulder-width stance', 'Drive through mid-foot', 'Decelerate smoothly'],
-          breathingCue: 'Exhale sharply on exertion.',
-          medicalSafetyNote: `Protected range of motion tailored to ${healthConditions}.`,
-          youtubeQuery: `${sportName} athletic drill tutorial`,
-        },
-        {
-          category: 'EXERCISE' as const,
-          name: `Core Dynamic Stabilization for ${sportName}`,
-          setsAndReps: '3 Sets × 45 sec',
-          timerSeconds: 45,
-          customDayAiGuide: `Maintain neutral spine and steady breathing throughout reps.`,
-          howToSteps: ['Engage abdominal wall', 'Control movement path', 'Hold tension for 2 seconds'],
-          breathingCue: 'Deep diaphragmatic breathing.',
-          medicalSafetyNote: `Neutral spine protective of ${healthConditions}.`,
-          youtubeQuery: `${sportName} conditioning exercise`,
-        },
-        {
-          category: 'YOGASAN' as const,
-          name: `Virabhadrasana & Anjaneyasana Mobility Flow`,
-          setsAndReps: '3 Holds × 45 sec',
-          timerSeconds: 60,
-          customDayAiGuide: `Restore tissue length and open hip flexors after practice.`,
-          howToSteps: ['Step forward into lunge', 'Square hips', 'Reach overhead and breathe'],
-          breathingCue: 'Inhale for 4 seconds, exhale for 6 seconds.',
-          medicalSafetyNote: `Low joint shear adapted for ${healthConditions}.`,
-          youtubeQuery: `yoga mobility for ${sportName}`,
-        },
-      ];
+      // Fetch all unique item demonstration videos in a SINGLE parallel Promise.all batch
+      const videoMap = new Map<string, { videoId: string; videoTitle: string; videoUrl: string }>();
 
-      const verifiedDayItems: TrainingItem[] = [];
-
-      for (let iIdx = 0; iIdx < rawItems.length; iIdx++) {
-        const item = rawItems[iIdx];
-        const cat = (item.category || (iIdx % 2 === 0 ? 'DRILL' : 'EXERCISE')).toUpperCase() as TrainingCategory;
-        const cleanName = (item.name || `${sportName} Movement ${iIdx + 1}`).trim();
-        const itemId = `step${step.stepIndex}_d${dayNumber}_${iIdx + 1}`;
-
-        let videoId: string | null = null;
-        let videoTitle = `${cleanName} — Demonstration`;
-
+      const videoSearchTasks = Array.from(uniqueItems.entries()).map(async ([key, info]) => {
         try {
-          const vidFound = await findUniqueYouTubeVideo(
-            sportName,
-            cat,
-            item.youtubeQuery || `${sportName} ${cleanName} how to perform tutorial`,
-            usedVideoIds
-          );
-          if (vidFound && vidFound.videoId) {
-            videoId = vidFound.videoId;
-            videoTitle = vidFound.title || videoTitle;
-            usedVideoIds.add(vidFound.videoId);
-          }
-        } catch (_) {}
+          const vidFound = await findUniqueYouTubeVideoSafe({
+            skillName: sportName,
+            subGenre: info.category,
+            topicOrChapterTitle: info.name,
+            usedVideoIds,
+          });
+          videoMap.set(key, {
+            videoId: vidFound.videoId,
+            videoTitle: vidFound.title,
+            videoUrl: vidFound.url,
+          });
+        } catch {
+          const pool = categoryFallbackPool[info.category] || categoryFallbackPool.DRILL;
+          let fallbackId = pool.find((id) => !usedVideoIds.has(id)) || pool[0];
+          usedVideoIds.add(fallbackId);
+          videoMap.set(key, {
+            videoId: fallbackId,
+            videoTitle: `${info.name} — Form Demonstration`,
+            videoUrl: `https://www.youtube.com/watch?v=${fallbackId}`,
+          });
+        }
+      });
 
-        if (!videoId) {
-          const pool = categoryFallbackPool[cat] || categoryFallbackPool.DRILL;
-          for (const fbId of pool) {
-            if (!usedVideoIds.has(fbId)) {
-              videoId = fbId;
-              usedVideoIds.add(fbId);
-              break;
-            }
-          }
-          if (!videoId) videoId = pool[iIdx % pool.length];
+      await Promise.all(videoSearchTasks);
+
+      const verifiedDays: TrainingDay[] = [];
+
+      for (let dIdx = 0; dIdx < totalDays; dIdx++) {
+        const rawDay = trainingPlanRaw.days[dIdx] || {
+          dayNumber: dIdx + 1,
+          title: `Day ${dIdx + 1} — Athletic Focus & Biomechanical Precision`,
+          focusDescription: `Establish neuromuscular adaptations for Step ${step.stepIndex}.`,
+          items: [],
+        };
+
+        const dayNumber = dIdx + 1;
+        const rawItems = Array.isArray(rawDay.items) && rawDay.items.length > 0 ? rawDay.items : [];
+        const verifiedDayItems: TrainingItem[] = [];
+
+        for (let iIdx = 0; iIdx < rawItems.length; iIdx++) {
+          const item = rawItems[iIdx];
+          const cat = (item.category || (iIdx % 2 === 0 ? 'DRILL' : 'EXERCISE')).toUpperCase() as TrainingCategory;
+          const cleanName = (item.name || `${sportName} Movement ${iIdx + 1}`).trim();
+          const itemId = `step${step.stepIndex}_d${dayNumber}_${iIdx + 1}`;
+          const key = cleanName.toLowerCase();
+          const vidData = videoMap.get(key) || {
+            videoId: 'IODxDxX7oi4',
+            videoTitle: `${cleanName} — Demonstration`,
+            videoUrl: 'https://www.youtube.com/watch?v=IODxDxX7oi4',
+          };
+
+          verifiedDayItems.push({
+            id: itemId,
+            category: cat,
+            name: cleanName,
+            setsAndReps: item.setsAndReps || '3 Sets × 60 sec',
+            timerSeconds: Math.max(30, Math.min(300, Number(item.timerSeconds) || 60)),
+            customDayAiGuide: item.customDayAiGuide || `Perform this movement with controlled tempo on Day ${dayNumber}.`,
+            howToSteps: Array.isArray(item.howToSteps) && item.howToSteps.length > 0
+              ? item.howToSteps
+              : ['Establish a stable athletic base', 'Execute with precision', 'Control deceleration'],
+            breathingCue: item.breathingCue || 'Steady rhythmic breathing throughout execution.',
+            medicalSafetyNote: item.medicalSafetyNote || `Calibrated safely to avoid joint stress for ${healthConditions}.`,
+            youtubeQuery: item.youtubeQuery || `${sportName} ${cleanName}`,
+            videoId: vidData.videoId,
+            videoTitle: vidData.videoTitle,
+            videoUrl: vidData.videoUrl,
+          });
         }
 
-        verifiedDayItems.push({
-          id: itemId,
-          category: cat,
-          name: cleanName,
-          setsAndReps: item.setsAndReps || '3 Sets × 60 sec',
-          timerSeconds: Math.max(30, Math.min(300, Number(item.timerSeconds) || 60)),
-          customDayAiGuide: item.customDayAiGuide || `Perform this movement with controlled tempo on Day ${dayNumber}.`,
-          howToSteps: Array.isArray(item.howToSteps) && item.howToSteps.length > 0
-            ? item.howToSteps
-            : ['Establish a stable athletic base', 'Execute with precision', 'Control deceleration'],
-          breathingCue: item.breathingCue || 'Steady rhythmic breathing throughout execution.',
-          medicalSafetyNote: item.medicalSafetyNote || `Calibrated safely to avoid joint stress for ${healthConditions}.`,
-          youtubeQuery: item.youtubeQuery || `${sportName} ${cleanName}`,
-          videoId,
-          videoTitle,
-          videoUrl: `https://www.youtube.com/watch?v=${videoId}`,
+        verifiedDays.push({
+          dayNumber,
+          title: rawDay.title || `Day ${dayNumber} Focus Session`,
+          focusDescription: rawDay.focusDescription || `Targeted biomechanical adaptations for ${sportName}.`,
+          items: verifiedDayItems,
         });
       }
 
-      verifiedDays.push({
-        dayNumber,
-        title: rawDay.title || `Day ${dayNumber} Focus Session`,
-        focusDescription: rawDay.focusDescription || `Targeted biomechanical adaptations for ${sportName}.`,
-        items: verifiedDayItems,
-      });
-    }
+      const finalNutrition: StepNutrition = {
+        preSessionFuel: trainingPlanRaw.stepNutrition?.preSessionFuel ||
+          `Optimal ${dietaryPreference} pre-training meal 45-60 minutes prior to session.`,
+        postSessionRecovery: trainingPlanRaw.stepNutrition?.postSessionRecovery ||
+          `Targeted ${dietaryPreference} recovery with 20-30g protein within 45 minutes of training.`,
+        hydrationTip: trainingPlanRaw.stepNutrition?.hydrationTip ||
+          'Consume water with electrolytes before, during, and after practice to maintain muscular hydration.',
+      };
 
-    const finalNutrition: StepNutrition = {
-      preSessionFuel: trainingPlanRaw.stepNutrition?.preSessionFuel ||
-        `Optimal ${dietaryPreference} pre-training meal 45-60 minutes prior to session.`,
-      postSessionRecovery: trainingPlanRaw.stepNutrition?.postSessionRecovery ||
-        `Targeted ${dietaryPreference} recovery with 20-30g protein within 45 minutes of training.`,
-      hydrationTip: trainingPlanRaw.stepNutrition?.hydrationTip ||
-        'Consume water with electrolytes before, during, and after practice to maintain muscular hydration.',
+      return {
+        totalDays,
+        days: verifiedDays,
+        stepNutrition: finalNutrition,
+      };
     };
 
-    const finalTrainingPlan: StepTrainingPlan = {
-      totalDays,
-      days: verifiedDays,
-      stepNutrition: finalNutrition,
-    };
+    // Execute Branch A (Study Chapters) and Branch B (Training Plan) CONCURRENTLY
+    const [verifiedChapters, finalTrainingPlan] = await Promise.all([
+      buildChaptersBranch(),
+      buildTrainingPlanBranch(),
+    ]);
 
     // Stage 6: Atomic Database Transaction
     await prisma.$transaction(async (tx) => {
@@ -770,6 +940,16 @@ Return ONLY valid JSON matching:
         }
       }
     });
+
+    console.log(`[runSportsPackBuild] Step ${stepId} (${sportName}) chapters and training plan persisted.`);
+
+    // Branch C: Concurrently pre-generate Socratic Gate Quiz evaluation in PostgreSQL
+    try {
+      await runQuizBuild(stepId);
+      console.log(`[runSportsPackBuild] Socratic Gate Quiz pre-generated for step ${stepId}.`);
+    } catch (quizErr) {
+      console.warn(`[runSportsPackBuild] Quiz pre-generation notice (non-fatal):`, quizErr);
+    }
 
     console.log(`[runSportsPackBuild] Step ${stepId} (${sportName}) pack build completed successfully with verified resources & training plan.`);
   } catch (err: any) {
@@ -908,8 +1088,11 @@ export async function getSportsStepPack(stepId: string) {
     throw new Error('Sports step not found');
   }
 
-  // Auto-backfill: If step is READY (or FAILED) but chapters.length === 0, build chapters & resources now!
-  if (step.packStatus === 'FAILED' || (step.packStatus === 'READY' && (!step.stepChapters || step.stepChapters.length === 0))) {
+  const hasChapters = Array.isArray(step.stepChapters) && step.stepChapters.length > 0;
+  const hasTrainingPlan = !!(step.intro as any)?.trainingPlan?.days?.length;
+
+  // Auto-backfill: If step is READY (or FAILED) but either chapters or training plan is missing, build now!
+  if (step.packStatus === 'FAILED' || (step.packStatus === 'READY' && (!hasChapters || !hasTrainingPlan))) {
     try {
       await runSportsPackBuild(step.id);
       const healed = await prisma.skillStep.findUnique({
