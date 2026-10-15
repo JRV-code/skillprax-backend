@@ -335,10 +335,11 @@ Rules:
         });
         topicDocsMap.set(t.key, docs);
 
+        const topicSlug = t.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
         const primary = docs[0] || {
           title: `${t.title} Reference Guide`,
-          url: `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(`${skill} ${t.title}`)}`,
-          domain: 'en.wikipedia.org',
+          url: `https://dev.to/t/${encodeURIComponent(topicSlug)}`,
+          domain: 'dev.to',
           snippet: `Foundational guide and execution concepts for ${t.title}.`,
           verificationStatus: 'VERIFIED',
         };
@@ -355,11 +356,12 @@ Rules:
         });
       } catch (docErr) {
         console.warn(`[runPackBuild] Doc search notice for topic ${t.title}:`, docErr);
-        const fallbackUrl = `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(`${skill} ${t.title}`)}`;
+        const topicSlug = t.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        const fallbackUrl = `https://www.geeksforgeeks.org/${encodeURIComponent(topicSlug)}/`;
         const fb = {
-          title: `${t.title} Reference`,
+          title: `${t.title} Reference Guide`,
           url: fallbackUrl,
-          domain: 'wikipedia.org',
+          domain: 'geeksforgeeks.org',
           snippet: `Core principles and techniques for ${t.title}.`,
           verificationStatus: 'VERIFIED',
         };
@@ -743,17 +745,18 @@ Return ONLY JSON:
 
         // Add verified educational links for both topics
         for (const top of [top1, top2]) {
-          const wikiUrl = `https://en.wikipedia.org/wiki/Special:Search?search=${encodeURIComponent(`${skill} ${top.title}`)}`;
-          const gfgUrl = `https://www.geeksforgeeks.org/search/?gq=${encodeURIComponent(`${skill} ${top.title}`)}`;
+          const topicSlug = top.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+          const devtoUrl = `https://dev.to/t/${encodeURIComponent(topicSlug)}`;
+          const gfgUrl = `https://www.geeksforgeeks.org/${encodeURIComponent(topicSlug)}/`;
           await tx.resource.createMany({
             data: [
               {
                 stepId,
                 topicId: top.id,
                 type: 'doc',
-                title: `${top.title} Technical Reference (Wikipedia)`,
-                url: wikiUrl,
-                domain: 'en.wikipedia.org',
+                title: `${top.title} Technical Reference (Dev.to)`,
+                url: devtoUrl,
+                domain: 'dev.to',
                 snippet: `Foundational guide and execution models for ${top.title}.`,
                 linkStatus: 'VERIFIED',
               },

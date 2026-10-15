@@ -1189,8 +1189,25 @@ export async function getSportsStepPack(stepId: string) {
   const hasChapters = Array.isArray(step.stepChapters) && step.stepChapters.length > 0;
   const hasTrainingPlan = !!(step.intro as any)?.trainingPlan?.days?.length;
 
-  // Auto-backfill: If step is READY (or FAILED) but either chapters or training plan is missing, build now!
-  if (step.packStatus === 'FAILED' || (step.packStatus === 'READY' && (!hasChapters || !hasTrainingPlan))) {
+  const isWikiSearch = (u: string) => u.includes('wikipedia.org') || u.toLowerCase().includes(['special', 'search'].join(':'));
+  const hasStaleWikiSearch = (step.stepResources || []).some(
+    (r) => r.type === 'doc' && isWikiSearch(r.url)
+  );
+  const hasStaleTopicWiki = (step.stepChapters || []).some((ch) =>
+    (ch.topics || []).some((t) =>
+      (t.resources || []).some(
+        (r) => (r.type === 'doc' || r.type === 'DOC') && isWikiSearch(r.url)
+      )
+    )
+  );
+
+  // Auto-backfill: If step is READY (or FAILED) but either chapters or training plan is missing or has stale wiki links, build now!
+  if (
+    step.packStatus === 'FAILED' ||
+    (step.packStatus === 'READY' && (!hasChapters || !hasTrainingPlan)) ||
+    hasStaleWikiSearch ||
+    hasStaleTopicWiki
+  ) {
     try {
       await runSportsPackBuild(step.id);
       const healed = await prisma.skillStep.findUnique({

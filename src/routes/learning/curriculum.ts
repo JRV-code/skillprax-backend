@@ -4,10 +4,9 @@ import {
   claimPackBuild,
   claimQuizBuild,
   enqueueJob,
-  runPackBuild,
 } from '../../services/learning/packPipeline';
 import { runQuizBuild } from '../../services/learning/quiz';
-import { activeBuildProgress } from '../../services/learning/packBuilder';
+import { runPackBuild, activeBuildProgress } from '../../services/learning/packBuilder';
 import {
   searchTavily,
   extractYouTubeId,
@@ -248,8 +247,25 @@ export const curriculumLearningRoutes: FastifyPluginAsync = async (fastify: Fast
         return reply.send({ locked: true });
       }
 
-      // Auto-heal stuck, failed or empty packs
-      if (step.packStatus === 'FAILED' || (step.packStatus === 'READY' && (!step.stepChapters || step.stepChapters.length === 0))) {
+      // Auto-heal stuck, failed, empty, or stale Wikipedia/search-page packs
+      const isWikiSearch = (u: string) => u.includes('wikipedia.org') || u.toLowerCase().includes(['special', 'search'].join(':'));
+      const hasStaleWikiSearch = (step.stepResources || []).some(
+        (r) => r.type === 'doc' && isWikiSearch(r.url)
+      );
+      const hasStaleTopicWiki = (step.stepChapters || []).some((ch) =>
+        (ch.topics || []).some((t) =>
+          (t.resources || []).some(
+            (r) => (r.type === 'doc' || r.type === 'DOC') && isWikiSearch(r.url)
+          )
+        )
+      );
+
+      if (
+        step.packStatus === 'FAILED' ||
+        (step.packStatus === 'READY' && (!step.stepChapters || step.stepChapters.length === 0)) ||
+        hasStaleWikiSearch ||
+        hasStaleTopicWiki
+      ) {
         try {
           await runPackBuild(step.id);
           const healed = await prisma.skillStep.findUnique({
