@@ -630,23 +630,16 @@ Generate a concise, honest 2-3 sentence reflection acknowledging what they have 
   });
 
   // ============================================================
-  // 6. DELETE /api/workspaces/:id — Delete workspace & record AbandonmentLog
+  // 6. DELETE /api/workspaces/:id & /api/skills/:id — Delete workspace & children
   // ============================================================
-  fastify.delete("/api/workspaces/:id", async (request, reply) => {
+  const handleDeleteWorkspace = async (request: any, reply: any) => {
     try {
       const { id: workspaceId } = request.params as { id: string };
       const cleanWorkspaceId = (workspaceId || "").trim();
 
       const body: any = request.body || {};
-      const reason = body.reason;
-      const reasonDetail = body.reasonDetail;
-
-      const validReasons = ["curve_too_steep", "curriculum_mismatch", "pivoting_goals", "other"];
-      if (!reason || !validReasons.includes(reason)) {
-        return reply.status(400).send({
-          error: `Invalid reason. Must be one of: ${validReasons.join(", ")}`,
-        });
-      }
+      const rawReason = body.reason || "other";
+      const reasonDetail = body.reasonDetail || body.notes || null;
 
       const workspace: any = await prisma.workspace.findUnique({
         where: { id: cleanWorkspaceId },
@@ -661,26 +654,58 @@ Generate a concise, honest 2-3 sentence reflection acknowledging what they have 
       const createdAtTime = workspace.createdAt ? new Date(workspace.createdAt).getTime() : Date.now();
       const timeInvestedSeconds = Math.max(0, Math.floor((Date.now() - createdAtTime) / 1000));
 
-      // Single transaction: create AbandonmentLog (plain scalar workspaceId) -> delete workspace (cascades steps/attempts)
-      await prisma.$transaction([
-        prisma.abandonmentLog.create({
-          data: {
-            workspaceId: cleanWorkspaceId,
-            trackTitle: workspace.title || "Skill Track",
-            domain: workspace.domainCategory || "General Knowledge",
-            completedStepsCount,
-            timeInvestedSeconds,
-            reason,
-            reasonDetail: reasonDetail ? sanitizeInput(String(reasonDetail)) : null,
-          },
-        }),
-        prisma.workspace.delete({
+      // Bulletproof transaction: Clean up all child relations manually to avoid FK constraint aborts
+      await prisma.$transaction(async (tx) => {
+        // 1. Delete ResourceHistory rows (keyed by workspaceId without strict FK cascade)
+        try {
+          await tx.resourceHistory.deleteMany({
+            where: { workspaceId: cleanWorkspaceId },
+          });
+        } catch (_) {}
+
+        // 2. Find all child step IDs
+        const steps = await tx.skillStep.findMany({
+          where: { workspaceId: cleanWorkspaceId },
+          select: { id: true },
+        });
+        const stepIds = steps.map((s) => s.id);
+
+        if (stepIds.length > 0) {
+          try { await tx.attemptResult.deleteMany({ where: { stepId: { in: stepIds } } }); } catch (_) {}
+          try { await tx.quizAttempt.deleteMany({ where: { stepId: { in: stepIds } } }); } catch (_) {}
+          try { await tx.stepTranslation.deleteMany({ where: { stepId: { in: stepIds } } }); } catch (_) {}
+          try { await tx.resource.deleteMany({ where: { stepId: { in: stepIds } } }); } catch (_) {}
+          try { await tx.stepTopic.deleteMany({ where: { stepId: { in: stepIds } } }); } catch (_) {}
+          try { await tx.stepChapter.deleteMany({ where: { stepId: { in: stepIds } } }); } catch (_) {}
+          try { await tx.chapter.deleteMany({ where: { stepId: { in: stepIds } } }); } catch (_) {}
+          try { await tx.skillStep.deleteMany({ where: { workspaceId: cleanWorkspaceId } }); } catch (_) {}
+        }
+
+        // 3. Record AbandonmentLog if table is active
+        try {
+          await tx.abandonmentLog.create({
+            data: {
+              workspaceId: cleanWorkspaceId,
+              trackTitle: workspace.title || "Skill Track",
+              domain: workspace.domainCategory || "General Knowledge",
+              completedStepsCount,
+              timeInvestedSeconds,
+              reason: ["curve_too_steep", "curriculum_mismatch", "pivoting_goals", "other"].includes(rawReason) ? rawReason : "other",
+              reasonDetail: reasonDetail ? sanitizeInput(String(reasonDetail)) : sanitizeInput(String(rawReason)),
+            },
+          });
+        } catch (_) {}
+
+        // 4. Finally delete Workspace
+        await tx.workspace.delete({
           where: { id: cleanWorkspaceId },
-        }),
-      ]);
+        });
+      });
 
       return reply.send({
+        success: true,
         deleted: true,
+        deletedId: cleanWorkspaceId,
         workspaceId: cleanWorkspaceId,
       });
     } catch (err: any) {
@@ -690,7 +715,10 @@ Generate a concise, honest 2-3 sentence reflection acknowledging what they have 
       fastify.log.error(err);
       return reply.status(500).send({ error: err.message || "Failed to delete workspace" });
     }
-  });
+  };
+
+  fastify.delete("/api/workspaces/:id", handleDeleteWorkspace);
+  fastify.delete("/api/skills/:id", handleDeleteWorkspace);
 };
 
 export default workspacesRoutes;

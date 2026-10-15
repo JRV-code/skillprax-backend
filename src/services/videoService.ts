@@ -274,6 +274,34 @@ export async function fetchUniqueStepVideo(
     }
   }
 
+  // 4c. Public YouTube Search Scrape Fallback
+  if (!matchedVideo) {
+    try {
+      const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${skillName} ${stepTitle} tutorial`)}`;
+      const ytHtmlRes = await fetch(searchUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (ytHtmlRes.ok) {
+        const html = await ytHtmlRes.text();
+        const matches = Array.from(html.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g));
+        for (const m of matches) {
+          const vId = m[1];
+          if (vId && !seenVideoIds.has(vId) && vId !== 'dQw4w9WgXcQ' && vId !== 'kJQP7kiw5Fk' && vId !== 'dQ3GLk1jUqI') {
+            matchedVideo = {
+              videoId: vId,
+              videoTitle: `${skillName} - ${stepTitle} Video Guide`,
+            };
+            break;
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
   if (!matchedVideo) {
     throw new Error(`Unable to find a fresh, verified video lecture for ${skillName} - ${stepTitle}`);
   }

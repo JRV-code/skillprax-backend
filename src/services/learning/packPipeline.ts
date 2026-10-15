@@ -21,6 +21,7 @@ import {
   hasVerbatimRun,
   fetchWikipediaExtract,
   TavilySearchResult,
+  findUniqueYouTubeVideo,
 } from './foundation';
 
 // Global execution queue ensuring concurrency 1 for rate limits
@@ -343,31 +344,20 @@ Rules:
         }
       }
 
-      // If chapter did not get a video from specific query, search fresh fallback
+      // If chapter did not get a video from specific query, use 3-Stage Progressive Search
       if (!assignedForCh) {
         try {
-          const fallbackQ = `site:youtube.com/watch "${skill}" "${ch.title}" explainer walkthrough`.trim();
-          const fallbackRes = await searchTavily(fallbackQ, {
-            searchDepth: 'basic',
-            maxResults: 6,
-            includeDomains: ['youtube.com', 'youtu.be'],
-            includeRawContent: false,
-          });
-          for (const r of fallbackRes) {
-            const vId = extractYouTubeId(r.url);
-            if (!vId || usedVideoIds.has(vId) || historyIdentifiers.has(`yt:${vId}`)) continue;
-            const ytCheck = await checkYouTube(vId);
-            if (ytCheck.status !== 'GONE') {
-              const videoObj = {
-                index: chIdx,
-                videoId: vId,
-                title: r.title || `${ch.title} Video Lecture`,
-                channel: r.title?.split('-')[0]?.trim() || 'Verified Channel',
-              };
-              assignedVideoMap.set(chIdx, { video: videoObj, videoType: 'tutorial' });
-              usedVideoIds.add(vId);
-              break;
-            }
+          const uniqueVid = await findUniqueYouTubeVideo(skill, subGenre, ch.title, usedVideoIds);
+          if (uniqueVid) {
+            const videoObj = {
+              index: chIdx,
+              videoId: uniqueVid.videoId,
+              title: uniqueVid.title || `${ch.title} Video Lecture`,
+              channel: uniqueVid.channel || 'Verified Channel',
+            };
+            assignedVideoMap.set(chIdx, { video: videoObj, videoType: 'tutorial' });
+            usedVideoIds.add(uniqueVid.videoId);
+            assignedForCh = true;
           }
         } catch (_) {}
       }

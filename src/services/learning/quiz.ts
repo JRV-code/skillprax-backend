@@ -605,6 +605,8 @@ export async function submitQuizAnswers(
   payload: {
     attemptId?: string;
     answers: Record<string, string>;
+    questionIds?: string[];
+    mode?: string;
   }
 ) {
   let step = await prisma.skillStep.findUnique({
@@ -634,32 +636,71 @@ export async function submitQuizAnswers(
 
   if (!step) throw new Error('Step not found');
 
-  const questions: StoredQuizQuestion[] = Array.isArray(step.quizBlueprint)
+  const allQuestions: StoredQuizQuestion[] = Array.isArray(step.quizBlueprint)
     ? (step.quizBlueprint as any)
     : [];
 
-  if (questions.length === 0) {
+  if (allQuestions.length === 0) {
     throw new Error('No active quiz blueprint found for step');
   }
 
-  const totalCount = questions.length;
+  // 1. Grade strictly against the active attempt's questions (Denominator Fix)
+  let activeQuestions: StoredQuizQuestion[] = allQuestions;
+  if (Array.isArray(payload.questionIds) && payload.questionIds.length > 0) {
+    const activeIdSet = new Set(payload.questionIds.map((id) => String(id)));
+    const filtered = allQuestions.filter((q) => activeIdSet.has(String(q.id)));
+    if (filtered.length > 0) {
+      activeQuestions = filtered;
+    }
+  }
+
+  const totalCount = activeQuestions.length;
   let correctCount = 0;
 
-  const detailedBreakdown = questions.map((q) => {
-    const rawAnswer = (payload.answers[q.id] ?? '').toString().trim();
-    const correctOption = q.options.find((o) => o.id === q.correctOptionId);
-    let chosenOption = q.options.find((o) => o.id === rawAnswer);
-    if (!chosenOption) {
-      chosenOption = q.options.find(
-        (o) => String(o.position) === rawAnswer || o.text.trim().toLowerCase() === rawAnswer.toLowerCase()
-      );
-    }
+  // 2. Bulletproof Answer Matching (Numerator Fix)
+  const detailedBreakdown = activeQuestions.map((q) => {
+    // Order options by position ASC
+    const sortedOptions = [...(q.options || [])].sort(
+      (a, b) => (typeof a.position === 'number' ? a.position : 0) - (typeof b.position === 'number' ? b.position : 0)
+    );
 
-    const isCorrect = chosenOption
-      ? chosenOption.id === q.correctOptionId
-      : rawAnswer === q.correctOptionId;
+    const correctOption =
+      sortedOptions.find((o) => o.id === q.correctOptionId || o.isCorrect) || sortedOptions[0];
+    const correctIndex = sortedOptions.findIndex(
+      (o) => o.id === q.correctOptionId || o.isCorrect
+    );
+
+    const rawAnswer = (payload.answers[q.id] ?? '').toString().trim();
+
+    // Check match against: Option ID, 0-based option index, or option text
+    const isMatchedById =
+      Boolean(rawAnswer) &&
+      Boolean(correctOption?.id) &&
+      (rawAnswer === correctOption.id || rawAnswer.toLowerCase() === correctOption.id.toLowerCase());
+
+    const isMatchedByIndex =
+      Boolean(rawAnswer) &&
+      correctIndex >= 0 &&
+      !isNaN(Number(rawAnswer)) &&
+      Number(rawAnswer) === correctIndex;
+
+    const isMatchedByText =
+      Boolean(rawAnswer) &&
+      Boolean(correctOption?.text) &&
+      rawAnswer.toLowerCase() === correctOption.text.trim().toLowerCase();
+
+    const isCorrect = isMatchedById || isMatchedByIndex || isMatchedByText;
 
     if (isCorrect) correctCount++;
+
+    // Find chosen option object for reporting
+    let chosenOption = sortedOptions.find(
+      (o) =>
+        o.id === rawAnswer ||
+        (rawAnswer && o.id.toLowerCase() === rawAnswer.toLowerCase()) ||
+        (!isNaN(Number(rawAnswer)) && o.position === Number(rawAnswer)) ||
+        o.text.trim().toLowerCase() === rawAnswer.toLowerCase()
+    );
 
     const topic = step!.stepTopics.find((t) => t.key === q.topicKey);
 
@@ -675,7 +716,7 @@ export async function submitQuizAnswers(
       chosenOptionId: chosenOption?.id || rawAnswer || null,
       chosenOptionText: chosenOption?.text || rawAnswer || null,
       chosenText: chosenOption?.text || rawAnswer || 'No response recorded',
-      correctOptionId: q.correctOptionId,
+      correctOptionId: correctOption?.id || q.correctOptionId,
       correctOptionText: correctOption?.text || 'Correct principle',
       correctText: correctOption?.text || 'Correct principle',
       isCorrect,
@@ -683,9 +724,10 @@ export async function submitQuizAnswers(
     };
   });
 
-  // Strict 70% passing criteria
-  const percent = totalCount > 0 ? Math.floor((correctCount * 100) / totalCount) : 0;
-  const passed = totalCount > 0 && correctCount * 100 >= 70 * totalCount;
+  // 3. Exact standard percentage formula & 70% Gate
+  const exactPercentage = totalCount > 0 ? Math.round((correctCount / totalCount) * 100) : 0;
+  const passed = exactPercentage >= 70;
+  const percent = exactPercentage;
 
   // Identify wrong answers
   const wrongQuestions = detailedBreakdown.filter((q) => !q.isCorrect);

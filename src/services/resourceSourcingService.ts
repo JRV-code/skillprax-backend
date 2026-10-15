@@ -254,29 +254,107 @@ export async function sourceStepContentFast(
   // ---------------------------------------------------------------------------
   // TASK A: PARALLEL VIDEO SOURCING (FAST YOUTUBE QUERY)
   // ---------------------------------------------------------------------------
-  let selectedVideo = {
-    videoId: isSportsTrack ? 'dQ3GLk1jUqI' : 'kJQP7kiw5Fk',
-    videoTitle: `${trackName} - ${cleanStepTitle} Masterclass`,
+  let selectedVideo: { videoId: string; videoTitle: string } | null = null;
+  const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+
+  // Helper to fetch verified title
+  const getVerifiedTitle = async (vId: string, fallbackTitle: string): Promise<string> => {
+    try {
+      const oRes = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${vId}`)}`, { signal: AbortSignal.timeout(4000) });
+      if (oRes.ok) {
+        const j: any = await oRes.json();
+        if (j.title) return j.title;
+      }
+    } catch (_) {}
+    return fallbackTitle;
   };
 
+  // Attempt 1: Specific Video Search
   try {
-    const videoQuery = `site:youtube.com/watch "${trackName}" "${cleanStepTitle}" tutorial coaching lecture -shorts`;
-    const ytRes = await tavilyClient.search(videoQuery, { max_results: 6 });
-    const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+    const videoQuery = `${trackName} ${cleanStepTitle} tutorial ${isSportsTrack ? 'coaching drills' : 'lecture walkthrough'}`.trim();
+    const ytRes = await tavilyClient.search(videoQuery, {
+      max_results: 8,
+      include_domains: ['youtube.com', 'youtu.be'],
+    });
 
     for (const item of (ytRes.results || [])) {
       if (!item.url) continue;
       const match = item.url.match(ytRegex);
-      if (match && match[1] && !seenResources.has(match[1]) && match[1] !== 'dQw4w9WgXcQ') {
+      if (match && match[1] && !seenResources.has(match[1]) && match[1] !== 'dQw4w9WgXcQ' && match[1] !== 'kJQP7kiw5Fk' && match[1] !== 'dQ3GLk1jUqI') {
+        const verifiedTitle = await getVerifiedTitle(match[1], item.title || `${trackName}: ${cleanStepTitle}`);
         selectedVideo = {
           videoId: match[1],
-          videoTitle: item.title || `${trackName}: ${cleanStepTitle}`,
+          videoTitle: verifiedTitle,
         };
         break;
       }
     }
   } catch (e) {
-    console.warn('[sourceStepContentFast] Video query notice:', e);
+    console.warn('[sourceStepContentFast] Attempt 1 notice:', e);
+  }
+
+  // Attempt 2: Broader Video Search
+  if (!selectedVideo) {
+    try {
+      const broadQuery = `${trackName} ${trackGenre || ''} ${cleanStepTitle}`.trim();
+      const broadRes = await tavilyClient.search(broadQuery, {
+        max_results: 8,
+        include_domains: ['youtube.com', 'youtu.be'],
+      });
+      for (const item of (broadRes.results || [])) {
+        if (!item.url) continue;
+        const match = item.url.match(ytRegex);
+        if (match && match[1] && !seenResources.has(match[1]) && match[1] !== 'dQw4w9WgXcQ' && match[1] !== 'kJQP7kiw5Fk' && match[1] !== 'dQ3GLk1jUqI') {
+          const verifiedTitle = await getVerifiedTitle(match[1], item.title || `${trackName}: ${cleanStepTitle}`);
+          selectedVideo = {
+            videoId: match[1],
+            videoTitle: verifiedTitle,
+          };
+          break;
+        }
+      }
+    } catch (e) {
+      console.warn('[sourceStepContentFast] Attempt 2 notice:', e);
+    }
+  }
+
+  // Attempt 3: Public YouTube Search Scrape Fallback
+  if (!selectedVideo) {
+    try {
+      const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(`${trackName} ${cleanStepTitle} tutorial`)}`;
+      const ytHtmlRes = await fetch(searchUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (ytHtmlRes.ok) {
+        const html = await ytHtmlRes.text();
+        const matches = Array.from(html.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g));
+        for (const m of matches) {
+          const vId = m[1];
+          if (vId && !seenResources.has(vId) && vId !== 'dQw4w9WgXcQ' && vId !== 'kJQP7kiw5Fk' && vId !== 'dQ3GLk1jUqI') {
+            const verifiedTitle = await getVerifiedTitle(vId, `${cleanStepTitle} - ${trackName} Walkthrough`);
+            selectedVideo = {
+              videoId: vId,
+              videoTitle: verifiedTitle,
+            };
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[sourceStepContentFast] Attempt 3 scrape notice:', e);
+    }
+  }
+
+  // Guarantee non-null selectedVideo without repetitive static fallbacks
+  if (!selectedVideo) {
+    selectedVideo = {
+      videoId: 'M7lc1UVf-VE', // YouTube official developer intro fallback as extreme safety
+      videoTitle: `${trackName} - ${cleanStepTitle} Study Session`,
+    };
   }
 
   // ---------------------------------------------------------------------------

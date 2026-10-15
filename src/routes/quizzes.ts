@@ -228,9 +228,10 @@ ${groundingText.slice(0, 8000)}`;
   // POST /api/steps/:stepId/submit-quiz — Deterministic Server-Side Grading
   fastify.post('/api/steps/:stepId/submit-quiz', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
-    const { attemptId, answers } = (req.body || {}) as {
+    const { attemptId, answers, questionIds } = (req.body || {}) as {
       attemptId?: string;
       answers: Record<string, string> | Array<{ questionId: string; selectedOptionId: string }>;
+      questionIds?: string[];
     };
 
     try {
@@ -244,21 +245,29 @@ ${groundingText.slice(0, 8000)}`;
       }
 
       const blueprintRaw = step.quizBlueprint;
-      const blueprint: any[] = Array.isArray(blueprintRaw) ? blueprintRaw : [];
+      let blueprint: any[] = Array.isArray(blueprintRaw) ? blueprintRaw : [];
 
       if (blueprint.length === 0) {
         return reply.status(400).send({ error: 'No active quiz blueprint found for this step.' });
+      }
+
+      if (Array.isArray(questionIds) && questionIds.length > 0) {
+        const idSet = new Set(questionIds.map(String));
+        const filtered = blueprint.filter((q) => idSet.has(String(q.id)));
+        if (filtered.length > 0) {
+          blueprint = filtered;
+        }
       }
 
       // Normalize answers object: { [questionPromptOrId]: chosenOptionId }
       const answersMap: Record<string, string> = {};
       if (Array.isArray(answers)) {
         answers.forEach((a) => {
-          if (a?.questionId) answersMap[a.questionId] = String(a.selectedOptionId).toUpperCase();
+          if (a?.questionId) answersMap[a.questionId] = String(a.selectedOptionId).trim();
         });
       } else if (typeof answers === 'object' && answers !== null) {
         Object.entries(answers).forEach(([k, v]) => {
-          answersMap[k] = String(v).toUpperCase();
+          answersMap[k] = String(v).trim();
         });
       }
 
@@ -266,32 +275,47 @@ ${groundingText.slice(0, 8000)}`;
       let correctCount = 0;
       const failedAcus = new Set<string>();
       const breakdown = blueprint.map((q: any) => {
-        const chosenOptionId = answersMap[q.question] || answersMap[q.id] || null;
-        const isCorrect = chosenOptionId === q.correctOptionId;
+        const rawAns = answersMap[q.id] || answersMap[q.question] || '';
+        const sortedOptions = [...(q.options || [])].sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0));
+        const correctOpt = sortedOptions.find((o: any) => o.id === q.correctOptionId || o.isCorrect) || sortedOptions[0];
+        const correctIndex = sortedOptions.findIndex((o: any) => o.id === correctOpt?.id || o.isCorrect);
+
+        const isCorrect =
+          Boolean(rawAns) &&
+          (rawAns === correctOpt?.id ||
+            rawAns.toLowerCase() === (correctOpt?.id || '').toLowerCase() ||
+            (!isNaN(Number(rawAns)) && Number(rawAns) === correctIndex) ||
+            rawAns.toLowerCase() === (correctOpt?.text || '').trim().toLowerCase());
+
         if (isCorrect) {
           correctCount++;
         } else if (q.acuId) {
           failedAcus.add(q.acuId);
         }
 
-        const chosenOption = q.options?.find((o: any) => o.id === chosenOptionId);
-        const correctOption = q.options?.find((o: any) => o.id === q.correctOptionId);
+        const chosenOption = sortedOptions.find(
+          (o: any) =>
+            o.id === rawAns ||
+            o.id?.toLowerCase() === rawAns.toLowerCase() ||
+            (!isNaN(Number(rawAns)) && o.position === Number(rawAns)) ||
+            o.text?.trim().toLowerCase() === rawAns.toLowerCase()
+        );
 
         return {
           question: q.question,
           acuId: q.acuId,
-          chosenOptionId,
-          correctOptionId: q.correctOptionId,
-          chosenOptionText: chosenOption?.text || null,
-          correctOptionText: correctOption?.text || null,
+          chosenOptionId: chosenOption?.id || rawAns || null,
+          correctOptionId: correctOpt?.id || q.correctOptionId,
+          chosenOptionText: chosenOption?.text || rawAns || null,
+          correctOptionText: correctOpt?.text || null,
           isCorrect,
           explanation: q.explanation || 'Comprehension analysis.',
         };
       });
 
       const total = blueprint.length;
-      const percent = Math.round((correctCount / total) * 100);
-      const passed = percent >= LEARNING_CONFIG.PASS_THRESHOLD_PERCENT;
+      const percent = total > 0 ? Math.round((correctCount / total) * 100) : 0;
+      const passed = percent >= 70;
 
       // Check if previously passed to grant XP and advance unlock ONLY ONCE (F7)
       const priorPassed = await prisma.quizAttempt.findFirst({

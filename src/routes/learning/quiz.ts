@@ -99,9 +99,11 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
   // POST /api/steps/:stepId/submit-quiz — Server-Side Deterministic Grading
   fastify.post('/api/steps/:stepId/submit-quiz', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };
-    const { attemptId, answers } = (req.body || {}) as {
+    const { attemptId, answers, questionIds, mode } = (req.body || {}) as {
       attemptId?: string;
       answers: Record<string, string> | Array<{ questionId: string; selectedOptionId: string }>;
+      questionIds?: string[];
+      mode?: string;
     };
 
     try {
@@ -117,6 +119,8 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
       const graded = await submitQuizAnswers(stepId, {
         attemptId,
         answers: normalizedAnswers,
+        questionIds: Array.isArray(questionIds) ? questionIds.map(String) : undefined,
+        mode: typeof mode === 'string' ? mode : undefined,
       });
 
       return reply.send(graded);
@@ -129,16 +133,16 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
   });
 
   fastify.post('/api/quizzes/evaluate', async (req, reply) => {
-    const { stepId, attemptId, answers } = (req.body || {}) as any;
+    const { stepId, attemptId, answers, questionIds, mode } = (req.body || {}) as any;
     if (!stepId) return reply.status(400).send({ error: 'stepId is required' });
-    const graded = await submitQuizAnswers(stepId, { attemptId, answers });
+    const graded = await submitQuizAnswers(stepId, { attemptId, answers, questionIds, mode });
     return reply.send(graded);
   });
 
   fastify.post('/api/quiz/evaluate', async (req, reply) => {
-    const { stepId, attemptId, answers } = (req.body || {}) as any;
+    const { stepId, attemptId, answers, questionIds, mode } = (req.body || {}) as any;
     if (!stepId) return reply.status(400).send({ error: 'stepId is required' });
-    const graded = await submitQuizAnswers(stepId, { attemptId, answers });
+    const graded = await submitQuizAnswers(stepId, { attemptId, answers, questionIds, mode });
     return reply.send(graded);
   });
 

@@ -630,3 +630,101 @@ export async function fetchWikipediaExtract(
 
   return null;
 }
+
+// 6.5 PROGRESSIVE 3-STAGE YOUTUBE SEARCH (ANTI-REPETITION)
+export async function findUniqueYouTubeVideo(
+  skillName: string,
+  subGenre: string,
+  chapterOrStepTitle: string,
+  usedVideoIds: Set<string>
+): Promise<{ videoId: string; title: string; channel: string } | null> {
+  const cleanSkill = (skillName || '').replace(/["']/g, '').trim();
+  const cleanTitle = (chapterOrStepTitle || '').replace(/["']/g, '').trim();
+  const cleanSub = (subGenre || '').replace(/["']/g, '').trim();
+
+  // Attempt 1 (Specific): Tavily search `${skillName} ${chapterOrStepTitle} tutorial`
+  try {
+    const q1 = `${cleanSkill} ${cleanTitle} tutorial`.trim();
+    const res1 = await searchTavily(q1, {
+      searchDepth: 'basic',
+      maxResults: 10,
+      includeDomains: ['youtube.com', 'youtu.be'],
+      includeRawContent: false,
+    });
+    for (const r of res1) {
+      const vId = extractYouTubeId(r.url);
+      if (vId && !usedVideoIds.has(vId) && vId !== 'dQw4w9WgXcQ' && vId !== 'kJQP7kiw5Fk' && vId !== 'dQ3GLk1jUqI') {
+        const ytCheck = await checkYouTube(vId);
+        if (ytCheck.status !== 'GONE') {
+          return {
+            videoId: vId,
+            title: ytCheck.title || r.title || `${cleanTitle} Tutorial`,
+            channel: ytCheck.channel || r.title?.split('-')[0]?.trim() || 'Verified Channel',
+          };
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[findUniqueYouTubeVideo] Attempt 1 notice:', err);
+  }
+
+  // Attempt 2 (Broader): If Attempt 1 yields no unused 11-char videoId, search `${skillName} ${subGenre} ${chapterOrStepTitle}`
+  try {
+    const q2 = `${cleanSkill} ${cleanSub} ${cleanTitle}`.trim();
+    const res2 = await searchTavily(q2, {
+      searchDepth: 'basic',
+      maxResults: 10,
+      includeDomains: ['youtube.com', 'youtu.be'],
+      includeRawContent: false,
+    });
+    for (const r of res2) {
+      const vId = extractYouTubeId(r.url);
+      if (vId && !usedVideoIds.has(vId) && vId !== 'dQw4w9WgXcQ' && vId !== 'kJQP7kiw5Fk' && vId !== 'dQ3GLk1jUqI') {
+        const ytCheck = await checkYouTube(vId);
+        if (ytCheck.status !== 'GONE') {
+          return {
+            videoId: vId,
+            title: ytCheck.title || r.title || `${cleanTitle} Walkthrough`,
+            channel: ytCheck.channel || r.title?.split('-')[0]?.trim() || 'Verified Channel',
+          };
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[findUniqueYouTubeVideo] Attempt 2 notice:', err);
+  }
+
+  // Attempt 3 (Public YouTube Search Scrape Fallback)
+  try {
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanSkill + ' ' + cleanTitle + ' tutorial')}`;
+    const ytHtmlRes = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (ytHtmlRes.ok) {
+      const html = await ytHtmlRes.text();
+      const matches = Array.from(html.matchAll(/"videoId":"([a-zA-Z0-9_-]{11})"/g));
+      for (const m of matches) {
+        const vId = m[1];
+        if (vId && !usedVideoIds.has(vId) && vId !== 'dQw4w9WgXcQ' && vId !== 'kJQP7kiw5Fk' && vId !== 'dQ3GLk1jUqI') {
+          const ytCheck = await checkYouTube(vId);
+          if (ytCheck.status !== 'GONE') {
+            return {
+              videoId: vId,
+              title: ytCheck.title || `${cleanTitle} - ${cleanSkill} Masterclass`,
+              channel: ytCheck.channel || 'YouTube Tutorial',
+            };
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[findUniqueYouTubeVideo] Attempt 3 scrape notice:', err);
+  }
+
+  return null;
+}
+
