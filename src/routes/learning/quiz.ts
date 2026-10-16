@@ -13,6 +13,10 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
   const handleGetQuiz = async (req: any, reply: any) => {
     const { stepId } = req.params as { stepId: string };
     const queryMode = req.query?.mode as 'initial' | 'retest' | 'perfection' | undefined;
+    const isRetest = req.query?.retest === 'true' || req.query?.retest === true;
+    const isForceNew = req.query?.forceNew === 'true' || req.query?.forceNew === true || isRetest;
+    const attempt = req.query?.attempt ? Number(req.query.attempt) : undefined;
+
     try {
       let step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { id: true, status: true } });
       if (!step) {
@@ -27,7 +31,12 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
       }
       if (!step) return reply.status(404).send({ error: 'Step not found' });
       if (step.status === 'LOCKED') return reply.send({ locked: true });
-      const quiz = await generateLevelUpQuiz(step.id, { mode: queryMode || 'initial' });
+      const quiz = await generateLevelUpQuiz(step.id, {
+        mode: isRetest ? 'retest' : (queryMode || 'initial'),
+        retest: isRetest,
+        forceNew: isForceNew,
+        attempt,
+      });
       return reply.send(quiz);
     } catch (err: any) {
       fastify.log.error(err, '[GetQuiz] Failed');
@@ -44,13 +53,21 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
   const handlePostQuiz = async (req: any, reply: any) => {
     const { stepId } = req.params as { stepId: string };
     const queryMode = req.query?.mode;
+    const isRetestQuery = req.query?.retest === 'true' || req.query?.retest === true;
+    const isForceNewQuery = req.query?.forceNew === 'true' || req.query?.forceNew === true;
+    const attemptQuery = req.query?.attempt ? Number(req.query.attempt) : undefined;
     const body = (req.body || {}) as {
       mode?: 'initial' | 'retest' | 'perfection';
       retestMode?: boolean;
       perfectionMode?: boolean;
+      retest?: boolean;
+      forceNew?: boolean;
+      attempt?: number;
       failedQuestionIds?: string[];
     };
-    const effectiveMode = body.mode || queryMode || (body.retestMode ? 'retest' : body.perfectionMode ? 'perfection' : 'initial');
+    const effectiveMode = body.mode || queryMode || (body.retestMode || body.retest || isRetestQuery ? 'retest' : body.perfectionMode ? 'perfection' : 'initial');
+    const isForceNew = Boolean(body.forceNew || body.retest || body.retestMode || isRetestQuery || isForceNewQuery || effectiveMode === 'retest' || effectiveMode === 'perfection');
+    const attempt = body.attempt || attemptQuery;
 
     try {
       let step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { id: true, status: true } });
@@ -70,6 +87,9 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
         mode: effectiveMode,
         retestMode: body.retestMode || effectiveMode === 'retest',
         perfectionMode: body.perfectionMode || effectiveMode === 'perfection',
+        retest: body.retest || isRetestQuery || effectiveMode === 'retest',
+        forceNew: isForceNew,
+        attempt,
         failedQuestionIds: body.failedQuestionIds,
       });
       return reply.send(quiz);
@@ -83,6 +103,45 @@ export const quizLearningRoutes: FastifyPluginAsync = async (fastify: FastifyIns
 
   fastify.post('/api/steps/:stepId/level-up-quiz', handlePostQuiz);
   fastify.post('/api/steps/:stepId/quiz', handlePostQuiz);
+
+  // Dedicated Retest Handler
+  const handleRetest = async (req: any, reply: any) => {
+    const { stepId } = req.params as { stepId: string };
+    const queryAttempt = req.query?.attempt ? Number(req.query.attempt) : undefined;
+    const bodyAttempt = (req.body as any)?.attempt ? Number((req.body as any).attempt) : undefined;
+    const attempt = bodyAttempt || queryAttempt;
+
+    try {
+      let step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { id: true, status: true } });
+      if (!step) {
+        const ws = await prisma.workspace.findUnique({
+          where: { id: stepId },
+          include: { steps: { orderBy: { stepIndex: 'asc' } } },
+        });
+        if (ws && ws.steps.length > 0) {
+          const activeS = ws.steps.find((s) => s.status !== 'PASSED') || ws.steps[0];
+          step = activeS;
+        }
+      }
+      if (!step) return reply.status(404).send({ error: 'Step not found' });
+      if (step.status === 'LOCKED') return reply.send({ locked: true });
+      const quiz = await generateLevelUpQuiz(step.id, {
+        mode: 'retest',
+        retest: true,
+        forceNew: true,
+        attempt,
+      });
+      return reply.send(quiz);
+    } catch (err: any) {
+      fastify.log.error(err, '[RetestQuiz] Failed');
+      return reply.status(err.statusCode || 500).send({
+        error: err.message || 'Failed to generate retest quiz',
+      });
+    }
+  };
+
+  fastify.get('/api/steps/:stepId/retest', handleRetest);
+  fastify.post('/api/steps/:stepId/retest', handleRetest);
 
   fastify.post('/api/steps/:stepId/prompt-quiz', async (req, reply) => {
     const { stepId } = req.params as { stepId: string };

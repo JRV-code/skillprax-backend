@@ -317,6 +317,10 @@ export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: Fastify
   const handleSportsGetQuiz = async (req: any, reply: any) => {
     const { stepId } = req.params as { stepId: string };
     const queryMode = req.query?.mode as 'initial' | 'retest' | 'perfection' | undefined;
+    const isRetest = req.query?.retest === 'true' || req.query?.retest === true;
+    const isForceNew = req.query?.forceNew === 'true' || req.query?.forceNew === true || isRetest;
+    const attempt = req.query?.attempt ? Number(req.query.attempt) : undefined;
+
     try {
       let step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { id: true, status: true } });
       if (!step) {
@@ -330,7 +334,12 @@ export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: Fastify
         }
       }
       if (!step) return reply.status(404).send({ error: 'Step not found' });
-      const quiz = await generateLevelUpQuiz(step.id, { mode: queryMode || 'initial' });
+      const quiz = await generateLevelUpQuiz(step.id, {
+        mode: isRetest ? 'retest' : (queryMode || 'initial'),
+        retest: isRetest,
+        forceNew: isForceNew,
+        attempt,
+      });
       return reply.send(quiz);
     } catch (err: any) {
       fastify.log.error(err, '[SportsGetQuiz] Failed');
@@ -347,13 +356,21 @@ export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: Fastify
   const handleSportsPostQuiz = async (req: any, reply: any) => {
     const { stepId } = req.params as { stepId: string };
     const queryMode = req.query?.mode;
+    const isRetestQuery = req.query?.retest === 'true' || req.query?.retest === true;
+    const isForceNewQuery = req.query?.forceNew === 'true' || req.query?.forceNew === true;
+    const attemptQuery = req.query?.attempt ? Number(req.query.attempt) : undefined;
     const body = (req.body || {}) as {
       mode?: 'initial' | 'retest' | 'perfection';
       retestMode?: boolean;
       perfectionMode?: boolean;
+      retest?: boolean;
+      forceNew?: boolean;
+      attempt?: number;
       failedQuestionIds?: string[];
     };
-    const effectiveMode = body.mode || queryMode || (body.retestMode ? 'retest' : body.perfectionMode ? 'perfection' : 'initial');
+    const effectiveMode = body.mode || queryMode || (body.retestMode || body.retest || isRetestQuery ? 'retest' : body.perfectionMode ? 'perfection' : 'initial');
+    const isForceNew = Boolean(body.forceNew || body.retest || body.retestMode || isRetestQuery || isForceNewQuery || effectiveMode === 'retest' || effectiveMode === 'perfection');
+    const attempt = body.attempt || attemptQuery;
 
     try {
       let step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { id: true, status: true } });
@@ -372,6 +389,9 @@ export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: Fastify
         mode: effectiveMode,
         retestMode: body.retestMode || effectiveMode === 'retest',
         perfectionMode: body.perfectionMode || effectiveMode === 'perfection',
+        retest: body.retest || isRetestQuery || effectiveMode === 'retest',
+        forceNew: isForceNew,
+        attempt,
         failedQuestionIds: body.failedQuestionIds,
       });
       return reply.send(quiz);
@@ -385,6 +405,44 @@ export const sportsWorkspaceRoutes: FastifyPluginAsync = async (fastify: Fastify
 
   fastify.post('/api/sports-workspace/steps/:stepId/quiz', handleSportsPostQuiz);
   fastify.post('/api/sports-workspace/steps/:stepId/level-up-quiz', handleSportsPostQuiz);
+
+  // Dedicated Sports Retest Handler
+  const handleSportsRetest = async (req: any, reply: any) => {
+    const { stepId } = req.params as { stepId: string };
+    const queryAttempt = req.query?.attempt ? Number(req.query.attempt) : undefined;
+    const bodyAttempt = (req.body as any)?.attempt ? Number((req.body as any).attempt) : undefined;
+    const attempt = bodyAttempt || queryAttempt;
+
+    try {
+      let step = await prisma.skillStep.findUnique({ where: { id: stepId }, select: { id: true, status: true } });
+      if (!step) {
+        const ws = await prisma.workspace.findUnique({
+          where: { id: stepId },
+          include: { steps: { orderBy: { stepIndex: 'asc' } } },
+        });
+        if (ws && ws.steps.length > 0) {
+          const activeS = ws.steps.find((s) => s.status !== 'PASSED') || ws.steps[0];
+          step = activeS;
+        }
+      }
+      if (!step) return reply.status(404).send({ error: 'Step not found' });
+      const quiz = await generateLevelUpQuiz(step.id, {
+        mode: 'retest',
+        retest: true,
+        forceNew: true,
+        attempt,
+      });
+      return reply.send(quiz);
+    } catch (err: any) {
+      fastify.log.error(err, '[SportsRetestQuiz] Failed');
+      return reply.status(err.statusCode || 500).send({
+        error: err.message || 'Failed to generate sports retest quiz',
+      });
+    }
+  };
+
+  fastify.get('/api/sports-workspace/steps/:stepId/retest', handleSportsRetest);
+  fastify.post('/api/sports-workspace/steps/:stepId/retest', handleSportsRetest);
 
   // POST /api/sports-workspace/steps/:stepId/submit-quiz
   fastify.post('/api/sports-workspace/steps/:stepId/submit-quiz', async (req, reply) => {
