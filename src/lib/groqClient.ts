@@ -22,7 +22,7 @@ export const groq = {
           throw new Error('Groq API Key is not configured in .env or /admin');
         }
 
-        const model = options.model || process.env.GROQ_MODEL || 'llama-3.1-70b-versatile';
+        const model = options.model || process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 
         const body: Record<string, any> = {
           model,
@@ -37,10 +37,10 @@ export const groq = {
 
         const candidateModels = [
           model,
-          'llama-3.1-70b-versatile',
-          'llama-3.3-70b-specdec',
-          'llama-3.1-8b-instant',
           'openai/gpt-oss-120b',
+          'openai/gpt-oss-20b',
+          'qwen/qwen3.8-27b',
+          'allam-2-7b',
         ];
 
         let lastError: any = null;

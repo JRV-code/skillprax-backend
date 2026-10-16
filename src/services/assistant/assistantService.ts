@@ -99,10 +99,13 @@ export async function performTavilySearch(query: string): Promise<{ summary: str
   }
 }
 
+import { resolveActiveGroqModel, DEFAULT_GROQ_PRIORITY_MODELS } from '../ai';
+
 const GROQ_MODEL_CHAIN = [
-  'llama-3.1-70b-versatile',
-  'llama-3.3-70b-specdec',
-  'llama-3.1-8b-instant',
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'qwen/qwen3.8-27b',
+  'allam-2-7b',
 ];
 
 /**
@@ -366,7 +369,10 @@ export async function* streamAssistantChat(params: {
   let streamSucceeded = false;
   let lastErrorMessage = '';
 
-  for (const model of GROQ_MODEL_CHAIN) {
+  const activeModel = await resolveActiveGroqModel(groqKey);
+  const modelsToTry = Array.from(new Set([activeModel, ...GROQ_MODEL_CHAIN]));
+
+  for (const model of modelsToTry) {
     try {
       const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',

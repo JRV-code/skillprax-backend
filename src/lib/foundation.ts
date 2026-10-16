@@ -42,7 +42,7 @@ export async function callGroqJson<T = any>(
       throw new GroqApiError('Groq API Key is not configured in .env or /admin');
     }
 
-    let model = cachedWorkingModel || process.env.GROQ_MODEL || 'llama-3.1-70b-versatile';
+    let model = cachedWorkingModel || process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 
     async function sendRequest(sys: string, usr: string, targetModel: string, retryCount = 0): Promise<any> {
       const controller = new AbortController();
@@ -103,8 +103,10 @@ export async function callGroqJson<T = any>(
                 );
 
                 const best =
-                  candidateChatModels.find((m) => m.includes('llama-3.3') || m.includes('llama-3.1')) ||
-                  candidateChatModels.find((m) => m.includes('gpt-oss-120b') || m.includes('qwen3.8') || m.includes('gpt-oss-20b')) ||
+                  candidateChatModels.find((m) => m === 'openai/gpt-oss-120b') ||
+                  candidateChatModels.find((m) => m === 'openai/gpt-oss-20b') ||
+                  candidateChatModels.find((m) => m.includes('qwen3.8')) ||
+                  candidateChatModels.find((m) => m.includes('allam')) ||
                   candidateChatModels[0];
 
                 if (best && best !== targetModel) {

@@ -124,7 +124,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
             subGenre: cleanSubGenre,
             targetGoal: cleanGoal,
             level: cleanLevel,
-            aiEngine: body.aiEngine || "llama-3.3-70b-versatile",
+            aiEngine: body.aiEngine || "openai/gpt-oss-120b",
             userProfileId: body.userProfileId || body.profileId || "default-profile",
             totalPlannedSteps: typeof body.totalPlannedSteps === 'number' ? Math.min(8, Math.max(3, body.totalPlannedSteps)) : 5,
             isGenerating: true,
@@ -305,7 +305,7 @@ const workspacesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) =>
           completedSteps: passedCount,
           currentStep,
           progress,
-          engine: ws.aiEngine || "llama-3.3-70b-versatile",
+          engine: ws.aiEngine || "openai/gpt-oss-120b",
         };
       });
 

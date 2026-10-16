@@ -3,6 +3,78 @@ import { callGroqWithFallback } from '../lib/ai/pipeline';
 import { SearchResultItem, extractYouTubeVideoId } from './search';
 import { calculatePersonalizedStepBounds } from '../config/learning';
 
+/**
+ * 1. CENTRAL SELF-HEALING GROQ MODEL RESOLVER & AUTO-DISCOVERY
+ * Default Priority Chain:
+ * 1. openai/gpt-oss-120b (Primary high-reasoning model for Quizzes, Pack Building, and AI Guide)
+ * 2. openai/gpt-oss-20b (Fast low-latency model)
+ * 3. qwen/qwen3.8-27b (Secondary fallback model)
+ * 4. allam-2-7b (Tertiary fallback)
+ */
+export const DEFAULT_GROQ_PRIORITY_MODELS = [
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'qwen/qwen3.8-27b',
+  'allam-2-7b',
+] as const;
+
+let cachedActiveModel: string | null = null;
+let cachedActiveModelExpires = 0;
+
+export async function resolveActiveGroqModel(apiKey?: string, forceRefresh = false): Promise<string> {
+  if (!forceRefresh && cachedActiveModel && Date.now() < cachedActiveModelExpires) {
+    return cachedActiveModel;
+  }
+
+  let key = (apiKey || '').trim();
+  if (!key) {
+    try {
+      const keys = await getEffectiveKeys();
+      key = (keys.groqKey || '').trim();
+    } catch (_) {}
+  }
+  if (!key) {
+    key = (process.env.GROQ_API_KEY || '').trim();
+  }
+
+  if (key) {
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/models', {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(6000),
+      });
+      if (res.ok) {
+        const data: any = await res.json();
+        const liveChatModels: string[] = (data?.data || [])
+          .map((m: any) => m.id)
+          .filter((id: string) => !/whisper|orpheus|guard|tts|embed|safeguard/i.test(id));
+
+        for (const preferred of DEFAULT_GROQ_PRIORITY_MODELS) {
+          if (liveChatModels.includes(preferred)) {
+            cachedActiveModel = preferred;
+            cachedActiveModelExpires = Date.now() + 30 * 60 * 1000;
+            return preferred;
+          }
+        }
+
+        if (liveChatModels.length > 0) {
+          cachedActiveModel = liveChatModels[0];
+          cachedActiveModelExpires = Date.now() + 30 * 60 * 1000;
+          return liveChatModels[0];
+        }
+      }
+    } catch (err: any) {
+      console.warn('[resolveActiveGroqModel] Live model discovery notice:', err.message);
+    }
+  }
+
+  return DEFAULT_GROQ_PRIORITY_MODELS[0];
+}
+
+export function getGroqModelFallbackChain(): string[] {
+  return Array.from(DEFAULT_GROQ_PRIORITY_MODELS);
+}
+
 export interface ACUInput {
   id: string;
   title?: string;

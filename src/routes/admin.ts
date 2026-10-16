@@ -295,7 +295,7 @@ export async function adminRoutes(fastify: FastifyInstance) {
     try {
       const response = await callGroqWithFallback(
         [{ role: 'user', content: 'Ping. Output OK.' }],
-        { apiKey: keyToTest, model: 'llama-3.3-70b-versatile' }
+        { apiKey: keyToTest, model: 'openai/gpt-oss-120b' }
       );
       const latency = Date.now() - start;
       const replyText = response.content?.trim() || 'OK';

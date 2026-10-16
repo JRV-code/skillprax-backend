@@ -467,7 +467,7 @@ RETURN ONLY VALID JSON (no markdown formatting, no extra keys):
 }`;
 
       const aiRes = await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-120b',
         messages: [{ role: 'user', content: prompt }],
         response_format: { type: 'json_object' },
         temperature: 0.2,

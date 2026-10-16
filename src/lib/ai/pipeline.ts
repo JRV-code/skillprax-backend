@@ -68,10 +68,10 @@ export interface CurateAndExamineResult {
 
 // 1. MODEL WHITELIST NEGOTIATION
 export const STATIC_MODEL_WHITELIST = [
-  "openai/gpt-oss-120b",
-  "llama-3.3-70b-versatile",
-  "openai/gpt-oss-20b",
+  "llama-3.1-70b-versatile",
   "llama-3.1-8b-instant",
+  "llama-3.3-70b-versatile",
+  "mixtral-8x7b-32768",
   "gemma2-9b-it",
 ] as const;
 
@@ -102,10 +102,18 @@ export async function getAvailableModels(apiKey: string): Promise<string[]> {
 
     if (res.ok) {
       const data: any = await res.json();
-      const liveIds: string[] = (data?.data || []).map((m: { id: string }) => m.id);
-      const intersected = STATIC_MODEL_WHITELIST.filter((m) => liveIds.includes(m));
+      const liveChatIds: string[] = (data?.data || [])
+        .map((m: { id: string }) => m.id)
+        .filter((id: string) => !/whisper|orpheus|guard|tts|embed|safeguard/i.test(id));
 
-      const available = intersected.length > 0 ? intersected : Array.from(STATIC_MODEL_WHITELIST);
+      const prioritized: string[] = STATIC_MODEL_WHITELIST.filter((m) => liveChatIds.includes(m));
+      for (const id of liveChatIds) {
+        if (!prioritized.includes(id)) {
+          prioritized.push(id);
+        }
+      }
+
+      const available = prioritized.length > 0 ? prioritized : Array.from(STATIC_MODEL_WHITELIST);
       modelCacheMap.set(cleanKey, { models: available, expiresAt: Date.now() + MODEL_CACHE_TTL_MS });
       return available;
     }

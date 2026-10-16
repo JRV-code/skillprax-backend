@@ -30,6 +30,8 @@ export interface QuizQuestionRaw {
   correctAnswer: string;
   distractors: string[];
   explanation: string;
+  sourceTopic?: string;
+  sourceResourceTitle?: string;
   chapterKey?: string;
   anchorId?: string;
 }
@@ -43,6 +45,8 @@ export interface StoredQuizQuestion {
   acuId: string;
   question: string;
   explanation: string;
+  sourceTopic?: string;
+  sourceResourceTitle?: string;
   correctOptionId: string;
   options: QuizQuestionOption[];
   chapterKey?: string;
@@ -126,6 +130,8 @@ export function buildBalancedQuestions(raw: QuizQuestionRaw[]): StoredQuizQuesti
       anchorId: q.anchorId || `anchor-${i + 1}`,
       question: q.question,
       explanation: q.explanation,
+      sourceTopic: q.sourceTopic || q.topicKey,
+      sourceResourceTitle: q.sourceResourceTitle || undefined,
       correctOptionId: correctOpt.id,
       options: positionedOptions,
     };
@@ -221,12 +227,14 @@ function computeQuestionSimilarity(a: string, b: string): number {
 
 // 11.1 RUN QUIZ BUILD (BUILT FROM STORED FACTS WITH STRICT WORKSPACE ANTI-DUPLICATION)
 export async function runQuizBuild(stepId: string): Promise<void> {
-  const step = await prisma.skillStep.findUnique({
+  const step: any = await prisma.skillStep.findUnique({
     where: { id: stepId },
     include: {
       workspace: true,
+      stepChapters: { orderBy: { order: 'asc' } },
       stepTopics: {
         include: { resources: true },
+        orderBy: { order: 'asc' },
       },
     },
   });
@@ -258,17 +266,7 @@ export async function runQuizBuild(stepId: string): Promise<void> {
     }
   }
 
-  interface UsableFact {
-    topicKey: string;
-    topicId: string;
-    topicTitle: string;
-    resourceId?: string;
-    acuId: string;
-    fact: string;
-  }
-
-  const allFacts: UsableFact[] = [];
-  const readyTopics = step.stepTopics.length > 0
+  const readyTopics: any[] = step.stepTopics.length > 0
     ? step.stepTopics
     : [
         {
@@ -276,109 +274,113 @@ export async function runQuizBuild(stepId: string): Promise<void> {
           key: 't1',
           title: `${step.title} Fundamentals`,
           covers: 'Foundational principles and operational standards',
-          guide: { lookFor: ['Core definitions', 'Procedural invariants'], doThis: 'Apply basic mechanics' },
+          guide: { howToApproach: 'Apply core mechanics systematically.', keyPoints: [`${step.title} requires verified execution of core baseline techniques.`] },
           facts: [`${step.title} requires verified execution of core baseline techniques.`],
           acuIds: ['acu-1'],
           resources: [],
         } as any,
       ];
 
-  // 2. RESOURCE-GROUNDED QUIZ SYNTHESIS: Gather verified topic & resource snippets
-  const verifiedResourceSnippets: string[] = [];
+  // 2. BUILD STEP N RESOURCE DOSSIER
+  const stepChapters = (step as any).stepChapters || [];
+  const stepResources = (step as any).resources || [];
+
+  const docResources: Array<{ title: string; domain: string; snippet: string; topicTitle?: string }> = [];
+  const videoResources: Array<{ title: string; topicTitle?: string }> = [];
 
   for (const topic of readyTopics) {
-    const factsRaw = Array.isArray(topic.facts) ? (topic.facts as string[]) : [];
-    const acuIds = Array.isArray(topic.acuIds) ? (topic.acuIds as string[]) : [];
-    const primaryAcu = acuIds[0] || `${topic.key}-acu`;
-    const resourceId = topic.resources?.[0]?.id;
-
-    verifiedResourceSnippets.push(`[Topic: ${topic.title}] Focus: ${topic.covers || 'Core technique'}`);
-
     if (Array.isArray(topic.resources)) {
       for (const r of topic.resources) {
-        if (r.title && r.type === 'doc') {
-          verifiedResourceSnippets.push(`  * Verified Reading: "${r.title}" (${r.domain}) - ${r.snippet || ''}`);
+        if (r.type === 'doc' && r.title) {
+          docResources.push({
+            title: r.title,
+            domain: r.domain || '',
+            snippet: r.snippet || '',
+            topicTitle: topic.title,
+          });
+        } else if (r.type === 'video' && r.title) {
+          videoResources.push({
+            title: r.title,
+            topicTitle: topic.title,
+          });
         }
       }
     }
+  }
 
-    for (const factStr of factsRaw) {
-      if (typeof factStr === 'string' && factStr.trim().length > 10) {
-        allFacts.push({
-          topicKey: topic.key,
-          topicId: topic.id,
-          topicTitle: topic.title,
-          resourceId,
-          acuId: primaryAcu,
-          fact: factStr.trim(),
-        });
-      }
-    }
-
-    // Enrich with guide highlights if facts are sparse
-    const guide = topic.guide as any;
-    if (guide) {
-      if (Array.isArray(guide.lookFor)) {
-        for (const lf of guide.lookFor) {
-          if (typeof lf === 'string' && lf.trim().length > 6) {
-            allFacts.push({
-              topicKey: topic.key,
-              topicId: topic.id,
-              topicTitle: topic.title,
-              resourceId,
-              acuId: primaryAcu,
-              fact: `In ${topic.title}, essential technique requires observing: ${lf.trim()}.`,
-            });
-            verifiedResourceSnippets.push(`  * Observation Cue: ${lf.trim()}`);
-          }
-        }
-      }
-      if (guide.doThis && typeof guide.doThis === 'string' && guide.doThis.trim().length > 6) {
-        allFacts.push({
-          topicKey: topic.key,
-          topicId: topic.id,
-          topicTitle: topic.title,
-          resourceId,
-          acuId: primaryAcu,
-          fact: `The recommended hands-on execution for ${topic.title} is: ${guide.doThis.trim()}.`,
-        });
-        verifiedResourceSnippets.push(`  * Execution Rule: ${guide.doThis.trim()}`);
-      }
-    }
-
-    if (topic.covers && typeof topic.covers === 'string' && topic.covers.trim().length > 8) {
-      allFacts.push({
-        topicKey: topic.key,
-        topicId: topic.id,
-        topicTitle: topic.title,
-        resourceId,
-        acuId: primaryAcu,
-        fact: `${topic.title} systematically addresses: ${topic.covers.trim()}.`,
+  for (const r of stepResources) {
+    if (r.type === 'doc' && r.title && !docResources.some((d) => d.title === r.title)) {
+      docResources.push({
+        title: r.title,
+        domain: r.domain || '',
+        snippet: r.snippet || '',
+      });
+    } else if (r.type === 'video' && r.title && !videoResources.some((v) => v.title === r.title)) {
+      videoResources.push({
+        title: r.title,
       });
     }
   }
 
-  // Ensure minimum fact pool
-  if (allFacts.length < 8) {
-    for (const topic of readyTopics) {
-      allFacts.push(
-        {
-          topicKey: topic.key,
-          topicId: topic.id,
-          topicTitle: topic.title,
-          resourceId: topic.resources?.[0]?.id,
-          acuId: `${topic.key}-acu`,
-          fact: `Proper operational form in ${topic.title} ensures error-free execution under standard conditions.`,
-        },
-        {
-          topicKey: topic.key,
-          topicId: topic.id,
-          topicTitle: topic.title,
-          resourceId: topic.resources?.[0]?.id,
-          acuId: `${topic.key}-acu`,
-          fact: `Deliberate practice isolating ${topic.title} mechanics eliminates early variance before full milestone integration.`,
+  let dossier = `=== STEP N IDENTIFIERS ===\nStep Index: ${step.stepIndex}\nStep Title: "${step.title}"\nDifficulty Tier: ${step.difficultyTier || 'FOUNDATIONS'}\nFocus: ${step.focus || step.title}\n`;
+  if (step.intro && typeof step.intro === 'object') {
+    const intro: any = step.intro;
+    if (intro.goal) dossier += `Goal: ${intro.goal}\n`;
+    if (intro.whyNow) dossier += `Context: ${intro.whyNow}\n`;
+    if (Array.isArray(intro.commonMistakes)) {
+      dossier += `Common Pitfalls to Avoid:\n${intro.commonMistakes.map((m: string) => `  - ${m}`).join('\n')}\n`;
+    }
+  }
+
+  dossier += `\n=== STEP CHAPTERS ===\n`;
+  for (const ch of stepChapters) {
+    dossier += `Chapter: "${ch.title}" (${ch.overview || 'Core section'})\n`;
+  }
+
+  dossier += `\n=== STEP TOPICS & DEEP TECHNICAL GUIDES ===\n`;
+  for (const t of readyTopics) {
+    dossier += `\n[TOPIC: "${t.title}"]\n`;
+    if (t.covers) dossier += `Covers: ${t.covers}\n`;
+    const g: any = t.guide || {};
+    if (g.howToApproach) dossier += `How to Approach: ${g.howToApproach}\n`;
+    if (Array.isArray(g.keyPoints)) {
+      dossier += `Key Technical Principles:\n${g.keyPoints.map((kp: string) => `  * ${kp}`).join('\n')}\n`;
+    } else if (Array.isArray(g.lookFor)) {
+      dossier += `Observational Cues:\n${g.lookFor.map((lf: string) => `  * ${lf}`).join('\n')}\n`;
+    }
+    if (g.practiceTask || g.doThis) dossier += `Practice Execution: ${g.practiceTask || g.doThis}\n`;
+    if (Array.isArray(g.commonMistakes)) {
+      dossier += `Common Errors in this Topic:\n${g.commonMistakes.map((cm: string) => `  ! ${cm}`).join('\n')}\n`;
+    }
+  }
+
+  dossier += `\n=== VERIFIED READING DOCUMENTS & SPECIFICATIONS ===\n`;
+  if (docResources.length > 0) {
+    for (const doc of docResources) {
+      dossier += `- Document: "${doc.title}" [${doc.domain}] (Topic: ${doc.topicTitle || 'General'})\n  Summary: ${doc.snippet}\n`;
+    }
+  } else {
+    dossier += `(Synthesize questions from the topic technical guides above.)\n`;
+  }
+
+  if (videoResources.length > 0) {
+    dossier += `\n=== VERIFIED VIDEO LECTURES ===\n`;
+    for (const vid of videoResources) {
+      dossier += `- Video Lecture: "${vid.title}"\n`;
+    }
+  }
+
+  if (step.trainingPlan && typeof step.trainingPlan === 'object') {
+    const tp: any = step.trainingPlan;
+    if (Array.isArray(tp.days)) {
+      dossier += `\n=== ATHLETIC DRILLS & TECHNICAL KINEMATICS ===\n`;
+      for (const d of tp.days.slice(0, 3)) {
+        if (Array.isArray(d.items)) {
+          for (const item of d.items.slice(0, 3)) {
+            dossier += `Drill: "${item.name}" (Kinematics: ${item.howToSteps?.join(', ') || ''}; Safety: ${item.medicalSafetyNote || ''})\n`;
+          }
         }
-      );
+      }
     }
   }
 
@@ -397,52 +399,36 @@ export async function runQuizBuild(stepId: string): Promise<void> {
       skillName: step.workspace?.skillName || step.workspace?.title || step.title || '',
     });
 
-    // Group facts by topic
-    const factsByTopic = new Map<string, UsableFact[]>();
-    for (const f of allFacts) {
-      if (!factsByTopic.has(f.topicKey)) factsByTopic.set(f.topicKey, []);
-      factsByTopic.get(f.topicKey)!.push(f);
-    }
-
-    const selectedFacts: UsableFact[] = [];
-    for (const [_, topicFacts] of factsByTopic.entries()) {
-      if (selectedFacts.length < targetCount && topicFacts.length > 0) {
-        selectedFacts.push(topicFacts[0]);
-      }
-    }
-    for (const f of allFacts) {
-      if (selectedFacts.length < targetCount && !selectedFacts.includes(f)) {
-        selectedFacts.push(f);
-      }
-    }
-
     const promptSystem = `You are the Lead Psychometric Examiner for SKILL-TRACK.
-Generate the ${targetCount} Multiple-Choice Questions for this step derived EXCLUSIVELY from the verified study resources and reading material provided above. Do not ask generic questions; test the specific facts, code patterns, biomechanics, or rules found in these exact resources.
+Generate ${targetCount} Multiple-Choice Questions for Step ${step.stepIndex} ("${step.title}").
 
-CRITICAL ANTI-DUPLICATION RULE:
-The following questions were already asked in earlier steps of this skill. You MUST NOT repeat any of these questions, concepts, or identical wordings. Every question for Step ${step.stepIndex} must be 100% unique and test advanced/new concepts specific to this milestone:
-${previousQuestionSignatures.length > 0 ? previousQuestionSignatures.slice(-25).map((q, i) => `${i + 1}. "${q}"`).join('\n') : 'None (This is Step 1).'}
-
-REQUIREMENTS:
-1. Generate EXACTLY ${targetCount} Multiple-Choice Questions (calibrated to this step's ${step.difficultyTier || 'FOUNDATIONS'} tier and ${readyTopics.length} topics). Ensure every topic in this step is covered.
-2. Every ready topic provided must receive at least one question derived from its specific resources.
-3. The correct answer MUST be directly supported by that fact's statement.
-4. For each question, provide EXACTLY 3 plausible distractors of comparable word length.
-5. All 4 options (correctAnswer + 3 distractors) MUST be comparable in word count.
-6. "explanation": 1-2 clear sentences explaining why the correct answer is accurate.
-7. Absolutely NO URLs. State principles directly.
+MANDATORY RULES:
+1. 100% RESOURCE GROUNDED: Every question MUST be derived directly from the STEP RESOURCE DOSSIER provided. Test specific techniques, code patterns, kinematics, rules, and common mistakes explicitly detailed in the dossier.
+2. ZERO QUESTIONS ABOUT TIMERS OR UI APPARATUS: Do not ask questions about how many seconds a timer ran or app UI buttons. Ask about substantive domain knowledge and execution.
+3. ABSOLUTE ANTI-DUPLICATION: The following questions were already asked in earlier steps of this workspace. You MUST NOT repeat, paraphrase, or ask anything substantially similar to these prior questions:
+${previousQuestionSignatures.length > 0 ? previousQuestionSignatures.slice(-30).map((q, i) => `${i + 1}. "${q}"`).join('\n') : '(None. This is Step 1).'}
+4. MANDATORY TRACEABILITY:
+   For every question you MUST output:
+   - "sourceTopic": The exact title of the Topic from the dossier that this question tests.
+   - "sourceResourceTitle": The specific Reading Document title, Study Guide, or Video Lecture title from which this question was derived.
+   - "explanation": Concrete technical explanation referencing the step's material.
+5. OPTION QUALITY:
+   - Exactly 4 options per question: 1 correctAnswer + 3 plausible distractors of comparable word length.
+   - Evenly distribute the correct answer across all 4 positions (A, B, C, D).
+6. NO EXTERNAL URLS: State technical principles directly without including http links.
 
 Return ONLY JSON:
 {
   "questions": [
     {
       "topicKey": "t1",
-      "evidenceFact": "Exact fact text...",
+      "sourceTopic": "Exact Topic Title",
+      "sourceResourceTitle": "Specific Document / Guide Title",
       "acuId": "acu-1",
-      "question": "Scenario or diagnostic question...",
+      "question": "Scenario or diagnostic application question...",
       "correctAnswer": "Accurate option text",
       "distractors": ["Plausible distractor 1", "Plausible distractor 2", "Plausible distractor 3"],
-      "explanation": "Diagnostic reasoning..."
+      "explanation": "Diagnostic reasoning referencing the study material..."
     }
   ]
 }`;
@@ -451,18 +437,14 @@ Return ONLY JSON:
       stepTitle: step.title,
       stepIndex: step.stepIndex,
       skillName: step.workspace?.skillName || step.workspace?.title || '',
-      verifiedResources: verifiedResourceSnippets,
+      difficultyTier: step.difficultyTier,
+      resourceDossier: dossier,
       topics: readyTopics.map((t) => ({ key: t.key, title: t.title })),
-      facts: selectedFacts.map((f) => ({
-        topicKey: f.topicKey,
-        acuId: f.acuId,
-        fact: f.fact,
-      })),
     });
 
     let rawQuestions: any[] = [];
     try {
-      const groqPromise = callGroqJson<{ questions: any[] }>(promptSystem, promptUser, {
+      const groqRes = await callGroqJson<{ questions: any[] }>(promptSystem, promptUser, {
         validate: (data: any) => {
           assertNoUrls(data, 'Quiz Questions');
           if (!data || !Array.isArray(data.questions)) throw new Error('Missing questions array');
@@ -471,10 +453,6 @@ Return ONLY JSON:
         maxTokens: 5500,
         temperature: 0.2,
       });
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Groq quiz timeout after 6500ms')), 6500)
-      );
-      const groqRes = await Promise.race([groqPromise, timeoutPromise]);
       rawQuestions = groqRes.questions;
     } catch (gErr) {
       console.warn('[runQuizBuild] Groq generation fallback used:', gErr);
@@ -483,9 +461,9 @@ Return ONLY JSON:
     const topicMap = new Map(readyTopics.map((t) => [t.key, t]));
     const validQuestions: QuizQuestionRaw[] = [];
 
-    // 3. STRICT DEDUPLICATION (>75% TEXTUAL SIMILARITY DISCARDED)
+    // STRICT DEDUPLICATION (>75% TEXTUAL SIMILARITY DISCARDED)
     for (const q of rawQuestions) {
-      const topic = topicMap.get(q.topicKey) || readyTopics[0];
+      const topic = readyTopics.find((t) => t.key === q.topicKey || t.title.toLowerCase() === (q.sourceTopic || '').toLowerCase()) || readyTopics[0];
       if (!topic) continue;
       if (!q.question || typeof q.question !== 'string') continue;
       if (!q.correctAnswer || typeof q.correctAnswer !== 'string') continue;
@@ -511,84 +489,123 @@ Return ONLY JSON:
         continue;
       }
 
-      const factText = q.evidenceFact || topic.title;
-
       validQuestions.push({
         topicKey: topic.key,
         topicId: topic.id,
         resourceId: topic.resources?.[0]?.id,
-        evidenceFact: factText,
+        evidenceFact: q.explanation || `${topic.title} verified standard`,
         acuId: q.acuId || `${topic.key}-acu`,
         question: candidateQ,
         correctAnswer: q.correctAnswer.trim(),
         distractors: q.distractors.slice(0, 3).map((d: any) => String(d).trim()),
-        explanation: (q.explanation || `Supported by foundational principles of ${topic.title}`).trim(),
+        explanation: (q.explanation || `Supported by verified principles of ${topic.title}`).trim(),
+        sourceTopic: q.sourceTopic || topic.title,
+        sourceResourceTitle: q.sourceResourceTitle || topic.resources?.[0]?.title || `${topic.title} Guide`,
       });
     }
 
-    // Deterministic grounded fallback so we are 100% guaranteed to reach targetCount questions
-    // Each fallback question is dynamically tailored to Step Index and Topic title to guarantee 0 repetition
+    // RESOURCE-DERIVED DETERMINISTIC FALLBACK (IF NEEDED — NEVER GENERIC STATIC TEMPLATES!)
     if (validQuestions.length < targetCount) {
-      for (const sf of selectedFacts) {
+      for (const topic of readyTopics) {
         if (validQuestions.length >= targetCount) break;
-        const topic = topicMap.get(sf.topicKey) || readyTopics[0];
-        const candidateText = `In Step ${step.stepIndex} (${topic.title}), which principle accurately characterizes verified execution?`;
+        const guide = (topic.guide || {}) as any;
+        const keyPoints: string[] = Array.isArray(guide.keyPoints)
+          ? guide.keyPoints
+          : Array.isArray(guide.lookFor)
+          ? guide.lookFor
+          : (Array.isArray(topic.facts) ? (topic.facts as string[]) : []);
+        const commonMistakes: string[] = Array.isArray(guide.commonMistakes) ? guide.commonMistakes : [];
+        const topicDoc = docResources.find((d) => d.topicTitle === topic.title) || docResources[0];
 
-        const isDupe = previousQuestionSignatures.some(
-          (pq) => computeQuestionSimilarity(candidateText, pq) > 0.75
-        ) || validQuestions.some(
-          (vq) => computeQuestionSimilarity(candidateText, vq.question) > 0.75
-        );
+        // 1. Question from Key Points
+        if (keyPoints.length > 0) {
+          const kp = keyPoints[validQuestions.length % keyPoints.length];
+          const candidateQ = `In Step ${step.stepIndex} (${topic.title}), what essential technical principle is emphasized for verified execution?`;
+          const isDupe =
+            previousQuestionSignatures.some((pq) => computeQuestionSimilarity(candidateQ, pq) > 0.75) ||
+            validQuestions.some((vq) => computeQuestionSimilarity(candidateQ, vq.question) > 0.75);
 
-        if (!isDupe) {
-          validQuestions.push({
-            topicKey: sf.topicKey,
-            topicId: topic.id,
-            resourceId: topic.resources?.[0]?.id,
-            evidenceFact: sf.fact,
-            acuId: sf.acuId,
-            question: candidateText,
-            correctAnswer: sf.fact,
-            distractors: [
-              `Execution operates inversely to verified invariant conditions in ${topic.title}.`,
-              `Procedural requirements in ${topic.title} may be omitted without functional variance.`,
-              `Baseline outcomes are unrelated to structural coordination in ${topic.title}.`,
-            ],
-            explanation: `Directly supported by foundational principles: ${sf.fact}`,
-          });
+          if (!isDupe) {
+            validQuestions.push({
+              topicKey: topic.key,
+              topicId: topic.id,
+              resourceId: topic.resources?.[0]?.id,
+              evidenceFact: kp,
+              acuId: `${topic.key}-acu`,
+              question: candidateQ,
+              correctAnswer: kp,
+              distractors: [
+                `Prioritize speed over kinematic form when executing ${topic.title}.`,
+                `Omit preliminary verification checks once familiar with ${topic.title}.`,
+                `Rely entirely on subjective guesswork rather than calibrated technique.`,
+              ],
+              explanation: `Documented in the ${topic.title} curriculum: "${kp}".`,
+              sourceTopic: topic.title,
+              sourceResourceTitle: topicDoc?.title || `${topic.title} Guide`,
+            });
+          }
         }
-      }
 
-      // If still below targetCount, generate milestone-specific distinct diagnostic questions
-      let fillIdx = 1;
-      while (validQuestions.length < targetCount && fillIdx <= 15) {
-        const topic = readyTopics[(validQuestions.length) % readyTopics.length];
-        const distinctQ = `Step ${step.stepIndex} Diagnostic #${fillIdx}: What key verification ensures precision when applying ${topic.title}?`;
+        // 2. Question from Common Mistakes
+        if (validQuestions.length < targetCount && commonMistakes.length > 0) {
+          const cm = commonMistakes[validQuestions.length % commonMistakes.length];
+          const candidateQ = `When executing "${topic.title}", which specific pitfall must be proactively avoided?`;
+          const isDupe =
+            previousQuestionSignatures.some((pq) => computeQuestionSimilarity(candidateQ, pq) > 0.75) ||
+            validQuestions.some((vq) => computeQuestionSimilarity(candidateQ, vq.question) > 0.75);
 
-        const isDupe = previousQuestionSignatures.some(
-          (pq) => computeQuestionSimilarity(distinctQ, pq) > 0.75
-        ) || validQuestions.some(
-          (vq) => computeQuestionSimilarity(distinctQ, vq.question) > 0.75
-        );
-
-        if (!isDupe) {
-          validQuestions.push({
-            topicKey: topic.key,
-            topicId: topic.id,
-            resourceId: topic.resources?.[0]?.id,
-            evidenceFact: `${topic.title} advanced verification for milestone ${step.stepIndex}`,
-            acuId: `${topic.key}-acu`,
-            question: distinctQ,
-            correctAnswer: `Consistently follow verified mechanical steps and audit baseline invariants.`,
-            distractors: [
-              `Accelerate pace without confirming prior alignment checks in ${topic.title}.`,
-              `Bypass foundational standards to target edge-case scenarios early.`,
-              `Rely strictly on subjective intuition rather than repeatable technique.`,
-            ],
-            explanation: `Consistent alignment and deliberate procedural control are required for ${topic.title}.`,
-          });
+          if (!isDupe) {
+            validQuestions.push({
+              topicKey: topic.key,
+              topicId: topic.id,
+              resourceId: topic.resources?.[0]?.id,
+              evidenceFact: cm,
+              acuId: `${topic.key}-acu`,
+              question: candidateQ,
+              correctAnswer: cm,
+              distractors: [
+                `Maintaining consistent alignment and deliberate biomechanical pacing.`,
+                `Following structured incremental progression through each milestone.`,
+                `Reviewing diagnostic feedback before repeating the cycle.`,
+              ],
+              explanation: `In the study material for ${topic.title}, a critical mistake to prevent is: "${cm}".`,
+              sourceTopic: topic.title,
+              sourceResourceTitle: topicDoc?.title || `${topic.title} Error Prevention Guide`,
+            });
+          }
         }
-        fillIdx++;
+
+        // 3. Question from Verified Document snippet
+        if (validQuestions.length < targetCount && topicDoc && topicDoc.snippet) {
+          const sentences = topicDoc.snippet.split(/[.!?]/).map((s: string) => s.trim()).filter((s: string) => s.length > 20);
+          if (sentences.length > 0) {
+            const correctFact = sentences[0];
+            const candidateQ = `According to the reference text for "${topic.title}", which operational standard applies?`;
+            const isDupe =
+              previousQuestionSignatures.some((pq) => computeQuestionSimilarity(candidateQ, pq) > 0.75) ||
+              validQuestions.some((vq) => computeQuestionSimilarity(candidateQ, vq.question) > 0.75);
+
+            if (!isDupe) {
+              validQuestions.push({
+                topicKey: topic.key,
+                topicId: topic.id,
+                resourceId: topic.resources?.[0]?.id,
+                evidenceFact: correctFact,
+                acuId: `${topic.key}-acu`,
+                question: candidateQ,
+                correctAnswer: correctFact,
+                distractors: [
+                  `Baseline standards are purely discretionary and may be altered arbitrarily.`,
+                  `Technique should vary unpredictably between consecutive training blocks.`,
+                  `Prerequisite safety checks can be bypassed in accelerated sessions.`,
+                ],
+                explanation: `Referenced directly from "${topicDoc.title}": ${correctFact}`,
+                sourceTopic: topic.title,
+                sourceResourceTitle: topicDoc.title,
+              });
+            }
+          }
+        }
       }
     }
 
@@ -615,7 +632,6 @@ Return ONLY JSON:
         quizError: err.message || 'Quiz build failed',
       },
     });
-    throw err;
   }
 }
 
@@ -657,14 +673,97 @@ export async function generateLevelUpQuiz(
 
   if (!step) throw new Error('Step not found');
 
+  // 1. PREREQUISITE GUARD: Ensure Step N's study pack is READY before building quiz
+  if (step.packStatus !== 'READY' || step.stepTopics.length === 0) {
+    console.log(`[generateLevelUpQuiz] Step ${step.id} pack not READY (status: ${step.packStatus}). Triggering pack build now...`);
+    const isSports =
+      (step.workspace as any)?.category === 'SPORTS' ||
+      step.workspace?.domainCategory === 'sports' ||
+      step.workspace?.domain === 'sports' ||
+      Boolean((step.workspace as any)?.isSports);
+
+    try {
+      if (isSports) {
+        const { runSportsPackBuild } = await import('../sports/sportsPackBuilder');
+        await runSportsPackBuild(step.id);
+      } else {
+        const { runPackBuild: triggerPackBuild } = await import('./packBuilder');
+        await triggerPackBuild(step.id);
+      }
+    } catch (buildErr) {
+      console.warn(`[generateLevelUpQuiz] Pack build error (non-fatal, continuing to reload):`, buildErr);
+    }
+
+    const reloaded = await prisma.skillStep.findUnique({
+      where: { id: step.id },
+      include: {
+        workspace: true,
+        stepTopics: { include: { resources: true } },
+      },
+    });
+    if (reloaded) step = reloaded;
+  }
+
   const isRetestOrPerfection =
     options?.mode === 'retest' ||
     options?.mode === 'perfection' ||
     Boolean(options?.retestMode) ||
     Boolean(options?.perfectionMode);
 
+  // 2. DETECT & PURGE STALE / DUPLICATE / GENERIC QUIZZES
   const existingBlueprint = Array.isArray(step.quizBlueprint) ? (step.quizBlueprint as any[]) : [];
-  if (isRetestOrPerfection || step.quizStatus !== 'READY' || existingBlueprint.length === 0) {
+  
+  const isStaleQuiz = existingBlueprint.some((q) => {
+    const qText = (q?.question || '').toLowerCase();
+    return (
+      qText.includes('which principle accurately characterizes verified execution') ||
+      qText.includes('what key verification ensures precision') ||
+      qText.includes('proper operational form in') ||
+      qText.includes('deliberate practice isolating') ||
+      !q.question ||
+      !Array.isArray(q.options) ||
+      q.options.length < 4
+    );
+  });
+
+  // Cross-step duplicate check against prior steps
+  let hasCrossStepDuplicate = false;
+  if (!isStaleQuiz && existingBlueprint.length > 0) {
+    const priorSteps = await prisma.skillStep.findMany({
+      where: {
+        workspaceId: step.workspaceId,
+        id: { not: step.id },
+        stepIndex: { lt: step.stepIndex },
+      },
+      select: { quizBlueprint: true },
+    });
+    const priorQuestions: string[] = [];
+    for (const ps of priorSteps) {
+      if (Array.isArray(ps.quizBlueprint)) {
+        for (const pq of ps.quizBlueprint as any[]) {
+          if (pq?.question) priorQuestions.push(pq.question.trim().toLowerCase());
+        }
+      }
+    }
+    hasCrossStepDuplicate = existingBlueprint.some((q) =>
+      priorQuestions.includes((q?.question || '').trim().toLowerCase())
+    );
+  }
+
+  if (
+    isRetestOrPerfection ||
+    step.quizStatus !== 'READY' ||
+    existingBlueprint.length === 0 ||
+    isStaleQuiz ||
+    hasCrossStepDuplicate
+  ) {
+    if (isStaleQuiz || hasCrossStepDuplicate) {
+      console.log(`[generateLevelUpQuiz] Purging stale/duplicate quiz for Step ${step.id} (stale: ${isStaleQuiz}, crossStepDupe: ${hasCrossStepDuplicate})`);
+      await prisma.skillStep.update({
+        where: { id: step.id },
+        data: { quizBlueprint: [] as any, quizStatus: 'NOT_STARTED' },
+      });
+    }
     await runQuizBuild(step.id);
   }
 
@@ -687,7 +786,9 @@ export async function generateLevelUpQuiz(
       question: q.question,
       prompt: q.question,
       topicKey: q.topicKey,
-      topicTitle: topic?.title || q.topicKey,
+      topicTitle: topic?.title || q.sourceTopic || q.topicKey,
+      sourceTopic: q.sourceTopic || topic?.title || q.topicKey,
+      sourceResourceTitle: q.sourceResourceTitle || undefined,
       acuId: q.acuId,
       chapterKey: q.chapterKey,
       options: (q.options || []).map((o, optIdx) => ({
@@ -826,7 +927,9 @@ export async function submitQuizAnswers(
       questionId: q.id,
       topicKey: q.topicKey,
       topicId: q.topicId || topic?.id,
-      topicTitle: topic?.title || q.topicKey,
+      topicTitle: topic?.title || q.sourceTopic || q.topicKey,
+      sourceTopic: q.sourceTopic || topic?.title || q.topicKey,
+      sourceResourceTitle: q.sourceResourceTitle || topic?.resources?.[0]?.title,
       resource: topic?.resources[0] || null,
       evidenceFact: q.evidenceFact,
       question: q.question,

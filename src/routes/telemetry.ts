@@ -349,7 +349,7 @@ Output strictly valid JSON with this schema:
 
         const aiRes = await callGroqWithFallback([
           { role: 'system', content: prompt }
-        ], { apiKey: groqKey, jsonMode: true, model: 'llama-3.3-70b-versatile' });
+        ], { apiKey: groqKey, jsonMode: true, model: 'openai/gpt-oss-120b' });
 
         const cleaned = aiRes.content.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '');
         const parsed = JSON.parse(cleaned);

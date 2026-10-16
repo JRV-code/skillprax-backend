@@ -43,7 +43,7 @@ export const BANNED_ACADEMIC_DOMAINS: string[] = [
   'cvpr.thecvf.com',
 ];
 
-export const PREFERRED_PRACTITIONER_DOMAINS = [
+export const PREFERRED_PRACTITIONER_DOMAINS: string[] = [
   'developer.mozilla.org',
   'freecodecamp.org',
   'geeksforgeeks.org',
@@ -154,7 +154,7 @@ export async function checkLinkHealth(url: string): Promise<boolean> {
     return false;
   }
 
-  const isPreferredDomain = PREFERRED_PRACTITIONER_DOMAINS.some((p) => domain.includes(p));
+  const isPreferredDomain = PREFERRED_PRACTITIONER_DOMAINS.some((p: string) => domain.includes(p));
 
   try {
     const res = await fetch(url, {
@@ -320,8 +320,8 @@ export async function searchOpenWebCandidates(params: {
           validCandidates.sort((a: any, b: any) => {
             const domA = (a.url || '').toLowerCase();
             const domB = (b.url || '').toLowerCase();
-            const isPrefA = PREFERRED_PRACTITIONER_DOMAINS.some((p) => domA.includes(p));
-            const isPrefB = PREFERRED_PRACTITIONER_DOMAINS.some((p) => domB.includes(p));
+            const isPrefA = PREFERRED_PRACTITIONER_DOMAINS.some((p: string) => domA.includes(p));
+            const isPrefB = PREFERRED_PRACTITIONER_DOMAINS.some((p: string) => domB.includes(p));
             if (isPrefA && !isPrefB) return -1;
             if (!isPrefA && isPrefB) return 1;
             return 0;

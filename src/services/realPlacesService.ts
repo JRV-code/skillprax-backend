@@ -406,7 +406,7 @@ export async function fetchRealClubs(
   // 0. Curated catalog check for exact city first
   const cityClubs = VERIFIED_CLUBS_CATALOG[cleanCity]?.[cleanSport];
   if (cityClubs && cityClubs.length > 0) {
-    return cityClubs.map((club) => ({
+    return cityClubs.map((club: RealSportsClub) => ({
       ...club,
       ageEligibility: club.ageEligibility || defaultEligibility,
       discoveryTier: 'CITY' as const,

@@ -34,40 +34,49 @@ export class TavilyAuthError extends Error {
 let cachedGroqModel: string | null = null;
 let cachedGroqModelExpires = 0;
 
-export async function getBestGroqModel(apiKey: string): Promise<string> {
+export const DEFAULT_FOUNDATION_GROQ_MODELS = [
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'qwen/qwen3.8-27b',
+  'allam-2-7b',
+] as const;
+
+export async function getBestGroqModel(apiKey: string, forceRefresh = false): Promise<string> {
   if (process.env.GROQ_MODEL && process.env.GROQ_MODEL.trim()) {
     return process.env.GROQ_MODEL.trim();
   }
-  if (cachedGroqModel && Date.now() < cachedGroqModelExpires) {
+  if (!forceRefresh && cachedGroqModel && Date.now() < cachedGroqModelExpires) {
     return cachedGroqModel;
   }
   try {
     const res = await fetch('https://api.groq.com/openai/v1/models', {
-      headers: { Authorization: `Bearer ${apiKey}` },
+      headers: { Authorization: `Bearer ${apiKey.trim()}` },
       signal: AbortSignal.timeout(6000),
     });
     if (res.ok) {
       const data: any = await res.json();
-      const ids: string[] = (data?.data || []).map((m: { id: string }) => m.id);
-      const preferred = [
-        'llama-3.1-70b-versatile',
-        'llama-3.3-70b-specdec',
-        'llama-3.1-8b-instant',
-        'openai/gpt-oss-120b',
-        'openai/gpt-oss-20b',
-      ];
-      for (const p of preferred) {
-        if (ids.includes(p)) {
+      const liveChatIds: string[] = (data?.data || [])
+        .map((m: { id: string }) => m.id)
+        .filter((id: string) => !/whisper|orpheus|guard|tts|embed|safeguard/i.test(id));
+
+      for (const p of DEFAULT_FOUNDATION_GROQ_MODELS) {
+        if (liveChatIds.includes(p)) {
           cachedGroqModel = p;
           cachedGroqModelExpires = Date.now() + 30 * 60 * 1000;
           return p;
         }
       }
+
+      if (liveChatIds.length > 0) {
+        cachedGroqModel = liveChatIds[0];
+        cachedGroqModelExpires = Date.now() + 30 * 60 * 1000;
+        return liveChatIds[0];
+      }
     }
-  } catch {
-    // fallback
+  } catch (err: any) {
+    console.warn('[getBestGroqModel] Dynamic discovery notice:', err.message);
   }
-  return 'llama-3.1-70b-versatile';
+  return DEFAULT_FOUNDATION_GROQ_MODELS[0];
 }
 
 function cleanJsonCodeFences(text: string): string {
@@ -155,7 +164,7 @@ export async function callGroqJson<T>(
     throw new Error('Groq API Key missing in /admin or .env');
   }
 
-  const model = await getBestGroqModel(groqKey);
+  let currentModel = await getBestGroqModel(groqKey);
   let currentMaxTokens = Math.min(8192, opts.maxTokens ?? 4500);
   const temperature = opts.temperature ?? 0.2;
 
@@ -172,7 +181,7 @@ export async function callGroqJson<T>(
     while (rateLimitRetries <= 2) {
       try {
         const bodyPayload: Record<string, any> = {
-          model,
+          model: currentModel,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: currentUserPrompt },
@@ -214,6 +223,7 @@ export async function callGroqJson<T>(
       const errBody = res ? await res.text().catch(() => '') : 'Network error';
       if (res && (res.status === 404 || errBody.includes('model_not_found'))) {
         cachedGroqModel = null;
+        currentModel = await getBestGroqModel(groqKey, true);
         if (attempts < maxAttempts) {
           continue;
         }

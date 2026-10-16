@@ -161,7 +161,7 @@ Output ONLY a JSON array of 7 objects (Day 1 through Day 7) matching this schema
       const aiResponse = await callGroqWithFallback([
         { role: 'system', content: systemPrompt },
         { role: 'user', content: `Synthesize 7-day athletic drill and fueling plan for ${sportName} (${subGenre}).` },
-      ], { apiKey, model: 'llama-3.3-70b-versatile', temperature: 0.3 });
+      ], { apiKey, model: 'openai/gpt-oss-120b', temperature: 0.3 });
 
       let daysPlan: any[] = [];
       try {
@@ -1035,7 +1035,7 @@ Return JSON array of items:
               { role: 'system', content: 'You are an Olympic Sports Conditioning Director. Respond ONLY with valid JSON.' },
               { role: 'user', content: prompt },
             ],
-            { apiKey, model: 'llama-3.3-70b-versatile', temperature: 0.25, jsonMode: true }
+            { apiKey, model: 'openai/gpt-oss-120b', temperature: 0.25, jsonMode: true }
           );
 
           let parsed = JSON.parse(aiRes.content);
@@ -1318,7 +1318,7 @@ STRICT DRILL MANDATE:
               { role: 'system', content: systemPrompt },
               { role: 'user', content: `Generate the 3 calibrated drills in ${langName} now.` },
             ],
-            { apiKey, model: 'llama-3.3-70b-versatile', temperature: 0.25, jsonMode: true }
+            { apiKey, model: 'openai/gpt-oss-120b', temperature: 0.25, jsonMode: true }
           );
 
           let parsed = JSON.parse(aiRes.content);
