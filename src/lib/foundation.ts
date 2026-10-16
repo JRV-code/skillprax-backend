@@ -42,7 +42,7 @@ export async function callGroqJson<T = any>(
       throw new GroqApiError('Groq API Key is not configured in .env or /admin');
     }
 
-    let model = cachedWorkingModel || process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+    let model = cachedWorkingModel || process.env.GROQ_MODEL || 'llama-3.1-70b-versatile';
 
     async function sendRequest(sys: string, usr: string, targetModel: string, retryCount = 0): Promise<any> {
       const controller = new AbortController();

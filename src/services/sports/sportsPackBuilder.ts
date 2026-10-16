@@ -16,6 +16,7 @@ import {
   verifyLinkSafe,
   searchOpenWebCandidates,
   curateTopicResourcesAndGuidesWithGroq,
+  isSpecificArticleUrl,
   WebCandidate,
 } from '../learning/resourceDiscoveryEngine';
 import { DifficultyTier } from '../../config/learning';
@@ -387,6 +388,7 @@ Return ONLY JSON:
         searchOpenWebCandidates({
           skillName: sportName,
           subGenre,
+          stepTitle: step.title,
           topicTitle: t.title,
           usedDocUrls,
           isSports: true,
@@ -1101,8 +1103,10 @@ Return ONLY valid JSON matching:
             },
           });
 
-          // Save doc resources for topic (3-4 verified links)
+          // Save doc resources for topic (strictly verified working web articles)
           for (const doc of t.docs) {
+            if (!doc?.url || !isSpecificArticleUrl(doc.url)) continue;
+
             await tx.resource.create({
               data: {
                 stepId,

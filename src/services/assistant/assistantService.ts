@@ -99,43 +99,52 @@ export async function performTavilySearch(query: string): Promise<{ summary: str
   }
 }
 
+const GROQ_MODEL_CHAIN = [
+  'llama-3.1-70b-versatile',
+  'llama-3.3-70b-specdec',
+  'llama-3.1-8b-instant',
+];
+
 /**
  * Quick 3-5 word title summarizer for new conversations
  */
 export async function generateSessionTitle(firstPrompt: string, apiKey: string): Promise<string> {
-  try {
-    const cleanPrompt = firstPrompt.trim().slice(0, 300);
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages: [
-          {
-            role: 'system',
-            content: 'You generate short, punchy 3-5 word conversation titles from the user prompt. Do not use quotes or punctuation.',
-          },
-          {
-            role: 'user',
-            content: cleanPrompt,
-          },
-        ],
-        temperature: 0.3,
-        max_tokens: 16,
-      }),
-    });
+  const cleanPrompt = firstPrompt.trim().slice(0, 300);
 
-    if (res.ok) {
-      const data: any = await res.json();
-      const rawTitle = data?.choices?.[0]?.message?.content?.trim();
-      if (rawTitle && rawTitle.length < 50) {
-        return rawTitle.replace(/^["']|["']$/g, '');
+  for (const model of GROQ_MODEL_CHAIN) {
+    try {
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: 'system',
+              content: 'You generate short, punchy 3-5 word conversation titles from the user prompt. Do not use quotes or punctuation.',
+            },
+            {
+              role: 'user',
+              content: cleanPrompt,
+            },
+          ],
+          temperature: 0.3,
+          max_tokens: 16,
+        }),
+      });
+
+      if (res.ok) {
+        const data: any = await res.json();
+        const rawTitle = data?.choices?.[0]?.message?.content?.trim();
+        if (rawTitle && rawTitle.length < 50) {
+          return rawTitle.replace(/^["']|["']$/g, '');
+        }
       }
-    }
-  } catch (_) {}
+    } catch (_) {}
+  }
 
   // Fallback title
   const words = firstPrompt.trim().split(/\s+/).slice(0, 5).join(' ');
@@ -352,52 +361,77 @@ export async function* streamAssistantChat(params: {
     { role: 'user', content: promptWithLiveContext },
   ];
 
-  // 6. Call Groq with stream: true for Token-by-Token Autoregressive Generation
+  // 6. Call Groq with stream: true for Token-by-Token Autoregressive Generation with Fallback Chain
   let fullAssistantText = '';
+  let streamSucceeded = false;
+  let lastErrorMessage = '';
 
-  try {
-    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${groqKey}`,
-      },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages: messagesPayload,
-        temperature: 0.5,
-        max_tokens: 2048,
-        stream: true,
-      }),
-    });
+  for (const model of GROQ_MODEL_CHAIN) {
+    try {
+      const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${groqKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: messagesPayload,
+          temperature: 0.5,
+          max_tokens: 2048,
+          stream: true,
+        }),
+      });
 
-    if (!groqRes.ok) {
-      const errBody = await groqRes.text().catch(() => '');
-      throw new Error(`Groq API error (${groqRes.status}): ${errBody || groqRes.statusText}`);
-    }
+      if (!groqRes.ok) {
+        const errBody = await groqRes.text().catch(() => '');
+        lastErrorMessage = `Groq API error (${groqRes.status} on ${model}): ${errBody || groqRes.statusText}`;
+        console.warn(`[AssistantService] Model ${model} returned ${groqRes.status}. Trying next model...`);
+        continue;
+      }
 
-    const reader = groqRes.body?.getReader();
-    if (!reader) {
-      throw new Error('Groq response body reader could not be initialized.');
-    }
+      const reader = groqRes.body?.getReader();
+      if (!reader) {
+        lastErrorMessage = `Groq response body reader could not be initialized for ${model}.`;
+        continue;
+      }
 
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
 
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed === 'data: [DONE]') continue;
-        if (trimmed.startsWith('data: ')) {
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed === 'data: [DONE]') continue;
+          if (trimmed.startsWith('data: ')) {
+            try {
+              const parsed = JSON.parse(trimmed.slice(6));
+              const deltaToken = parsed.choices?.[0]?.delta?.content;
+              if (deltaToken) {
+                fullAssistantText += deltaToken;
+                yield {
+                  type: 'token',
+                  content: deltaToken,
+                };
+              }
+            } catch (_) {
+              // Buffer chunk split, ignore and continue
+            }
+          }
+        }
+      }
+
+      if (buffer.trim() && buffer.trim() !== 'data: [DONE]') {
+        if (buffer.trim().startsWith('data: ')) {
           try {
-            const parsed = JSON.parse(trimmed.slice(6));
+            const parsed = JSON.parse(buffer.trim().slice(6));
             const deltaToken = parsed.choices?.[0]?.delta?.content;
             if (deltaToken) {
               fullAssistantText += deltaToken;
@@ -406,35 +440,38 @@ export async function* streamAssistantChat(params: {
                 content: deltaToken,
               };
             }
-          } catch (_) {
-            // Buffer chunk split, ignore and continue
-          }
+          } catch (_) {}
         }
       }
-    }
 
-    if (buffer.trim() && buffer.trim() !== 'data: [DONE]') {
-      if (buffer.trim().startsWith('data: ')) {
-        try {
-          const parsed = JSON.parse(buffer.trim().slice(6));
-          const deltaToken = parsed.choices?.[0]?.delta?.content;
-          if (deltaToken) {
-            fullAssistantText += deltaToken;
-            yield {
-              type: 'token',
-              content: deltaToken,
-            };
-          }
-        } catch (_) {}
+      if (fullAssistantText.trim().length > 0) {
+        streamSucceeded = true;
+        break; // Successfully streamed with this model
       }
+    } catch (err: any) {
+      lastErrorMessage = err?.message || 'Unknown network error during Groq stream.';
+      console.warn(`[AssistantService] Error with model ${model}:`, err?.message);
     }
-  } catch (err: any) {
-    console.error('[AssistantService] Groq Streaming Error:', err);
+  }
+
+  // Graceful recovery if all models failed
+  if (!streamSucceeded || !fullAssistantText.trim()) {
+    console.error('[AssistantService] Groq Streaming Fallback Activated. Last error:', lastErrorMessage);
+    const recoveryText = `Hello! I encountered a temporary connection glitch with the primary inference model (${lastErrorMessage || 'Service busy'}). 
+
+Here is quick guidance for what you need:
+- **🧠 Skills Studio**: Access your cognitive skills roadmap and study materials.
+- **📈 Sports Hub**: Train with daily drills, interactive countdown timers, and discover verified local sports academies.
+- **👤 Profile Hub**: Check your active streak, current level, XP, and download your Calligraphy Completion Certificates.
+- **❓ Socratic Gate Quizzes**: Complete your milestone evaluation with unique questions derived from your study material.
+
+Feel free to ask your question again or explore any of the sections above!`;
+
+    fullAssistantText = recoveryText;
     yield {
-      type: 'error',
-      message: err.message || 'Error occurred while streaming response.',
+      type: 'token',
+      content: recoveryText,
     };
-    return;
   }
 
   // 7. Persist Assistant Response to Database

@@ -8,6 +8,7 @@ import {
   curateTopicResourcesAndGuidesWithGroq,
   findUniqueYouTubeVideo,
   extractYouTubeId,
+  isSpecificArticleUrl,
   WebCandidate,
 } from './resourceDiscoveryEngine';
 import { callGroqJson } from './foundation';
@@ -209,6 +210,7 @@ Return ONLY valid JSON:
       searchOpenWebCandidates({
         skillName,
         subGenre,
+        stepTitle: cleanStepTitle,
         topicTitle: topic.title,
         usedDocUrls,
       })
@@ -370,8 +372,10 @@ Return ONLY valid JSON:
             },
           });
 
-          // Save curated doc resources for this topic
+          // Save curated doc resources for this topic (strictly validated working web articles)
           for (const doc of docs) {
+            if (!doc?.url || !isSpecificArticleUrl(doc.url)) continue;
+
             await tx.resource.create({
               data: {
                 stepId,

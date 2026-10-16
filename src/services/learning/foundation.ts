@@ -50,11 +50,11 @@ export async function getBestGroqModel(apiKey: string): Promise<string> {
       const data: any = await res.json();
       const ids: string[] = (data?.data || []).map((m: { id: string }) => m.id);
       const preferred = [
-        'llama-3.3-70b-versatile',
         'llama-3.1-70b-versatile',
+        'llama-3.3-70b-specdec',
+        'llama-3.1-8b-instant',
         'openai/gpt-oss-120b',
         'openai/gpt-oss-20b',
-        'llama-3.1-8b-instant',
       ];
       for (const p of preferred) {
         if (ids.includes(p)) {
@@ -67,7 +67,7 @@ export async function getBestGroqModel(apiKey: string): Promise<string> {
   } catch {
     // fallback
   }
-  return 'llama-3.3-70b-versatile';
+  return 'llama-3.1-70b-versatile';
 }
 
 function cleanJsonCodeFences(text: string): string {

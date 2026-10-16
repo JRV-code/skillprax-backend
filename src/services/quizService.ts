@@ -43,7 +43,7 @@ Return strictly JSON:
 }`;
 
   const completion = await groq.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
+    model: 'llama-3.1-70b-versatile',
     messages: [
       { role: 'system', content: 'You output strictly valid JSON.' },
       { role: 'user', content: prompt }

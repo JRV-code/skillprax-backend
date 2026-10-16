@@ -119,9 +119,38 @@ const quizzesRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
             mode: isPerfection ? 'perfection' : 'initial',
           });
 
+      // Global Workspace Question Tracker: fetch questions from prior steps
+      const priorSteps = await prisma.skillStep.findMany({
+        where: {
+          workspaceId: step.workspaceId,
+          id: { not: stepId },
+          stepIndex: { lt: step.stepIndex },
+        },
+        select: {
+          stepIndex: true,
+          quizBlueprint: true,
+        },
+      });
+
+      const previousQuestionSignatures: string[] = [];
+      for (const ps of priorSteps) {
+        if (Array.isArray(ps.quizBlueprint)) {
+          for (const q of ps.quizBlueprint as any[]) {
+            if (q?.question && typeof q.question === 'string') {
+              previousQuestionSignatures.push(q.question.trim());
+            }
+          }
+        }
+      }
+
       const quizSystem = `You are a Principal Psychometrician & Socratic Evaluation Architect.
-Generate scenario-grounded challenge questions based EXCLUSIVELY on the provided Grounding Text.
+Generate scenario-grounded challenge questions derived EXCLUSIVELY from the provided Grounding Text and study resources.
 Every question must test a principle, trap, or edge case present in the text.
+
+CRITICAL ANTI-DUPLICATION RULE:
+The following questions were already asked in earlier steps of this skill. You MUST NOT repeat any of these questions, concepts, or identical wordings. Every question for Step ${step.stepIndex} must be 100% unique:
+${previousQuestionSignatures.length > 0 ? previousQuestionSignatures.slice(-25).map((q, i) => `${i + 1}. "${q}"`).join('\n') : 'None (First step).'}
+
 Rules:
 - Generate EXACTLY ${targetQuestionCount} Multiple-Choice Questions (calibrated to this step's ${step.difficultyTier || 'FOUNDATIONS'} tier and ${acus.length} topics). Ensure every topic in this step is covered.
 - Every question MUST have:
@@ -149,7 +178,7 @@ Output JSON ONLY:
 ACUs: ${JSON.stringify(acus)}.
 ${isPerfection ? `Focus ACUs Missed in Prior Attempt: ${JSON.stringify(focusAcus)}.` : ''}
 
-GROUNDING TEXT:
+GROUNDING TEXT & STUDY RESOURCES:
 ${groundingText.slice(0, 8000)}`;
 
       const generated = await callGroqJson<{ questions: any[] }>(quizSystem, quizUser, {
@@ -168,12 +197,34 @@ ${groundingText.slice(0, 8000)}`;
       });
       assertNoUrls(generated, 'QuizGeneration');
 
-      // Filter and validate length
-      const validQuestions = (generated.questions || []).filter((q: any) => {
+      // Helper for similarity check
+      const computeSim = (a: string, b: string) => {
+        const getW = (s: string) => new Set(s.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter((w) => w.length >= 3));
+        const setA = getW(a);
+        const setB = getW(b);
+        if (setA.size === 0 || setB.size === 0) return 0;
+        let match = 0;
+        for (const w of setA) if (setB.has(w)) match++;
+        const union = new Set([...setA, ...setB]).size;
+        return union > 0 ? match / union : 0;
+      };
+
+      // Filter, validate length, and deduplicate (>75% similarity discarded)
+      const validQuestions: any[] = [];
+      for (const q of generated.questions || []) {
         const allOpts = [q.correctAnswer, ...q.distractors];
         const uniqueOpts = new Set(allOpts.map((s: string) => s.trim().toLowerCase()));
-        return uniqueOpts.size === 4;
-      });
+        if (uniqueOpts.size !== 4) continue;
+
+        const candidateQ = q.question.trim();
+        const isDupeOfPrior = previousQuestionSignatures.some((pq) => computeSim(candidateQ, pq) > 0.75);
+        if (isDupeOfPrior) continue;
+
+        const isDupeInCurrent = validQuestions.some((vq) => computeSim(candidateQ, vq.question) > 0.75);
+        if (isDupeInCurrent) continue;
+
+        validQuestions.push(q);
+      }
 
       if (!isPerfection && validQuestions.length < LEARNING_CONFIG.QUIZ_MIN_QUESTIONS) {
         return reply.status(500).send({ error: 'Quiz generation failed strict question count standards' });

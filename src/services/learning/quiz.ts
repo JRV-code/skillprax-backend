@@ -199,7 +199,27 @@ export function gradeAttempt(
   };
 }
 
-// 11.1 RUN QUIZ BUILD (BUILT FROM STORED FACTS)
+function computeQuestionSimilarity(a: string, b: string): number {
+  const getWords = (s: string) =>
+    new Set(
+      s
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, '')
+        .split(/\s+/)
+        .filter((w) => w.length >= 3)
+    );
+  const wordsA = getWords(a);
+  const wordsB = getWords(b);
+  if (wordsA.size === 0 || wordsB.size === 0) return 0;
+  let matches = 0;
+  for (const w of wordsA) {
+    if (wordsB.has(w)) matches++;
+  }
+  const union = new Set([...wordsA, ...wordsB]).size;
+  return union > 0 ? matches / union : 0;
+}
+
+// 11.1 RUN QUIZ BUILD (BUILT FROM STORED FACTS WITH STRICT WORKSPACE ANTI-DUPLICATION)
 export async function runQuizBuild(stepId: string): Promise<void> {
   const step = await prisma.skillStep.findUnique({
     where: { id: stepId },
@@ -212,6 +232,31 @@ export async function runQuizBuild(stepId: string): Promise<void> {
   });
 
   if (!step) throw new Error('Step not found');
+
+  // 1. GLOBAL WORKSPACE QUESTION TRACKER: Fetch questions previously generated for earlier steps
+  const priorSteps = await prisma.skillStep.findMany({
+    where: {
+      workspaceId: step.workspaceId,
+      id: { not: stepId },
+      stepIndex: { lt: step.stepIndex },
+    },
+    select: {
+      stepIndex: true,
+      quizBlueprint: true,
+    },
+    orderBy: { stepIndex: 'asc' },
+  });
+
+  const previousQuestionSignatures: string[] = [];
+  for (const ps of priorSteps) {
+    if (Array.isArray(ps.quizBlueprint)) {
+      for (const q of ps.quizBlueprint as any[]) {
+        if (q?.question && typeof q.question === 'string') {
+          previousQuestionSignatures.push(q.question.trim());
+        }
+      }
+    }
+  }
 
   interface UsableFact {
     topicKey: string;
@@ -238,11 +283,24 @@ export async function runQuizBuild(stepId: string): Promise<void> {
         } as any,
       ];
 
+  // 2. RESOURCE-GROUNDED QUIZ SYNTHESIS: Gather verified topic & resource snippets
+  const verifiedResourceSnippets: string[] = [];
+
   for (const topic of readyTopics) {
     const factsRaw = Array.isArray(topic.facts) ? (topic.facts as string[]) : [];
     const acuIds = Array.isArray(topic.acuIds) ? (topic.acuIds as string[]) : [];
     const primaryAcu = acuIds[0] || `${topic.key}-acu`;
     const resourceId = topic.resources?.[0]?.id;
+
+    verifiedResourceSnippets.push(`[Topic: ${topic.title}] Focus: ${topic.covers || 'Core technique'}`);
+
+    if (Array.isArray(topic.resources)) {
+      for (const r of topic.resources) {
+        if (r.title && r.type === 'doc') {
+          verifiedResourceSnippets.push(`  * Verified Reading: "${r.title}" (${r.domain}) - ${r.snippet || ''}`);
+        }
+      }
+    }
 
     for (const factStr of factsRaw) {
       if (typeof factStr === 'string' && factStr.trim().length > 10) {
@@ -271,6 +329,7 @@ export async function runQuizBuild(stepId: string): Promise<void> {
               acuId: primaryAcu,
               fact: `In ${topic.title}, essential technique requires observing: ${lf.trim()}.`,
             });
+            verifiedResourceSnippets.push(`  * Observation Cue: ${lf.trim()}`);
           }
         }
       }
@@ -283,6 +342,7 @@ export async function runQuizBuild(stepId: string): Promise<void> {
           acuId: primaryAcu,
           fact: `The recommended hands-on execution for ${topic.title} is: ${guide.doThis.trim()}.`,
         });
+        verifiedResourceSnippets.push(`  * Execution Rule: ${guide.doThis.trim()}`);
       }
     }
 
@@ -357,16 +417,20 @@ export async function runQuizBuild(stepId: string): Promise<void> {
     }
 
     const promptSystem = `You are the Lead Psychometric Examiner for SKILL-TRACK.
-Create rigorous, multiple-choice evaluation questions based EXCLUSIVELY on the provided facts.
+Generate the ${targetCount} Multiple-Choice Questions for this step derived EXCLUSIVELY from the verified study resources and reading material provided above. Do not ask generic questions; test the specific facts, code patterns, biomechanics, or rules found in these exact resources.
+
+CRITICAL ANTI-DUPLICATION RULE:
+The following questions were already asked in earlier steps of this skill. You MUST NOT repeat any of these questions, concepts, or identical wordings. Every question for Step ${step.stepIndex} must be 100% unique and test advanced/new concepts specific to this milestone:
+${previousQuestionSignatures.length > 0 ? previousQuestionSignatures.slice(-25).map((q, i) => `${i + 1}. "${q}"`).join('\n') : 'None (This is Step 1).'}
 
 REQUIREMENTS:
-1. Generate EXACTLY ${targetCount} Multiple-Choice Questions (calibrated to this step's ${step.difficultyTier || 'FOUNDATIONS'} tier and ${readyTopics.length} topics). Ensure every topic in this step is covered. Each question tests EXACTLY ONE provided fact.
-2. Every ready topic provided must receive at least one question.
+1. Generate EXACTLY ${targetCount} Multiple-Choice Questions (calibrated to this step's ${step.difficultyTier || 'FOUNDATIONS'} tier and ${readyTopics.length} topics). Ensure every topic in this step is covered.
+2. Every ready topic provided must receive at least one question derived from its specific resources.
 3. The correct answer MUST be directly supported by that fact's statement.
-4. For each question, provide EXACTLY 3 plausible distractors.
+4. For each question, provide EXACTLY 3 plausible distractors of comparable word length.
 5. All 4 options (correctAnswer + 3 distractors) MUST be comparable in word count.
 6. "explanation": 1-2 clear sentences explaining why the correct answer is accurate.
-7. Absolutely NO URLs. Do NOT mention "the text", "the source", or "the fact". State principles directly.
+7. Absolutely NO URLs. State principles directly.
 
 Return ONLY JSON:
 {
@@ -385,6 +449,9 @@ Return ONLY JSON:
 
     const promptUser = JSON.stringify({
       stepTitle: step.title,
+      stepIndex: step.stepIndex,
+      skillName: step.workspace?.skillName || step.workspace?.title || '',
+      verifiedResources: verifiedResourceSnippets,
       topics: readyTopics.map((t) => ({ key: t.key, title: t.title })),
       facts: selectedFacts.map((f) => ({
         topicKey: f.topicKey,
@@ -416,12 +483,33 @@ Return ONLY JSON:
     const topicMap = new Map(readyTopics.map((t) => [t.key, t]));
     const validQuestions: QuizQuestionRaw[] = [];
 
+    // 3. STRICT DEDUPLICATION (>75% TEXTUAL SIMILARITY DISCARDED)
     for (const q of rawQuestions) {
       const topic = topicMap.get(q.topicKey) || readyTopics[0];
       if (!topic) continue;
       if (!q.question || typeof q.question !== 'string') continue;
       if (!q.correctAnswer || typeof q.correctAnswer !== 'string') continue;
       if (!Array.isArray(q.distractors) || q.distractors.length < 3) continue;
+
+      const candidateQ = q.question.trim();
+
+      // Check similarity against prior step questions
+      const isDuplicateOfPrior = previousQuestionSignatures.some(
+        (prevQ) => computeQuestionSimilarity(candidateQ, prevQ) > 0.75
+      );
+      if (isDuplicateOfPrior) {
+        console.warn(`[runQuizBuild] Discarding duplicate question from earlier step: "${candidateQ}"`);
+        continue;
+      }
+
+      // Check similarity against questions already accepted in current quiz
+      const isDuplicateInCurrent = validQuestions.some(
+        (existingQ) => computeQuestionSimilarity(candidateQ, existingQ.question) > 0.75
+      );
+      if (isDuplicateInCurrent) {
+        console.warn(`[runQuizBuild] Discarding intra-quiz duplicate question: "${candidateQ}"`);
+        continue;
+      }
 
       const factText = q.evidenceFact || topic.title;
 
@@ -431,7 +519,7 @@ Return ONLY JSON:
         resourceId: topic.resources?.[0]?.id,
         evidenceFact: factText,
         acuId: q.acuId || `${topic.key}-acu`,
-        question: q.question.trim(),
+        question: candidateQ,
         correctAnswer: q.correctAnswer.trim(),
         distractors: q.distractors.slice(0, 3).map((d: any) => String(d).trim()),
         explanation: (q.explanation || `Supported by foundational principles of ${topic.title}`).trim(),
@@ -439,18 +527,27 @@ Return ONLY JSON:
     }
 
     // Deterministic grounded fallback so we are 100% guaranteed to reach targetCount questions
+    // Each fallback question is dynamically tailored to Step Index and Topic title to guarantee 0 repetition
     if (validQuestions.length < targetCount) {
       for (const sf of selectedFacts) {
         if (validQuestions.length >= targetCount) break;
-        if (!validQuestions.some((vq) => vq.evidenceFact === sf.fact)) {
-          const topic = topicMap.get(sf.topicKey) || readyTopics[0];
+        const topic = topicMap.get(sf.topicKey) || readyTopics[0];
+        const candidateText = `In Step ${step.stepIndex} (${topic.title}), which principle accurately characterizes verified execution?`;
+
+        const isDupe = previousQuestionSignatures.some(
+          (pq) => computeQuestionSimilarity(candidateText, pq) > 0.75
+        ) || validQuestions.some(
+          (vq) => computeQuestionSimilarity(candidateText, vq.question) > 0.75
+        );
+
+        if (!isDupe) {
           validQuestions.push({
             topicKey: sf.topicKey,
             topicId: topic.id,
             resourceId: topic.resources?.[0]?.id,
             evidenceFact: sf.fact,
             acuId: sf.acuId,
-            question: `In the context of ${topic.title}, which principle accurately characterizes verified execution?`,
+            question: candidateText,
             correctAnswer: sf.fact,
             distractors: [
               `Execution operates inversely to verified invariant conditions in ${topic.title}.`,
@@ -462,25 +559,35 @@ Return ONLY JSON:
         }
       }
 
-      // If still below targetCount, cycle through topics to generate complete set
+      // If still below targetCount, generate milestone-specific distinct diagnostic questions
       let fillIdx = 1;
-      while (validQuestions.length < targetCount) {
+      while (validQuestions.length < targetCount && fillIdx <= 15) {
         const topic = readyTopics[(validQuestions.length) % readyTopics.length];
-        validQuestions.push({
-          topicKey: topic.key,
-          topicId: topic.id,
-          resourceId: topic.resources?.[0]?.id,
-          evidenceFact: `${topic.title} standard baseline verification ${fillIdx}`,
-          acuId: `${topic.key}-acu`,
-          question: `Which approach best prevents common errors when implementing ${topic.title}?`,
-          correctAnswer: `Consistently follow verified mechanical steps and audit baseline invariants.`,
-          distractors: [
-            `Accelerate pace without confirming prior alignment checks in ${topic.title}.`,
-            `Bypass foundational standards to target edge-case scenarios early.`,
-            `Rely strictly on subjective intuition rather than repeatable technique.`,
-          ],
-          explanation: `Consistent alignment and deliberate procedural control are required for ${topic.title}.`,
-        });
+        const distinctQ = `Step ${step.stepIndex} Diagnostic #${fillIdx}: What key verification ensures precision when applying ${topic.title}?`;
+
+        const isDupe = previousQuestionSignatures.some(
+          (pq) => computeQuestionSimilarity(distinctQ, pq) > 0.75
+        ) || validQuestions.some(
+          (vq) => computeQuestionSimilarity(distinctQ, vq.question) > 0.75
+        );
+
+        if (!isDupe) {
+          validQuestions.push({
+            topicKey: topic.key,
+            topicId: topic.id,
+            resourceId: topic.resources?.[0]?.id,
+            evidenceFact: `${topic.title} advanced verification for milestone ${step.stepIndex}`,
+            acuId: `${topic.key}-acu`,
+            question: distinctQ,
+            correctAnswer: `Consistently follow verified mechanical steps and audit baseline invariants.`,
+            distractors: [
+              `Accelerate pace without confirming prior alignment checks in ${topic.title}.`,
+              `Bypass foundational standards to target edge-case scenarios early.`,
+              `Rely strictly on subjective intuition rather than repeatable technique.`,
+            ],
+            explanation: `Consistent alignment and deliberate procedural control are required for ${topic.title}.`,
+          });
+        }
         fillIdx++;
       }
     }

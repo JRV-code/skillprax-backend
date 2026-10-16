@@ -15,9 +15,60 @@ export async function getTavilyApiKey(): Promise<string> {
   return (process.env.TAVILY_API_KEY || '').trim();
 }
 
+export const BANNED_ACADEMIC_DOMAINS: string[] = [
+  'arxiv.org',
+  'researchgate.net',
+  'academia.edu',
+  'semanticscholar.org',
+  'biorxiv.org',
+  'medrxiv.org',
+  'springer.com',
+  'sciencedirect.com',
+  'wiley.com',
+  'tandfonline.com',
+  'ieee.org',
+  'acm.org',
+  'jstor.org',
+  'ncbi.nlm.nih.gov',
+  'frontiersin.org',
+  'mdpi.com',
+  'ssrn.com',
+  'citeseerx.ist.psu.edu',
+  'core.ac.uk',
+  'openreview.net',
+  'proceedings.mlr.press',
+  'neurips.cc',
+  'iclr.cc',
+  'icml.cc',
+  'cvpr.thecvf.com',
+];
+
+export const PREFERRED_PRACTITIONER_DOMAINS = [
+  'developer.mozilla.org',
+  'freecodecamp.org',
+  'geeksforgeeks.org',
+  'w3schools.com',
+  'medium.com',
+  'dev.to',
+  'tutorialspoint.com',
+  'verywellfit.com',
+  'physiopedia.com',
+  'physio-pedia.com',
+  'runnersworld.com',
+  'bwfbadminton.com',
+  'fifa.com',
+  'investopedia.com',
+  'web.dev',
+  'digitalocean.com',
+  'baeldung.com',
+  'stack.com',
+  'bodybuilding.com',
+  'acefitness.org',
+];
+
 /**
  * 2. URL SANITY FILTER: SPECIFIC READY-TO-READ PAGES ONLY
- * Rejects generic search results pages, trampolines,
+ * Rejects academic seminar PDFs, research repositories, generic search results pages,
  * encyclopedias (Wikipedia/Wikimedia), bare homepages, and social/video links.
  */
 export function isSpecificArticleUrl(url: string): boolean {
@@ -26,7 +77,26 @@ export function isSpecificArticleUrl(url: string): boolean {
   if (!/^https?:\/\//i.test(trimmed)) return false;
   const lower = trimmed.toLowerCase();
 
-  // Reject generic search result queries, encyclopedias, and video/social domains
+  // 1. Strict ban on all PDF files, academic downloads, and seminar paper abstracts
+  if (
+    lower.endsWith('.pdf') ||
+    lower.includes('.pdf?') ||
+    lower.includes('.pdf#') ||
+    lower.includes('/pdf/') ||
+    lower.includes('/download/pdf') ||
+    lower.includes('/epdf/') ||
+    lower.includes('/abstract/') ||
+    lower.includes('conference') ||
+    lower.includes('seminar') ||
+    lower.includes('proceedings') ||
+    lower.includes('symposium') ||
+    lower.includes('dissertation') ||
+    lower.includes('thesis')
+  ) {
+    return false;
+  }
+
+  // 2. Reject generic search result queries, encyclopedias, and video/social domains
   if (
     lower.includes(['special', 'search'].join(':')) ||
     lower.includes('/search?') ||
@@ -50,6 +120,11 @@ export function isSpecificArticleUrl(url: string): boolean {
     return false;
   }
 
+  // 3. Reject banned academic and paper abstract portals
+  for (const banned of BANNED_ACADEMIC_DOMAINS) {
+    if (lower.includes(banned)) return false;
+  }
+
   try {
     const parsed = new URL(trimmed);
     if (!parsed.hostname || parsed.hostname.length < 4) return false;
@@ -64,12 +139,23 @@ export function isSpecificArticleUrl(url: string): boolean {
 
 /**
  * 3. FAST PARALLEL LINK HEALTH CHECK
- * Fast check (2200ms) with browser User-Agent:
- * - 404 or 410: Discard dead link
- * - 200–399, or 403/405/429 (bot-protected blogs like Medium, Cloudflare, MDN): Keep as valid
+ * Verifies live link responsiveness (2500ms):
+ * - 404, 405, 410, or 500+: Discard dead link
+ * - 200–399: Valid live link
+ * - 403/429: Kept only if known practitioner portal with browser protection (MDN, Cloudflare, etc.)
  */
 export async function checkLinkHealth(url: string): Promise<boolean> {
   if (!isSpecificArticleUrl(url)) return false;
+
+  let domain = '';
+  try {
+    domain = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return false;
+  }
+
+  const isPreferredDomain = PREFERRED_PRACTITIONER_DOMAINS.some((p) => domain.includes(p));
+
   try {
     const res = await fetch(url, {
       method: 'HEAD',
@@ -77,17 +163,47 @@ export async function checkLinkHealth(url: string): Promise<boolean> {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       },
-      signal: AbortSignal.timeout(2200),
+      signal: AbortSignal.timeout(2500),
     });
 
-    if (res.status === 404 || res.status === 410) {
+    if (res.status === 404 || res.status === 410 || res.status >= 500) {
       return false;
+    }
+
+    // If HEAD is disallowed (405), test with a lightweight partial GET
+    if (res.status === 405) {
+      try {
+        const getRes = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            Range: 'bytes=0-100',
+          },
+          signal: AbortSignal.timeout(2500),
+        });
+
+        if (getRes.status === 404 || getRes.status === 405 || getRes.status === 410 || getRes.status >= 500) {
+          return false;
+        }
+        return true;
+      } catch {
+        return isPreferredDomain;
+      }
+    }
+
+    if (res.status >= 200 && res.status < 400) {
+      return true;
+    }
+
+    if (res.status === 403 || res.status === 429) {
+      return isPreferredDomain;
     }
 
     return true;
   } catch {
-    // Timeout or connection reset is standard on automated HEAD requests from Medium/MDN/Cloudflare: keep as valid
-    return true;
+    // Timeout or connection failure
+    return isPreferredDomain;
   }
 }
 
@@ -96,7 +212,8 @@ export async function checkLinkHealth(url: string): Promise<boolean> {
  */
 export async function verifyLinkSafe(url: string): Promise<{ ok: boolean; status: 'VERIFIED' | 'UNCHECKED' | 'DEAD' }> {
   if (!isSpecificArticleUrl(url)) return { ok: false, status: 'DEAD' };
-  return { ok: true, status: 'VERIFIED' };
+  const healthy = await checkLinkHealth(url);
+  return { ok: healthy, status: healthy ? 'VERIFIED' : 'DEAD' };
 }
 
 export interface WebCandidate {
@@ -109,8 +226,7 @@ export interface WebCandidate {
 
 /**
  * 4. TAVILY OPEN-WEB BLOG, ARTICLE & DOCUMENTATION CANDIDATE SEARCH
- * Scans blogs, articles, tutorials, and documentation (not restricted to Wikipedia).
- * Features multi-pass semantic query retry and multi-website domain diversity.
+ * Strict query targeting, academic domain banning, and educational portal prioritization.
  */
 export async function searchOpenWebCandidates(params: {
   skillName: string;
@@ -131,16 +247,17 @@ export async function searchOpenWebCandidates(params: {
   const seenUrlsInTopic = new Set<string>();
   const domainCounts = new Map<string, number>();
 
+  // Strict Query Targeting: "${workspace.skillName}" "${workspace.subGenre || ''}" "${step.title}" "${topic.title}" tutorial guide documentation
   const passes = isSports
     ? [
-        `${cleanSkill} ${cleanTopic} coaching guide technique breakdown tutorial`.trim(),
-        `${cleanSkill} ${cleanSub} ${cleanStep} ${cleanTopic} athletic mechanics drill`.trim(),
-        `how to learn ${cleanSkill} ${cleanTopic} biomechanics training`.trim(),
+        `"${cleanSkill}" "${cleanSub}" "${cleanStep}" "${cleanTopic}" tutorial guide documentation`.replace(/\s+/g, ' ').trim(),
+        `"${cleanSkill}" "${cleanTopic}" technique guide coaching tutorial`.replace(/\s+/g, ' ').trim(),
+        `${cleanSkill} ${cleanTopic} athletic mechanics drill tutorial`.trim(),
       ]
     : [
-        `${cleanSkill} ${cleanTopic} comprehensive guide tutorial`.trim(),
-        `${cleanSkill} ${cleanSub} ${cleanStep} ${cleanTopic} concepts explained examples`.trim(),
-        `how to learn ${cleanSkill} ${cleanTopic} article documentation`.trim(),
+        `"${cleanSkill}" "${cleanSub}" "${cleanStep}" "${cleanTopic}" tutorial guide documentation`.replace(/\s+/g, ' ').trim(),
+        `"${cleanSkill}" "${cleanTopic}" comprehensive guide documentation`.replace(/\s+/g, ' ').trim(),
+        `${cleanSkill} ${cleanTopic} practical guide tutorial`.trim(),
       ];
 
   if (tavilyKey) {
@@ -160,6 +277,7 @@ export async function searchOpenWebCandidates(params: {
             include_raw_content: false,
             include_answer: false,
             exclude_domains: [
+              ...BANNED_ACADEMIC_DOMAINS,
               'wikipedia.org',
               'en.wikipedia.org',
               'wikimedia.org',
@@ -181,7 +299,7 @@ export async function searchOpenWebCandidates(params: {
           const data: any = await res.json();
           const rawResults = Array.isArray(data?.results) ? data.results : [];
 
-          // Filter out search pages, homepages, and already used URLs
+          // Filter out academic seminar links, PDFs, search pages, homepages, and already used URLs
           const validCandidates = rawResults.filter((r: any) => {
             const u = String(r?.url || '').trim();
             if (!isSpecificArticleUrl(u)) return false;
@@ -196,6 +314,17 @@ export async function searchOpenWebCandidates(params: {
             if ((domainCounts.get(dom) || 0) >= 2) return false;
 
             return true;
+          });
+
+          // Sort so high-authority educational & practitioner domains take precedence
+          validCandidates.sort((a: any, b: any) => {
+            const domA = (a.url || '').toLowerCase();
+            const domB = (b.url || '').toLowerCase();
+            const isPrefA = PREFERRED_PRACTITIONER_DOMAINS.some((p) => domA.includes(p));
+            const isPrefB = PREFERRED_PRACTITIONER_DOMAINS.some((p) => domB.includes(p));
+            if (isPrefA && !isPrefB) return -1;
+            if (!isPrefA && isPrefB) return 1;
+            return 0;
           });
 
           // Fast parallel health check
