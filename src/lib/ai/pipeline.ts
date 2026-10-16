@@ -68,11 +68,12 @@ export interface CurateAndExamineResult {
 
 // 1. MODEL WHITELIST NEGOTIATION
 export const STATIC_MODEL_WHITELIST = [
-  "llama-3.1-70b-versatile",
-  "llama-3.1-8b-instant",
-  "llama-3.3-70b-versatile",
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "qwen/qwen3.8-27b",
   "mixtral-8x7b-32768",
   "gemma2-9b-it",
+  "allam-2-7b",
 ] as const;
 
 interface ModelCache {
@@ -160,7 +161,7 @@ export async function callGroqWithFallback(
           model,
           messages,
           temperature: options.temperature ?? 0.2,
-          max_tokens: options.maxTokens ?? 4000,
+          max_tokens: Math.max(options.maxTokens ?? 4096, 4096),
         };
         if (options.jsonMode) {
           payload.response_format = { type: "json_object" };
@@ -210,7 +211,8 @@ export async function callGroqWithFallback(
         }
 
         console.info(`[pipeline] Successfully generated response using model: ${model}`);
-        return { content, modelUsed: model };
+        const cleanedContent = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        return { content: cleanedContent, modelUsed: model };
       } catch (err: any) {
         lastError = err;
         if (err?.name === "AbortError") {

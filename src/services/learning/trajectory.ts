@@ -158,34 +158,25 @@ Return ONLY JSON:
           };
         },
         temperature: 0.3,
-        maxTokens: 500,
+        maxTokens: 4096,
       }
     );
 
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Groq trajectory timeout after 2200ms')), 2200)
+      setTimeout(() => reject(new Error('Groq trajectory timeout after 12000ms')), 12000)
     );
 
     trajectory = await Promise.race([groqCall, timeoutPromise]);
   } catch (groqErr) {
-    console.warn('[Trajectory:GroqPrompt] Groq notice, utilizing calibrated instant fallback:', groqErr);
-    const fallbackTemplates = section === 'SPORTS'
-      ? [
-          `${skill} Kinetic Baseline & Core Technical Stance`,
-          `Essential Execution Drills & Foundational Touches in ${subGenre}`,
-          `Dynamic Movement Sequencing & Tactical Pacing`,
-          `Offensive/Defensive Positioning & Reaction Mechanics`,
-          `High-Intensity Match Simulation & Tactical Fluency in ${skill}`,
-          `Elite Autonomous Execution & Competitive Mastery`,
-        ]
-      : [
-          `Foundational Core Invariants & Mental Models for ${skill}`,
-          `Isolated Execution Mechanics & Applied Patterns in ${subGenre}`,
-          `Dynamic Architecture, Rhythm & Procedural Synthesis`,
-          `Error Diagnostics, Edge Cases & Recovery Protocols`,
-          `Advanced Integrated Execution & High-Complexity Systems in ${skill}`,
-          `Elite Nuance Optimization & Autonomous Production Mastery`,
-        ];
+    console.warn('[Trajectory:GroqPrompt] Groq notice, utilizing calibrated domain-authentic fallback:', groqErr);
+    const fallbackTemplates = [
+      `Foundations of ${subGenre} & Core Principles`,
+      `Applied Techniques & Methodical Execution in ${subGenre}`,
+      `Intermediate Fluency, Common Pitfalls & Practical Problem Solving`,
+      `Advanced Scenarios, High-Complexity Variations & Edge Cases in ${skill}`,
+      `Elite Independent Execution, Refinement & Capstone Synthesis in ${subGenre}`,
+      `Mastery Verification, Precision & Autonomous Excellence in ${skill}`,
+    ];
 
     const chosenSteps = fallbackTemplates.slice(0, recommendedTarget).map((title) => ({ title }));
     trajectory = {

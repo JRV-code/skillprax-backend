@@ -145,15 +145,35 @@ export const milestoneRoutes: FastifyPluginAsync = async (fastify: FastifyInstan
         `, userId, skillId);
       } catch {}
 
-      // If none exist, seed default 5 milestones (1 unlocked, 2-5 locked)
+      // If none exist, seed default milestones based on workspace steps
       if (!Array.isArray(milestones) || milestones.length === 0) {
-        const defaultMilestones = [
-          { order: 1, title: 'Milestone 1: Foundational Primer & Core Basics', status: 'unlocked' },
-          { order: 2, title: 'Milestone 2: Elementary Execution & Applied Logic', status: 'locked' },
-          { order: 3, title: 'Milestone 3: Intermediate Dynamic Execution & Fluidity', status: 'locked' },
-          { order: 4, title: 'Milestone 4: Advanced Situational Pressure & Optimization', status: 'locked' },
-          { order: 5, title: 'Milestone 5: Elite Mastery & Capstone Integration', status: 'locked' },
-        ];
+        let defaultMilestones: Array<{ order: number; title: string; status: string }> = [];
+        let skillTitle = 'Skill';
+        try {
+          const ws = await prisma.workspace.findFirst({
+            where: { OR: [{ id: skillId }, { title: { equals: skillId, mode: 'insensitive' } }] },
+            include: { steps: { orderBy: { stepIndex: 'asc' } } },
+          });
+          if (ws?.steps && ws.steps.length > 0) {
+            defaultMilestones = ws.steps.map((st, idx) => ({
+              order: st.stepIndex,
+              title: st.title,
+              status: idx === 0 ? 'unlocked' : 'locked',
+            }));
+          } else if (ws?.title) {
+            skillTitle = ws.title;
+          }
+        } catch (_) {}
+
+        if (defaultMilestones.length === 0) {
+          defaultMilestones = [
+            { order: 1, title: `Milestone 1: Foundations of ${skillTitle} & Core Principles`, status: 'unlocked' },
+            { order: 2, title: `Milestone 2: Applied Techniques & Methodical Execution`, status: 'locked' },
+            { order: 3, title: `Milestone 3: Intermediate Fluency & Practical Problem Solving`, status: 'locked' },
+            { order: 4, title: `Milestone 4: Advanced Scenarios & High-Complexity Variations`, status: 'locked' },
+            { order: 5, title: `Milestone 5: Elite Independent Mastery & Capstone Integration`, status: 'locked' },
+          ];
+        }
 
         for (const m of defaultMilestones) {
           try {

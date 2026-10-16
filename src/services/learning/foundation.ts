@@ -80,7 +80,8 @@ export async function getBestGroqModel(apiKey: string, forceRefresh = false): Pr
 }
 
 function cleanJsonCodeFences(text: string): string {
-  let cleaned = text.trim();
+  let cleaned = (text || '').trim();
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```(?:json)?\s*/i, '');
     cleaned = cleaned.replace(/\s*```$/, '');
@@ -165,7 +166,7 @@ export async function callGroqJson<T>(
   }
 
   let currentModel = await getBestGroqModel(groqKey);
-  let currentMaxTokens = Math.min(8192, opts.maxTokens ?? 4500);
+  let currentMaxTokens = Math.min(8192, Math.max(opts.maxTokens ?? 4500, 4096));
   const temperature = opts.temperature ?? 0.2;
 
   let currentUserPrompt = userPrompt;

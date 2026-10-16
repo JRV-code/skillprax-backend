@@ -12,9 +12,6 @@ import { calculatePersonalizedStepBounds } from '../config/learning';
  * 4. allam-2-7b (Tertiary fallback)
  */
 export const DEFAULT_GROQ_PRIORITY_MODELS = [
-  'llama-3.1-70b-versatile',
-  'llama-3.1-8b-instant',
-  'llama-3.3-70b-versatile',
   'openai/gpt-oss-120b',
   'openai/gpt-oss-20b',
   'qwen/qwen3.8-27b',
@@ -22,6 +19,34 @@ export const DEFAULT_GROQ_PRIORITY_MODELS = [
   'gemma2-9b-it',
   'allam-2-7b',
 ] as const;
+
+export function cleanAndParseJson<T = any>(rawText: string): T {
+  let cleaned = (rawText || '').trim();
+  // Strip <think> tags if reasoning model emitted internal chain-of-thought
+  cleaned = cleaned.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  // Strip markdown code fences
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try {
+        return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+      } catch (_) {}
+    }
+    const firstBracket = cleaned.indexOf('[');
+    const lastBracket = cleaned.lastIndexOf(']');
+    if (firstBracket !== -1 && lastBracket > firstBracket) {
+      try {
+        return JSON.parse(cleaned.slice(firstBracket, lastBracket + 1));
+      } catch (_) {}
+    }
+    throw e;
+  }
+}
 
 let cachedActiveModel: string | null = null;
 let cachedActiveModelExpires = 0;
@@ -179,11 +204,10 @@ Output strictly valid JSON with NO markdown syntax:
       { role: 'system', content: systemPrompt },
       { role: 'user', content: `Generate dynamic curriculum for "${cleanTitle}" with sub-genre "${cleanSubGenre}".` }
     ],
-    { apiKey: groqKey, jsonMode: true, temperature: 0.3 }
+    { apiKey: groqKey, jsonMode: true, temperature: 0.3, maxTokens: 4096 }
   );
 
-  let cleaned = response.content.trim().replace(/^```json\s*/i, '').replace(/\s*```$/, '');
-  const parsed = JSON.parse(cleaned);
+  const parsed = cleanAndParseJson(response.content);
 
   // Guarantee step count is clamped between 3 and 6
   const steps = Array.isArray(parsed.steps) ? parsed.steps : [];

@@ -40,6 +40,8 @@ interface PlanningTopic {
   title: string;
   covers: string;
   minutes: number;
+  tavilyDocQuery?: string;
+  youtubeTopicQuery?: string;
 }
 
 interface PlanningChapter {
@@ -132,13 +134,15 @@ export async function runPackBuild(stepId: string): Promise<void> {
       }
     }
 
-    // 2. Fast Groq Call for 2 Chapters & 2 Topics each (capped at 5500ms with instant deterministic fallback)
+    // 2. Groq Call for 2 Chapters & 2 Topics each with explicit 4-tier search queries (maxTokens: 4096)
     let planning: PlanningResult;
     try {
       planning = await callGroqJson<PlanningResult>(
         `You are a Lead Curriculum Architect for SKILL-TRACK.
 Create exactly 2 focused chapters for Step ${step.stepIndex} ("${cleanStepTitle}") of Skill "${skillName}" (${subGenre}).
 Each chapter must have exactly 2 concrete practical topics.
+Every Chapter title and Topic title MUST be concrete and authentic to "${skillName}" and "${subGenre}" (never vague labels like "Introduction" or "Basic Rules").
+For every individual topic, output high-precision 4-tier search queries locking in Skill, SubGenre, Step, Chapter, and Topic.
 Return ONLY valid JSON:
 {
   "chapters": [
@@ -146,7 +150,14 @@ Return ONLY valid JSON:
       "title": "string",
       "summary": "1 sentence chapter summary",
       "topics": [
-        { "key": "t1", "title": "string", "covers": "1 sentence topic focus", "minutes": 15 }
+        {
+          "key": "t1",
+          "title": "string",
+          "covers": "1 sentence topic focus",
+          "minutes": 15,
+          "tavilyDocQuery": "${skillName} ${subGenre} ${cleanStepTitle} [Chapter Title] [Topic Title] guide tutorial",
+          "youtubeTopicQuery": "${skillName} [Chapter Title] [Topic Title] tutorial"
+        }
       ]
     }
   ]
@@ -164,7 +175,7 @@ Return ONLY valid JSON:
             }
             return data;
           },
-          maxTokens: 1800,
+          maxTokens: 4096,
           temperature: 0.25,
         }
       );
@@ -173,19 +184,47 @@ Return ONLY valid JSON:
       planning = {
         chapters: [
           {
-            title: `${cleanStepTitle}: Core Mechanics & Foundations`,
-            summary: `Core principles and execution models for ${cleanStepTitle}`,
+            title: `${cleanStepTitle}: Core Fundamentals & Techniques`,
+            summary: `Core principles and execution mechanics for ${cleanStepTitle}`,
             topics: [
-              { key: `step${step.stepIndex}_t1`, title: `${cleanStepTitle} Fundamentals`, covers: 'Baseline execution mechanics', minutes: 12 },
-              { key: `step${step.stepIndex}_t2`, title: `${cleanStepTitle} Invariant Patterns`, covers: 'Standard patterns and operational control flow', minutes: 15 },
+              {
+                key: `step${step.stepIndex}_t1`,
+                title: `${cleanStepTitle} Essential Mechanics`,
+                covers: `Foundational execution mechanics for ${cleanStepTitle}`,
+                minutes: 15,
+                tavilyDocQuery: `${skillName} ${subGenre} ${cleanStepTitle} essential mechanics guide tutorial`,
+                youtubeTopicQuery: `${skillName} ${cleanStepTitle} essentials tutorial`,
+              },
+              {
+                key: `step${step.stepIndex}_t2`,
+                title: `${cleanStepTitle} Standard Techniques`,
+                covers: `Established operational methods and execution patterns`,
+                minutes: 15,
+                tavilyDocQuery: `${skillName} ${subGenre} ${cleanStepTitle} standard techniques best practices`,
+                youtubeTopicQuery: `${skillName} ${cleanStepTitle} techniques tutorial`,
+              },
             ],
           },
           {
-            title: `${cleanStepTitle}: Practical Implementation & Synthesis`,
-            summary: `Practical verification and applied execution for ${cleanStepTitle}`,
+            title: `${cleanStepTitle}: Practical Application & Problem Solving`,
+            summary: `Applied execution and error prevention for ${cleanStepTitle}`,
             topics: [
-              { key: `step${step.stepIndex}_t3`, title: `${cleanStepTitle} Implementation Guide`, covers: 'Hands-on practical execution and standard workflows', minutes: 18 },
-              { key: `step${step.stepIndex}_t4`, title: `${cleanStepTitle} Diagnostics & Verification`, covers: 'Error mitigation and performance validation', minutes: 15 },
+              {
+                key: `step${step.stepIndex}_t3`,
+                title: `${cleanStepTitle} Applied Practice`,
+                covers: `Hands-on execution and deliberate practice drills`,
+                minutes: 18,
+                tavilyDocQuery: `${skillName} ${subGenre} ${cleanStepTitle} applied practice examples guide`,
+                youtubeTopicQuery: `${skillName} ${cleanStepTitle} practical tutorial`,
+              },
+              {
+                key: `step${step.stepIndex}_t4`,
+                title: `${cleanStepTitle} Common Mistakes & Corrections`,
+                covers: `Identifying and correcting standard execution errors`,
+                minutes: 15,
+                tavilyDocQuery: `${skillName} ${subGenre} ${cleanStepTitle} common mistakes troubleshooting guide`,
+                youtubeTopicQuery: `${skillName} ${cleanStepTitle} mistakes to avoid`,
+              },
             ],
           },
         ],
@@ -226,6 +265,7 @@ Return ONLY valid JSON:
         subGenre,
         topicOrChapterTitle: ch.title,
         usedVideoIds,
+        queryOverride: ch.topics[0]?.youtubeTopicQuery || `${skillName} ${subGenre} ${ch.title} tutorial`,
       })
     );
 
@@ -236,6 +276,7 @@ Return ONLY valid JSON:
         stepTitle: cleanStepTitle,
         topicTitle: topic.title,
         usedDocUrls,
+        queryOverride: topic.tavilyDocQuery || `${skillName} ${subGenre} ${cleanStepTitle} ${topic.title} guide tutorial`,
       })
     );
 
@@ -305,6 +346,9 @@ Return ONLY valid JSON:
           packStage: 'READY',
           packStatus: 'READY',
           packError: null,
+          quizBlueprint: [] as any,
+          quizStatus: 'NOT_BUILT',
+          quizError: null,
           status: step.status === 'LOCKED' ? 'LOCKED' : 'STUDY_READY',
         },
       });

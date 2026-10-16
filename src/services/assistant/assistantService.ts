@@ -102,9 +102,6 @@ export async function performTavilySearch(query: string): Promise<{ summary: str
 import { resolveActiveGroqModel, DEFAULT_GROQ_PRIORITY_MODELS } from '../ai';
 
 const GROQ_MODEL_CHAIN = [
-  'llama-3.1-70b-versatile',
-  'llama-3.1-8b-instant',
-  'llama-3.3-70b-versatile',
   'openai/gpt-oss-120b',
   'openai/gpt-oss-20b',
   'qwen/qwen3.8-27b',
@@ -140,13 +137,14 @@ export async function generateSessionTitle(firstPrompt: string, apiKey: string):
             },
           ],
           temperature: 0.3,
-          max_tokens: 16,
+          max_tokens: 512,
         }),
       });
 
       if (res.ok) {
         const data: any = await res.json();
-        const rawTitle = data?.choices?.[0]?.message?.content?.trim();
+        let rawTitle = data?.choices?.[0]?.message?.content?.trim() || '';
+        rawTitle = rawTitle.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
         if (rawTitle && rawTitle.length < 50) {
           return rawTitle.replace(/^["']|["']$/g, '');
         }
@@ -389,7 +387,7 @@ export async function* streamAssistantChat(params: {
           model,
           messages: messagesPayload,
           temperature: 0.5,
-          max_tokens: 2048,
+          max_tokens: 4096,
           stream: true,
         }),
       });

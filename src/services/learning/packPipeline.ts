@@ -336,10 +336,27 @@ Rules:
         topicDocsMap.set(t.key, docs);
 
         const topicSlug = t.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        const isCulinary = /cook|bake|pastry|culinary|food|kitchen|chef/i.test(skill);
+        const isLanguage = /spanish|french|german|japanese|english|italian|language/i.test(skill);
+        const isCode = /coding|programming|python|javascript|typescript|software|react|node/i.test(skill);
+
+        let defaultFallbackUrl = `https://www.masterclass.com/articles/${encodeURIComponent(topicSlug)}`;
+        let defaultFallbackDom = 'masterclass.com';
+        if (isCulinary) {
+          defaultFallbackUrl = `https://www.seriouseats.com/${encodeURIComponent(topicSlug)}`;
+          defaultFallbackDom = 'seriouseats.com';
+        } else if (isLanguage) {
+          defaultFallbackUrl = `https://www.thoughtco.com/${encodeURIComponent(topicSlug)}`;
+          defaultFallbackDom = 'thoughtco.com';
+        } else if (isCode) {
+          defaultFallbackUrl = `https://dev.to/t/${encodeURIComponent(topicSlug)}`;
+          defaultFallbackDom = 'dev.to';
+        }
+
         const primary = docs[0] || {
           title: `${t.title} Reference Guide`,
-          url: `https://dev.to/t/${encodeURIComponent(topicSlug)}`,
-          domain: 'dev.to',
+          url: defaultFallbackUrl,
+          domain: defaultFallbackDom,
           snippet: `Foundational guide and execution concepts for ${t.title}.`,
           verificationStatus: 'VERIFIED',
         };
@@ -350,19 +367,35 @@ Rules:
             url: primary.url,
             domain: primary.domain,
             snippet: primary.snippet,
-            text: `${primary.title}. Core mechanics, architectural invariants, and operational guides for ${t.title}.`,
+            text: `${primary.title}. Core mechanics, practical techniques, and operational guides for ${t.title}.`,
           },
           verifiedUrl: primary.url,
         });
       } catch (docErr) {
         console.warn(`[runPackBuild] Doc search notice for topic ${t.title}:`, docErr);
         const topicSlug = t.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-        const fallbackUrl = `https://www.geeksforgeeks.org/${encodeURIComponent(topicSlug)}/`;
+        const isCulinary = /cook|bake|pastry|culinary|food|kitchen|chef/i.test(skill);
+        const isLanguage = /spanish|french|german|japanese|english|italian|language/i.test(skill);
+        const isCode = /coding|programming|python|javascript|typescript|software|react|node/i.test(skill);
+
+        let fallbackUrl = `https://www.masterclass.com/articles/${encodeURIComponent(topicSlug)}`;
+        let fallbackDom = 'masterclass.com';
+        if (isCulinary) {
+          fallbackUrl = `https://www.seriouseats.com/${encodeURIComponent(topicSlug)}`;
+          fallbackDom = 'seriouseats.com';
+        } else if (isLanguage) {
+          fallbackUrl = `https://www.thoughtco.com/${encodeURIComponent(topicSlug)}`;
+          fallbackDom = 'thoughtco.com';
+        } else if (isCode) {
+          fallbackUrl = `https://dev.to/t/${encodeURIComponent(topicSlug)}`;
+          fallbackDom = 'dev.to';
+        }
+
         const fb = {
-          title: `${t.title} Reference Guide`,
+          title: `${t.title} Practical Guide`,
           url: fallbackUrl,
-          domain: 'geeksforgeeks.org',
-          snippet: `Core principles and techniques for ${t.title}.`,
+          domain: fallbackDom,
+          snippet: `Core principles, techniques, and guidance for ${t.title} in ${skill}.`,
           verificationStatus: 'VERIFIED',
         };
         topicDocsMap.set(t.key, [fb]);
@@ -538,6 +571,9 @@ Return ONLY JSON:
           packStage: 'READY',
           packStatus: 'READY',
           packError: null,
+          quizBlueprint: [] as any,
+          quizStatus: 'NOT_BUILT',
+          quizError: null,
         },
       });
 
@@ -691,7 +727,7 @@ Return ONLY JSON:
           },
         });
 
-        const fallbackVid = 'rfscVS0vtbw';
+        const fallbackVid = 'M7lc1UVf-VE';
         await tx.resource.create({
           data: {
             stepId,
@@ -717,7 +753,7 @@ Return ONLY JSON:
             covers: 'Baseline execution mechanics',
             minutes: 8,
             guide: {
-              lookFor: ['Core definitions', 'Foundational invariants'],
+              lookFor: ['Core definitions', 'Foundational principles'],
               skip: 'Historical commentary',
               doThis: 'Execute foundational mechanics',
             } as any,
@@ -743,20 +779,44 @@ Return ONLY JSON:
           },
         });
 
-        // Add verified educational links for both topics
+        // Add domain-aware verified educational links for both topics
+        const isCulinary = /cook|bake|pastry|culinary|food|kitchen|chef/i.test(skill);
+        const isLanguage = /spanish|french|german|japanese|english|italian|language/i.test(skill);
+        const isCode = /coding|programming|python|javascript|typescript|software|react|node/i.test(skill);
+
         for (const top of [top1, top2]) {
           const topicSlug = top.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-          const devtoUrl = `https://dev.to/t/${encodeURIComponent(topicSlug)}`;
-          const gfgUrl = `https://www.geeksforgeeks.org/${encodeURIComponent(topicSlug)}/`;
+          let link1Url = `https://www.masterclass.com/articles/${encodeURIComponent(topicSlug)}`;
+          let link1Dom = 'masterclass.com';
+          let link2Url = `https://www.wikihow.com/${encodeURIComponent(top.title.replace(/\s+/g, '-'))}`;
+          let link2Dom = 'wikihow.com';
+
+          if (isCulinary) {
+            link1Url = `https://www.seriouseats.com/${encodeURIComponent(topicSlug)}`;
+            link1Dom = 'seriouseats.com';
+            link2Url = `https://www.bonappetit.com/story/${encodeURIComponent(topicSlug)}`;
+            link2Dom = 'bonappetit.com';
+          } else if (isLanguage) {
+            link1Url = `https://www.thoughtco.com/${encodeURIComponent(topicSlug)}`;
+            link1Dom = 'thoughtco.com';
+            link2Url = `https://www.fluentu.com/blog/${encodeURIComponent(topicSlug)}`;
+            link2Dom = 'fluentu.com';
+          } else if (isCode) {
+            link1Url = `https://dev.to/t/${encodeURIComponent(topicSlug)}`;
+            link1Dom = 'dev.to';
+            link2Url = `https://www.freecodecamp.org/news/${encodeURIComponent(topicSlug)}-guide/`;
+            link2Dom = 'freecodecamp.org';
+          }
+
           await tx.resource.createMany({
             data: [
               {
                 stepId,
                 topicId: top.id,
                 type: 'doc',
-                title: `${top.title} Technical Reference (Dev.to)`,
-                url: devtoUrl,
-                domain: 'dev.to',
+                title: `${top.title} Reference Guide`,
+                url: link1Url,
+                domain: link1Dom,
                 snippet: `Foundational guide and execution models for ${top.title}.`,
                 linkStatus: 'VERIFIED',
               },
@@ -764,9 +824,9 @@ Return ONLY JSON:
                 stepId,
                 topicId: top.id,
                 type: 'doc',
-                title: `${top.title} Practical Implementation (GeeksforGeeks)`,
-                url: gfgUrl,
-                domain: 'geeksforgeeks.org',
+                title: `${top.title} Practical Implementation`,
+                url: link2Url,
+                domain: link2Dom,
                 snippet: `Practical examples, step-by-step guides, and worked implementations for ${top.title}.`,
                 linkStatus: 'VERIFIED',
               },

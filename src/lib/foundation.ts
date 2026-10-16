@@ -62,7 +62,7 @@ export async function callGroqJson<T = any>(
               { role: 'user', content: usr },
             ],
             response_format: { type: 'json_object' },
-            max_tokens: options.maxTokens ?? 4500,
+            max_tokens: Math.max(options.maxTokens ?? 4500, 4096),
             temperature: options.temperature ?? 0.3,
           }),
           signal: controller.signal,
@@ -125,9 +125,28 @@ export async function callGroqJson<T = any>(
         }
 
         const data: any = await res.json();
-        const content = data.choices?.[0]?.message?.content || '';
-        const stripped = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-        return JSON.parse(stripped);
+        let content = data.choices?.[0]?.message?.content || '';
+        content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+        const stripped = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+        try {
+          return JSON.parse(stripped);
+        } catch (parseErr) {
+          const firstBrace = stripped.indexOf('{');
+          const lastBrace = stripped.lastIndexOf('}');
+          if (firstBrace !== -1 && lastBrace > firstBrace) {
+            try {
+              return JSON.parse(stripped.slice(firstBrace, lastBrace + 1));
+            } catch (_) {}
+          }
+          const firstBracket = stripped.indexOf('[');
+          const lastBracket = stripped.lastIndexOf(']');
+          if (firstBracket !== -1 && lastBracket > firstBracket) {
+            try {
+              return JSON.parse(stripped.slice(firstBracket, lastBracket + 1));
+            } catch (_) {}
+          }
+          throw parseErr;
+        }
       } catch (err: any) {
         clearTimeout(timer);
         if (err instanceof GroqApiError) throw err;

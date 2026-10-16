@@ -1068,6 +1068,9 @@ Return ONLY valid JSON matching:
           packStage: 'READY',
           packStatus: 'READY',
           packError: null,
+          quizBlueprint: [] as any,
+          quizStatus: 'NOT_BUILT',
+          quizError: null,
           status: step.status === 'LOCKED' ? 'LOCKED' : 'STUDY_READY',
         },
       });
@@ -1101,7 +1104,7 @@ Return ONLY valid JSON matching:
 
         for (let tIdx = 0; tIdx < ch.topics.length; tIdx++) {
           const t = ch.topics[tIdx];
-          const uniqueKey = t.key || `sp_ch${chIdx + 1}_top${tIdx + 1}`;
+          const uniqueKey = `sp_ch${chIdx + 1}_top${tIdx + 1}`;
           const createdTopic = await tx.stepTopic.upsert({
             where: {
               stepId_key: {

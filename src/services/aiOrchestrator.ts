@@ -86,10 +86,12 @@ CRITICAL MILESTONE COUNT MANDATE:
 You MUST generate EXACTLY ${recommendedTarget} progressive milestones (stepNumber 1 through ${recommendedTarget}) in the "steps" array and set "totalSteps": ${recommendedTarget}.
 DO NOT default to 4 steps unless ${recommendedTarget} === 4!
 
-STRICT PROGRESSIVE CURRICULUM LEVELING MANDATE:
-- Step 1: Core fundamentals, stance, grip/base, primary rules, and safety protocols.
-- Intermediate Steps: Dynamic execution, kinetic flow, and common error identification.
-- Final Step: Peak mastery drills, high-speed execution, autonomous flow, and competitive readiness.
+STRICT 100% DOMAIN-AUTHENTIC MILESTONE TITLES MANDATE:
+- Every single step title and description MUST explicitly name concrete techniques, concepts, rules, or practical methods specific to "${params.skillName}" (${params.subGenre || 'Core'}).
+- NEVER use generic labels like "Foundations", "Elementary Mechanics", "Core Biomechanical Principles", or "Intermediate Fluidity" for cognitive or creative skills like Cooking, Languages, or Arts!
+- Step 1 must name the exact starting techniques for ${params.skillName}.
+- Intermediate steps must name concrete techniques and problem-solving scenarios for ${params.skillName}.
+- The final step must name peak fluency and advanced capstone execution in ${params.skillName}.
 
 For physical skills, assign realistic "requiredPracticeDays" (between 2 and 7 days per step). For cognitive skills, assign 1 to 2 days.
 Language: Provide all roadmap overviews, titles, and descriptions strictly in ${targetLanguage}.
@@ -101,7 +103,7 @@ Return strictly JSON:
   "steps": [
     {
       "stepNumber": 1,
-      "title": "Title of step",
+      "title": "Concrete Title Naming Specific Skill Techniques",
       "description": "Clear mechanical description",
       "requiredPracticeDays": 3
     }
@@ -112,9 +114,9 @@ Return strictly JSON:
     const res = await callGroqWithFallback(
       [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: `Synthesize the structured curriculum steps for ${params.skillName} now.` },
+        { role: 'user', content: `Synthesize the structured curriculum steps for ${params.skillName} (${params.subGenre || 'Core'}) now.` },
       ],
-      { apiKey: groqKey || '', temperature: 0.2, jsonMode: true }
+      { apiKey: groqKey || '', temperature: 0.2, jsonMode: true, maxTokens: 4096 }
     );
 
     const parsed = JSON.parse(res.content);
@@ -343,44 +345,150 @@ function getFallbackSteps(
   targetMastery?: string
 ): DynamicCurriculumResult {
   const isPhysical = category === 'physical';
+  const isCulinary = /cook|bake|pastry|culinary|food|kitchen|chef/i.test(skillName);
+  const isLanguage = /spanish|french|german|japanese|english|italian|language|chinese|mandarin/i.test(skillName);
+
   const { recommendedTarget } = calculatePersonalizedStepBounds({
     skillName,
     subGenre,
     desiredLevel: targetMastery,
   });
 
-  const pool = [
-    {
-      title: 'Core Biomechanical Principles & Stance',
-      description: 'Establish balance, center of gravity, and baseline execution form.',
-      requiredPracticeDays: isPhysical ? 3 : 1,
-    },
-    {
-      title: 'Fundamental Kinetic Sequence & Pacing',
-      description: 'Coordinate movement chains and eliminate energy leaks in execution.',
-      requiredPracticeDays: isPhysical ? 4 : 1,
-    },
-    {
-      title: 'Precision Targeting & Error Correction',
-      description: 'Diagnostic adjustments for consistency and pressure resistance.',
-      requiredPracticeDays: isPhysical ? 3 : 1,
-    },
-    {
-      title: 'Dynamic Situational Drills & Variations',
-      description: 'Simulate competitive conditions and rapid adaptive responses.',
-      requiredPracticeDays: isPhysical ? 5 : 1,
-    },
-    {
-      title: 'High-Complexity Tactical Integration',
-      description: 'Multi-variable scenario navigation and tactical synthesis.',
-      requiredPracticeDays: isPhysical ? 4 : 1,
-    },
-    {
-      title: 'Mastery Integration & Peak Clearance',
-      description: 'High-speed execution, tactical mastery, and autonomous flow.',
-      requiredPracticeDays: isPhysical ? 4 : 1,
-    },
-  ];
+  let pool: Array<{ title: string; description: string; requiredPracticeDays: number }>;
+
+  if (isCulinary) {
+    pool = [
+      {
+        title: 'Core Kitchen Foundations, Knife Skills & Prep Mise en Place',
+        description: 'Master chef knife grip, precision slicing, kitchen safety, and prep organization.',
+        requiredPracticeDays: 2,
+      },
+      {
+        title: 'Heat Control, Sautéing & Foundational Pan Sauces',
+        description: 'Understand thermal conductivity, Maillard browning, and pan deglazing.',
+        requiredPracticeDays: 3,
+      },
+      {
+        title: 'Flavor Balancing, Seasoning & Palate Calibration',
+        description: 'Balance acid, salt, fat, heat, and sweetness through deliberate tasting.',
+        requiredPracticeDays: 3,
+      },
+      {
+        title: 'Multi-Element Meal Timing & Protein Mastery',
+        description: 'Internal temperature management, resting protocols, and synchronizing multiple dishes.',
+        requiredPracticeDays: 4,
+      },
+      {
+        title: 'Advanced Culinary Techniques & Emulsion Chemistry',
+        description: 'Sous-vide, reduction glazes, complex emulsions, and texture contrast.',
+        requiredPracticeDays: 4,
+      },
+      {
+        title: 'Creative Recipe Development & Professional Presentation',
+        description: 'Independent menu composition, flavor pairing, and artistic plating architecture.',
+        requiredPracticeDays: 5,
+      },
+    ];
+  } else if (isLanguage) {
+    pool = [
+      {
+        title: 'Core Phonetics, High-Frequency Vocabulary & Baseline Pronunciation',
+        description: 'Phonetic accuracy, foundational survival phrases, and daily core vocabulary.',
+        requiredPracticeDays: 2,
+      },
+      {
+        title: 'Sentence Architecture, Present-Tense Verbs & Connectors',
+        description: 'Construct complete thoughts, express opinions, and link basic clauses.',
+        requiredPracticeDays: 3,
+      },
+      {
+        title: 'Past & Future Narratives (Tense Mastery) & Active Listening',
+        description: 'Narrate past experiences, discuss future plans, and train listening comprehension.',
+        requiredPracticeDays: 4,
+      },
+      {
+        title: 'Spontaneous Conversational Fluency & Idiomatic Expressions',
+        description: 'Rapid question-and-response drills without intermediate native-language translation.',
+        requiredPracticeDays: 4,
+      },
+      {
+        title: 'Nuanced Discourse, Complex Subordinate Clauses & Register',
+        description: 'Formal vs. informal register, hypothetical reasoning, and nuanced opinions.',
+        requiredPracticeDays: 5,
+      },
+      {
+        title: 'Native-Pace Conversational Fluency & Cultural Idioms',
+        description: 'Effortless native-cadence discussions, humor, debate, and specialized topics.',
+        requiredPracticeDays: 5,
+      },
+    ];
+  } else if (isPhysical) {
+    pool = [
+      {
+        title: `${skillName} Athletic Stance, Balance & Center of Gravity`,
+        description: 'Establish balance, center of gravity, and baseline movement mechanics.',
+        requiredPracticeDays: 3,
+      },
+      {
+        title: 'Kinetic Sequencing, Energy Transfer & Core Drills',
+        description: 'Coordinate movement chains and eliminate energy leaks in execution.',
+        requiredPracticeDays: 4,
+      },
+      {
+        title: 'Form Consistency, Pacing & Movement Correction',
+        description: 'Diagnostic adjustments for consistency and pressure resistance.',
+        requiredPracticeDays: 3,
+      },
+      {
+        title: 'Dynamic Situational Drills & Tactical Variations',
+        description: 'Simulate competitive conditions and rapid adaptive responses.',
+        requiredPracticeDays: 5,
+      },
+      {
+        title: 'Match-Pace Execution, Agility & Decision Making',
+        description: 'Multi-variable scenario navigation and tactical synthesis.',
+        requiredPracticeDays: 4,
+      },
+      {
+        title: 'High-Performance Mastery & Autonomous Competitive Flow',
+        description: 'High-speed execution, tactical mastery, and autonomous flow.',
+        requiredPracticeDays: 4,
+      },
+    ];
+  } else {
+    pool = [
+      {
+        title: `${skillName} Core Principles, Fundamentals & Mental Models`,
+        description: `Establish core vocabulary, theoretical models, and fundamental execution in ${skillName}.`,
+        requiredPracticeDays: 1,
+      },
+      {
+        title: `Practical Techniques & Standard Workflows in ${skillName}`,
+        description: `Hands-on implementation of established patterns and core methodologies.`,
+        requiredPracticeDays: 2,
+      },
+      {
+        title: `Real-World Scenarios, Error Detection & Diagnostic Troubleshooting`,
+        description: `Identify common mistakes, debug discrepancies, and apply corrective protocols.`,
+        requiredPracticeDays: 2,
+      },
+      {
+        title: `Complex Problem Solving & Fluid Execution`,
+        description: `Tackle multi-step challenges and integrate multiple techniques seamlessly.`,
+        requiredPracticeDays: 3,
+      },
+      {
+        title: `Advanced Nuances, Edge-Case Handling & Optimization`,
+        description: `High-complexity applications, performance optimization, and professional standards.`,
+        requiredPracticeDays: 3,
+      },
+      {
+        title: `Independent Creative Mastery & Capstone Integration in ${skillName}`,
+        description: `Autonomous project execution, creative synthesis, and full milestone clearance.`,
+        requiredPracticeDays: 4,
+      },
+    ];
+  }
 
   const chosen = pool.slice(0, recommendedTarget).map((p, idx) => ({
     stepNumber: idx + 1,
@@ -389,7 +497,7 @@ function getFallbackSteps(
 
   return {
     totalSteps: chosen.length,
-    roadmapOverview: `Foundational mastery pathway for ${skillName}${subGenre ? ` (${subGenre})` : ''}`,
+    roadmapOverview: `Curated mastery pathway for ${skillName}${subGenre ? ` (${subGenre})` : ''}`,
     steps: chosen,
   };
 }

@@ -23,10 +23,10 @@ import { LEARNING_CONFIG } from '../config/learning';
 // Compound in-memory cache: skill:${skillId}:step:${stepNumber}:lang:${language}
 const stepResourceMemoryCache = new Map<string, { data: any; cachedAt: number }>();
 
-import { getInstantSportsSubgenres } from '../config/sportsTaxonomy';
+import { getInstantUniversalSubgenres } from '../config/universalTaxonomy';
 
 export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance) => {
-  // POST /api/skills/suggest-subgenres — Dynamic Sub-Genre Engine (<20ms Tier 1, <1.5s Tier 2)
+  // POST /api/skills/suggest-subgenres — Dynamic Sub-Genre Engine (<15ms Instant, ~1.5s Groq)
   fastify.post('/api/skills/suggest-subgenres', async (req, reply) => {
     const { skill, domain = 'General Knowledge' } = (req.body || {}) as { skill?: string; domain?: string };
     if (!skill || typeof skill !== 'string') {
@@ -39,75 +39,77 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
     }
 
     const normalized = trimmed.toLowerCase().replace(/\s+/g, ' ');
-    const isAthletics = domain.toLowerCase().includes('athletic') || domain.toLowerCase().includes('sport');
 
-    // TIER 1: Zero-Latency Local Athletic Taxonomy (< 15ms)
-    const instantSports = getInstantSportsSubgenres(trimmed);
-    if (instantSports && instantSports.length > 0) {
-      return reply.send({ subgenres: instantSports, cached: true, tier: 'instant_taxonomy' });
+    // TIER 1: Zero-Latency Universal Taxonomy (< 15ms)
+    // Instant authentic specializations for Cooking, Baking, Languages, Arts, Music, Math, Coding, Sports, etc.
+    const instantMatches = getInstantUniversalSubgenres(trimmed);
+    if (instantMatches && instantMatches.length > 0) {
+      return reply.send({ subgenres: instantMatches, cached: true, tier: 'instant_taxonomy' });
     }
 
     try {
-      // Check database cache
+      // Check database cache (reject any legacy poisoned entries)
       const cached = await prisma.subgenreCache.findUnique({
         where: { normalizedSkillName: normalized },
       });
 
+      const BANNED_BUZZWORDS = /architectural|invariants|kinetic fundamentals|biomechanic|control flow|production diagnostics|match simulation/i;
+
       if (cached && Array.isArray(cached.subgenres) && cached.subgenres.length >= 3) {
-        return reply.send({ subgenres: cached.subgenres, cached: true });
+        const isPoisoned = cached.subgenres.some((s: any) => BANNED_BUZZWORDS.test(String(s)));
+        if (!isPoisoned) {
+          return reply.send({ subgenres: cached.subgenres, cached: true });
+        }
       }
 
-      // TIER 2: Ultra-Fast Groq Micro-Completion (< 1.5s with strict 2200ms timeout)
-      const prompt = `You are a Principal Curriculum Taxonomist. Return 4 to 6 concise technical or athletic sub-genres of "${trimmed}" in "${domain}". No generic beginner/advanced tiers. Return JSON: {"subgenres": ["..."]}`;
+      // TIER 2: Fast Groq Generation using openai/gpt-oss-20b (max_tokens: 4096)
+      // Note: Treats skillName as supreme authority ignoring any mismatched category label
+      const prompt = `The user wants to learn the skill "${trimmed}". Treat "${trimmed}" on its own authentic domain merits—ignore any mismatched category label if "${trimmed}" belongs to another field (e.g., if "${trimmed}" is "Cooking", treat it 100% as Culinary Arts & Cooking!). Generate 6 specific, real-world sub-genres, styles, or specialization tracks recognized by real practitioners of "${trimmed}". Return strict JSON: { "subGenres": ["...", ...] }`;
 
       let cleanedSubgenres: string[] = [];
 
       try {
-        const groqPromise = callGroqJson<{ subgenres: string[] }>(
-          'You are a Principal Curriculum Taxonomist. Return strictly JSON.',
+        const groqPromise = callGroqJson<{ subGenres?: string[]; subgenres?: string[] }>(
+          'You are a Lead Curriculum Taxonomist. Return strictly JSON adhering to the authentic domain of the requested skill.',
           prompt,
           {
             validate: (v: any) => {
-              if (!Array.isArray(v?.subgenres) || v.subgenres.length < 3) return false;
+              const list = v?.subGenres || v?.subgenres;
+              if (!Array.isArray(list) || list.length < 3) return false;
               return true;
             },
-            maxTokens: 150,
+            maxTokens: 4096,
             temperature: 0.3,
           }
         );
 
         const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Subgenre Groq timeout after 2200ms')), 2200)
+          setTimeout(() => reject(new Error('Subgenre Groq timeout after 8000ms')), 8000)
         );
 
         const res = await Promise.race([groqPromise, timeoutPromise]);
-        cleanedSubgenres = (res.subgenres || [])
+        const rawList = res.subGenres || res.subgenres || [];
+        cleanedSubgenres = rawList
           .map((s) => String(s).replace(/^["']|["']$/g, '').trim())
-          .filter((s) => s.length >= 3 && !/^(beginner|intermediate|advanced|basic|expert)$/i.test(s))
+          .filter((s) => s.length >= 3 && !/^(beginner|intermediate|advanced|basic|expert)$/i.test(s) && !BANNED_BUZZWORDS.test(s))
           .slice(0, 6);
-      } catch (gErr) {
-        fastify.log.warn({ err: gErr, skill: trimmed }, '[SuggestSubgenres] Groq notice, using intelligent fallback');
+      } catch (gErr: any) {
+        fastify.log.warn({ err: gErr.message, skill: trimmed }, '[SuggestSubgenres] Groq notice, using calibrated domain-authentic fallback');
       }
 
-      // If Groq timed out or returned too few items, use domain-informed intelligent specializations
+      // If Groq timed out or returned too few items, use clean, domain-authentic specializations
       if (cleanedSubgenres.length < 3) {
-        cleanedSubgenres = isAthletics
-          ? [
-              `${trimmed} Kinetic Fundamentals & Biomechanics`,
-              `${trimmed} Tactical Positioning & Spatial Awareness`,
-              `${trimmed} High-Speed Agility & Technical Footwork`,
-              `${trimmed} Conditioning, Power & Deceleration`,
-              `${trimmed} Match Simulation & Execution Fluency`,
-            ]
-          : [
-              `${trimmed} Architectural Invariants & Core Design`,
-              `${trimmed} Practical Implementation & Control Flow`,
-              `${trimmed} Advanced Patterns & Optimization`,
-              `${trimmed} Production Diagnostics & Verification`,
-            ];
+        cleanedSubgenres = [
+          `${trimmed} Core Foundations & Baseline Principles`,
+          `Essential Applied Techniques in ${trimmed}`,
+          `Intermediate Fluency & Practical Problem Solving`,
+          `Advanced Nuances & High-Complexity Scenarios`,
+          `Creative Mastery & Independent Execution in ${trimmed}`,
+          `Professional Standards & Capstone Synthesis`,
+        ];
       }
 
-      // Save to cache asynchronously
+      // Save clean subgenres to cache asynchronously
       void prisma.subgenreCache.upsert({
         where: { normalizedSkillName: normalized },
         create: {
@@ -122,20 +124,13 @@ export const skillsRoutes: FastifyPluginAsync = async (fastify: FastifyInstance)
       return reply.send({ subgenres: cleanedSubgenres, cached: false });
     } catch (err: any) {
       fastify.log.error(err, '[SuggestSubgenres] Failed');
-      // Always return resilient response, NEVER 500
-      const resilientFallback = isAthletics
-        ? [
-            `${trimmed} Kinetic Fundamentals & Biomechanics`,
-            `${trimmed} Tactical Positioning & Spatial Awareness`,
-            `${trimmed} High-Speed Agility & Technical Footwork`,
-            `${trimmed} Match Simulation & Execution Fluency`,
-          ]
-        : [
-            `${trimmed} Core Architecture & Foundations`,
-            `${trimmed} Applied Practical Execution`,
-            `${trimmed} Performance Optimization`,
-          ];
-      return reply.send({ subgenres: resilientFallback, cached: false, fallback: true });
+      const safeFallback = [
+        `${trimmed} Core Foundations & Principles`,
+        `Essential Practical Execution in ${trimmed}`,
+        `Intermediate Fluency & Applied Scenarios`,
+        `Advanced Nuances & Independent Mastery`,
+      ];
+      return reply.send({ subgenres: safeFallback, cached: false, fallback: true });
     }
   });
 

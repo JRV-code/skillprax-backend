@@ -1,7 +1,7 @@
 import prisma from '../../lib/prisma';
 import { getEffectiveKeys } from '../../lib/keyManager';
 import { LEARNING_CONFIG, calculatePersonalizedQuestionCount } from '../../config/learning';
-import { assertNoUrls } from './foundation';
+import { assertNoUrls, extractAndParseJson } from './foundation';
 
 export interface QuizOption {
   id: string;
@@ -391,7 +391,7 @@ async function callFastGroqQuizJson(
           { role: 'user', content: userPrompt },
         ],
         response_format: { type: 'json_object' },
-        max_tokens: 3200,
+        max_tokens: 6000,
         temperature: 0.25,
       }),
       signal: AbortSignal.timeout(toMs),
@@ -404,7 +404,7 @@ async function callFastGroqQuizJson(
 
     const data: any = await res.json();
     const rawContent = data?.choices?.[0]?.message?.content || '{}';
-    return JSON.parse(rawContent);
+    return extractAndParseJson(rawContent);
   };
 
   try {
