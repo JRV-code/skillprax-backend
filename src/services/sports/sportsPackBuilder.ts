@@ -90,14 +90,22 @@ function sanitizeNoUrls(text: string): string {
     .trim();
 }
 
+// In-memory mutex map preventing concurrent redundant runs on the same step
+const inFlightSportsBuilds = new Map<string, Promise<void>>();
+
 /**
  * Generates verified study pack + unified day-by-day training plan for a Sports Step
  */
 export async function runSportsPackBuild(stepId: string): Promise<void> {
-  const step = await prisma.skillStep.findUnique({
-    where: { id: stepId },
-    include: { workspace: true },
-  });
+  if (inFlightSportsBuilds.has(stepId)) {
+    return inFlightSportsBuilds.get(stepId)!;
+  }
+
+  const buildPromise = (async () => {
+    const step = await prisma.skillStep.findUnique({
+      where: { id: stepId },
+      include: { workspace: true },
+    });
 
   if (!step) {
     throw new Error(`[runSportsPackBuild] Step not found: ${stepId}`);
@@ -1040,9 +1048,10 @@ Return ONLY valid JSON matching:
 
     // Stage 6: Atomic Database Transaction
     await prisma.$transaction(async (tx) => {
-      // Clear previous chapters, topics and resources for this step
-      await tx.stepChapter.deleteMany({ where: { stepId } });
+      // Clear previous resources, topics and chapters for this step
       await tx.resource.deleteMany({ where: { stepId } });
+      await tx.stepTopic.deleteMany({ where: { stepId } });
+      await tx.stepChapter.deleteMany({ where: { stepId } });
 
       // Save intro with complete training plan and nutrition
       const finalIntro = {
@@ -1064,7 +1073,8 @@ Return ONLY valid JSON matching:
       });
 
       // Persist Chapters, Chapter Videos, Topics, and Topic Doc Links
-      for (const ch of verifiedChapters) {
+      for (let chIdx = 0; chIdx < verifiedChapters.length; chIdx++) {
+        const ch = verifiedChapters[chIdx];
         const createdCh = await tx.stepChapter.create({
           data: {
             stepId,
@@ -1089,13 +1099,29 @@ Return ONLY valid JSON matching:
           },
         });
 
-        for (const t of ch.topics) {
-          const createdTopic = await tx.stepTopic.create({
-            data: {
+        for (let tIdx = 0; tIdx < ch.topics.length; tIdx++) {
+          const t = ch.topics[tIdx];
+          const uniqueKey = t.key || `sp_ch${chIdx + 1}_top${tIdx + 1}`;
+          const createdTopic = await tx.stepTopic.upsert({
+            where: {
+              stepId_key: {
+                stepId,
+                key: uniqueKey,
+              },
+            },
+            update: {
+              chapterId: createdCh.id,
+              title: t.title,
+              order: t.order,
+              covers: t.covers,
+              guide: t.guide as any,
+              status: 'READY',
+            },
+            create: {
               chapterId: createdCh.id,
               stepId,
               title: t.title,
-              key: t.key,
+              key: uniqueKey,
               order: t.order,
               covers: t.covers,
               guide: t.guide as any,
@@ -1232,6 +1258,14 @@ Return ONLY valid JSON matching:
         },
       });
     } catch (_) {}
+  }
+  })();
+
+  inFlightSportsBuilds.set(stepId, buildPromise);
+  try {
+    await buildPromise;
+  } finally {
+    inFlightSportsBuilds.delete(stepId);
   }
 }
 

@@ -32,6 +32,9 @@ export interface ActiveBuildProgress {
 
 export const activeBuildProgress = new Map<string, ActiveBuildProgress>();
 
+// In-Memory Single-Flight Build Mutex to prevent concurrent race conditions on first load
+export const inFlightStepBuilds = new Map<string, Promise<void>>();
+
 interface PlanningTopic {
   key: string;
   title: string;
@@ -53,46 +56,53 @@ interface PlanningResult {
  * 100% Parallel Chapter & Topic Resource Builder (runs in ~4-6 seconds)
  */
 export async function runPackBuild(stepId: string): Promise<void> {
-  const step = await prisma.skillStep.findUnique({
-    where: { id: stepId },
-    include: { workspace: true },
-  });
-
-  if (!step) {
-    throw new Error(`[runPackBuild] Step ${stepId} not found`);
+  // 1. Single-Flight Mutex: If a build is already executing for this step, return the existing in-flight promise!
+  if (inFlightStepBuilds.has(stepId)) {
+    console.log(`[runPackBuild] Step ${stepId} build already in flight, joining existing single-flight promise.`);
+    return await inFlightStepBuilds.get(stepId)!;
   }
 
-  const ws = step.workspace;
-  const skillName = ws.skillName || ws.title || 'Technical Mastery';
-  const subGenre = ws.subGenre || 'Core Foundations';
-  const tier = (step.difficultyTier as DifficultyTier) || 'FOUNDATIONS';
-  const cleanStepTitle = step.title.replace(/["']/g, '').trim();
-
-  try {
-    activeBuildProgress.set(stepId, {
-      percent: 15,
-      stageKey: 'PLANNING',
-      stageLabel: 'Structuring Chapters & Granular Topics...',
-      detail: 'Groq Curriculum Architect mapping progressive competency sequence.',
-    });
-
-    await prisma.skillStep.update({
+  const buildPromise = (async () => {
+    const step = await prisma.skillStep.findUnique({
       where: { id: stepId },
-      data: {
-        packStatus: 'BUILDING',
-        packStage: 'PLANNING',
-        packStartedAt: new Date(),
-        packError: null,
-      },
+      include: { workspace: true },
     });
 
-    // 1. Load Anti-Repetition Vault (usedDocUrls & usedVideoIds)
-    const [existingResources, resourceHistory] = await Promise.all([
-      prisma.resource.findMany({
-        where: { step: { workspaceId: ws.id } },
-        select: { videoId: true, url: true },
-      }),
-      prisma.resourceHistory.findMany({
+    if (!step) {
+      throw new Error(`[runPackBuild] Step ${stepId} not found`);
+    }
+
+    const ws = step.workspace;
+    const skillName = ws.skillName || ws.title || 'Technical Mastery';
+    const subGenre = ws.subGenre || 'Core Foundations';
+    const tier = (step.difficultyTier as DifficultyTier) || 'FOUNDATIONS';
+    const cleanStepTitle = step.title.replace(/["']/g, '').trim();
+
+    try {
+      activeBuildProgress.set(stepId, {
+        percent: 15,
+        stageKey: 'PLANNING',
+        stageLabel: 'Structuring Chapters & Granular Topics...',
+        detail: 'Groq Curriculum Architect mapping progressive competency sequence.',
+      });
+
+      await prisma.skillStep.update({
+        where: { id: stepId },
+        data: {
+          packStatus: 'BUILDING',
+          packStage: 'PLANNING',
+          packStartedAt: new Date(),
+          packError: null,
+        },
+      });
+
+      // 1. Load Anti-Repetition Vault (usedDocUrls & usedVideoIds)
+      const [existingResources, resourceHistory] = await Promise.all([
+        prisma.resource.findMany({
+          where: { step: { workspaceId: ws.id } },
+          select: { videoId: true, url: true },
+        }),
+        prisma.resourceHistory.findMany({
         where: { workspaceId: ws.id },
         select: { identifier: true },
       }),
@@ -182,6 +192,19 @@ Return ONLY valid JSON:
       };
     }
 
+    // Enforce strictly unique deterministic topic keys per step (ch1_top1, ch1_top2, ch2_top1, etc.)
+    const usedTopicKeysInStep = new Set<string>();
+    planning.chapters.forEach((ch, chIdx) => {
+      ch.topics.forEach((t, tIdx) => {
+        let uniqueTopicKey = `ch${chIdx + 1}_top${tIdx + 1}`;
+        if (usedTopicKeysInStep.has(uniqueTopicKey)) {
+          uniqueTopicKey = `ch${chIdx + 1}_top${tIdx + 1}_${Date.now()}`;
+        }
+        usedTopicKeysInStep.add(uniqueTopicKey);
+        t.key = uniqueTopicKey;
+      });
+    });
+
     activeBuildProgress.set(stepId, {
       percent: 40,
       stageKey: 'FINDING_LINKS',
@@ -263,9 +286,10 @@ Return ONLY valid JSON:
 
     // 5. Atomic Database Persistence
     await prisma.$transaction(async (tx) => {
-      // Clear previous chapters, topics and resources for this step
-      await tx.stepChapter.deleteMany({ where: { stepId } });
+      // Clear previous resources, topics and chapters for this step
       await tx.resource.deleteMany({ where: { stepId } });
+      await tx.stepTopic.deleteMany({ where: { stepId } });
+      await tx.stepChapter.deleteMany({ where: { stepId } });
 
       const introPayload = {
         goal: `Master core principles and operational execution for ${cleanStepTitle}`,
@@ -352,16 +376,38 @@ Return ONLY valid JSON:
             doThis: 'Execute deliberate reps before full integration.',
           };
 
-          const createdTopic = await tx.stepTopic.create({
-            data: {
-              stepId,
+          const uniqueTopicKey = t.key || `ch${chIdx + 1}_top${tIdx + 1}`;
+          const createdTopic = await tx.stepTopic.upsert({
+            where: {
+              stepId_key: {
+                stepId,
+                key: uniqueTopicKey,
+              },
+            },
+            update: {
               chapterId: createdCh.id,
-              key: t.key,
               order: tIdx + 1,
               title: t.title,
               covers: t.covers,
               minutes: t.minutes || 15,
-              acuIds: [`${t.key}-acu`] as any,
+              acuIds: [`${uniqueTopicKey}-acu`] as any,
+              guide: guide as any,
+              facts: [
+                `${t.title} requires disciplined operational coordination and precise form.`,
+                `Proper implementation of ${t.title} prevents downstream errors in ${skillName}.`,
+                ...(guide.keyMechanics || []).slice(0, 3),
+              ] as any,
+              status: 'READY',
+            },
+            create: {
+              stepId,
+              chapterId: createdCh.id,
+              key: uniqueTopicKey,
+              order: tIdx + 1,
+              title: t.title,
+              covers: t.covers,
+              minutes: t.minutes || 15,
+              acuIds: [`${uniqueTopicKey}-acu`] as any,
               guide: guide as any,
               facts: [
                 `${t.title} requires disciplined operational coordination and precise form.`,
@@ -440,5 +486,13 @@ Return ONLY valid JSON:
         packError: err.message || 'Pack build failed',
       },
     }).catch(() => {});
+  }
+  })();
+
+  inFlightStepBuilds.set(stepId, buildPromise);
+  try {
+    await buildPromise;
+  } finally {
+    inFlightStepBuilds.delete(stepId);
   }
 }

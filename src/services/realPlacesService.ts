@@ -26,6 +26,21 @@ export interface LocalSportsShop {
   googleMapsQuery: string;
 }
 
+export function normalizeSportKey(sport: string): string {
+  const s = (sport || '').trim().toLowerCase();
+  if (s.includes('hockey')) return 'Hockey';
+  if (s.includes('foot') || s.includes('soccer')) return 'Football';
+  if (s.includes('cricket')) return 'Cricket';
+  if (s.includes('badminton')) return 'Badminton';
+  if (s.includes('archery')) return 'Archery';
+  if (s.includes('tennis')) return 'Tennis';
+  if (s.includes('swim')) return 'Swimming';
+  if (s.includes('basket')) return 'Basketball';
+  if (s.includes('box')) return 'Boxing';
+  if (s.includes('athletic') || s.includes('track') || s.includes('run')) return 'Athletics';
+  return sport ? (sport.charAt(0).toUpperCase() + sport.slice(1)) : 'Football';
+}
+
 // Premier verified national academies across sports in India
 export const PREMIER_NATIONAL_ACADEMIES: Record<string, RealSportsClub[]> = {
   Hockey: [
@@ -96,6 +111,19 @@ export const PREMIER_NATIONAL_ACADEMIES: Record<string, RealSportsClub[]> = {
       discoveryTier: 'NATIONAL',
       tierLabel: 'Premier National Academy (India)',
     },
+    {
+      name: 'Army Sports Institute (ASI) Archery Node',
+      address: 'Koregaon Park Road, Ghorpadi, Pune, Maharashtra 411001',
+      estimatedDistanceKm: 15.0,
+      specialization: 'Olympic Target Range, High-Speed Video Analysis, National Team Coaches',
+      timing: '06:00 AM - 09:30 AM, 03:30 PM - 06:30 PM',
+      contactPhone: '+91 20 2687 0100',
+      verified: true,
+      googleMapsQuery: 'Army Sports Institute Ghorpadi Pune',
+      ageEligibility: 'Youth, Cadet & National Talent Pool',
+      discoveryTier: 'NATIONAL',
+      tierLabel: 'Premier National Academy (India)',
+    },
   ],
   Badminton: [
     {
@@ -121,6 +149,150 @@ export const PREMIER_NATIONAL_ACADEMIES: Record<string, RealSportsClub[]> = {
       verified: true,
       googleMapsQuery: 'Padukone Dravid Centre for Sports Excellence Bengaluru',
       ageEligibility: 'Junior & Professional Squads',
+      discoveryTier: 'NATIONAL',
+      tierLabel: 'Premier National Academy (India)',
+    },
+  ],
+  Football: [
+    {
+      name: 'Reliance Foundation Young Champs (RFYC)',
+      address: 'Jio Institute Campus, Ulwe, Navi Mumbai, Maharashtra 410206',
+      estimatedDistanceKm: 16.0,
+      specialization: 'Premier League Certified 5-Star Academy, Residential Youth Development, UEFA Pro Coaches',
+      timing: '06:00 AM - 10:00 AM, 04:00 PM - 07:30 PM',
+      contactPhone: '+91 22 4477 0000',
+      verified: true,
+      googleMapsQuery: 'Reliance Foundation Young Champs Navi Mumbai',
+      ageEligibility: 'U-14, U-17 & U-19 Youth Residential',
+      discoveryTier: 'NATIONAL',
+      tierLabel: 'Premier National Academy (India)',
+    },
+    {
+      name: 'Tata Football Academy (TFA)',
+      address: 'Inner Circle Road, Bistupur, Jamshedpur, Jharkhand 831001',
+      estimatedDistanceKm: 18.0,
+      specialization: 'Legendary Indian Youth Nursery, Natural Grass Pitches, FIFA Match Simulation',
+      timing: '06:00 AM - 09:30 AM, 03:30 PM - 07:00 PM',
+      contactPhone: '+91 657 243 1142',
+      verified: true,
+      googleMapsQuery: 'Tata Football Academy Bistupur Jamshedpur',
+      ageEligibility: 'Cadet & Junior Development',
+      discoveryTier: 'NATIONAL',
+      tierLabel: 'Premier National Academy (India)',
+    },
+  ],
+  Cricket: [
+    {
+      name: 'BCCI National Cricket Academy (NCA)',
+      address: 'M. Chinnaswamy Stadium Complex, Queens Road, Bengaluru, Karnataka 560001',
+      estimatedDistanceKm: 12.0,
+      specialization: 'Elite High-Performance Centre, Speed Gun Radar Nets, Sports Rehabilitation & Biomechanics',
+      timing: '06:30 AM - 11:00 AM, 03:00 PM - 07:00 PM',
+      contactPhone: '+91 80 2286 9988',
+      verified: true,
+      googleMapsQuery: 'National Cricket Academy Chinnaswamy Stadium Bengaluru',
+      ageEligibility: 'U-16, U-19 & Emerging Players',
+      discoveryTier: 'NATIONAL',
+      tierLabel: 'Premier National Academy (India)',
+    },
+    {
+      name: 'MRF Pace Foundation',
+      address: 'Madras Christian College Higher Secondary School Ground, Chetpet, Chennai, Tamil Nadu 600031',
+      estimatedDistanceKm: 15.0,
+      specialization: 'World-Renowned Fast Bowling Academy, Glenn McGrath Masterclasses, Turf Pitches',
+      timing: '06:00 AM - 10:00 AM, 03:30 PM - 06:30 PM',
+      contactPhone: '+91 44 2836 2955',
+      verified: true,
+      googleMapsQuery: 'MRF Pace Foundation Chetpet Chennai',
+      ageEligibility: 'U-17, U-19 & Senior Pace Candidates',
+      discoveryTier: 'NATIONAL',
+      tierLabel: 'Premier National Academy (India)',
+    },
+  ],
+  Swimming: [
+    {
+      name: 'Dolphin Aquatics',
+      address: 'Padukone-Dravid Centre for Sports Excellence, Bettahalasur, Bengaluru, Karnataka 562157',
+      estimatedDistanceKm: 18.0,
+      specialization: 'Olympic Size 50m 10-Lane Heated Pool, Underwater Stroke Video Analysis, Dronacharya Coaches',
+      timing: '05:30 AM - 10:00 AM, 04:00 PM - 08:30 PM',
+      contactPhone: '+91 80 4683 4900',
+      verified: true,
+      googleMapsQuery: 'Dolphin Aquatics Padukone Dravid CSE Bengaluru',
+      ageEligibility: 'Age Group Competitive Squads & Beginners',
+      discoveryTier: 'NATIONAL',
+      tierLabel: 'Premier National Academy (India)',
+    },
+    {
+      name: 'Glenmark Aquatic Foundation',
+      address: 'Dharavi Sports Complex, Sion West, Mumbai, Maharashtra 400017',
+      estimatedDistanceKm: 14.0,
+      specialization: 'FINA Certified Competition Pool, National Age-Group Champion Program, Dryland Conditioning',
+      timing: '06:00 AM - 10:30 AM, 04:30 PM - 08:30 PM',
+      contactPhone: '+91 22 2407 1144',
+      verified: true,
+      googleMapsQuery: 'Dharavi Sports Complex Swimming Pool Mumbai',
+      ageEligibility: 'Sub-Junior, Junior & Elite Age Categories',
+      discoveryTier: 'NATIONAL',
+      tierLabel: 'Premier National Academy (India)',
+    },
+  ],
+  Tennis: [
+    {
+      name: 'Rohan Bopanna Tennis Academy (RBTA)',
+      address: 'Survey No. 49, Bagalur Main Road, Yelahanka, Bengaluru, Karnataka 560064',
+      estimatedDistanceKm: 16.0,
+      specialization: 'ITF Standard Hard Courts & Clay Courts, Grand Slam Player Mentorship, Speed & Agility Lab',
+      timing: '06:00 AM - 10:30 AM, 03:30 PM - 07:30 PM',
+      contactPhone: '+91 96111 88522',
+      verified: true,
+      googleMapsQuery: 'Rohan Bopanna Tennis Academy Yelahanka Bengaluru',
+      ageEligibility: 'Junior ITF Circuit & Grassroots Development',
+      discoveryTier: 'NATIONAL',
+      tierLabel: 'Premier National Academy (India)',
+    },
+  ],
+  Basketball: [
+    {
+      name: 'NBA Academy India',
+      address: 'Jaypee Greens Sports Complex, Sector 128, Noida, Uttar Pradesh 201304',
+      estimatedDistanceKm: 18.0,
+      specialization: 'Official NBA Global Development Node, FIBA Hardwood Courts, NBA Certified International Staff',
+      timing: '06:00 AM - 10:00 AM, 04:00 PM - 08:00 PM',
+      contactPhone: '+91 120 408 8000',
+      verified: true,
+      googleMapsQuery: 'NBA Academy India Jaypee Greens Noida',
+      ageEligibility: 'U-14, U-17 & U-19 Elite Prospects',
+      discoveryTier: 'NATIONAL',
+      tierLabel: 'Premier National Academy (India)',
+    },
+  ],
+  Athletics: [
+    {
+      name: 'Inspire Institute of Sport (IIS Athletics Centre)',
+      address: 'Vidyanagar, Toranagallu, Bellary, Karnataka 583123',
+      estimatedDistanceKm: 25.0,
+      specialization: 'Mondo Super X Synthetic Track, High-Performance Sports Science, Olympic Coaches',
+      timing: '05:30 AM - 09:30 AM, 04:00 PM - 07:30 PM',
+      contactPhone: '+91 8395 241000',
+      verified: true,
+      googleMapsQuery: 'Inspire Institute of Sport Toranagallu Karnataka',
+      ageEligibility: 'Junior & Youth Olympic Development',
+      discoveryTier: 'NATIONAL',
+      tierLabel: 'Premier National Academy (India)',
+    },
+  ],
+  Boxing: [
+    {
+      name: 'Mary Kom Regional Boxing Foundation',
+      address: 'National Games Village, Langol, Imphal West, Manipur 795004',
+      estimatedDistanceKm: 22.0,
+      specialization: 'Olympic Boxing Ring, Dronacharya Awardee Mentorship, Punch Force Telemetry',
+      timing: '06:00 AM - 09:30 AM, 03:30 PM - 06:30 PM',
+      contactPhone: '+91 385 241 4455',
+      verified: true,
+      googleMapsQuery: 'Mary Kom Boxing Academy Langol Imphal',
+      ageEligibility: 'Cadet & Junior National Talent',
       discoveryTier: 'NATIONAL',
       tierLabel: 'Premier National Academy (India)',
     },
@@ -397,14 +569,15 @@ export async function fetchRealClubs(
   ageCategory: string = 'ALL'
 ): Promise<RealSportsClub[]> {
   const cleanSport = (sport || 'Football').trim();
+  const normalizedSport = normalizeSportKey(cleanSport);
   const cleanCity = (city || 'Ahmedabad').trim();
   const cleanState = (state || 'Gujarat').trim();
   const cleanAge = (ageCategory || 'ALL').trim();
   const ageLabel = cleanAge && cleanAge !== 'ALL' ? `${cleanAge} youth` : '';
   const defaultEligibility = cleanAge !== 'ALL' ? `Eligible for ${cleanAge}` : 'Eligible for All Ages';
 
-  // 0. Curated catalog check for exact city first
-  const cityClubs = VERIFIED_CLUBS_CATALOG[cleanCity]?.[cleanSport];
+  // 0. Curated catalog check for exact city first (check both raw and normalized sport names)
+  const cityClubs = VERIFIED_CLUBS_CATALOG[cleanCity]?.[cleanSport] || VERIFIED_CLUBS_CATALOG[cleanCity]?.[normalizedSport];
   if (cityClubs && cityClubs.length > 0) {
     return cityClubs.map((club: RealSportsClub) => ({
       ...club,
@@ -434,14 +607,14 @@ export async function fetchRealClubs(
       `Verified in ${cleanCity}`
     );
 
-    if (tier1Results.length >= 2) {
+    if (tier1Results.length > 0) {
       return tier1Results;
     }
 
     // =========================================================================
     // TIER 2: SAME STATE SEARCH (FALLBACK 1)
     // =========================================================================
-    console.log(`[realPlacesService] Tier 1 (${cleanCity}) yielded ${tier1Results.length} clubs. Cascading to Tier 2 (${cleanState})...`);
+    console.log(`[realPlacesService] Tier 1 (${cleanCity}) yielded 0 clubs. Cascading to Tier 2 (${cleanState})...`);
 
     const stateQuery = `"${cleanSport}" sports academy coaching club training center in ${cleanState} India`
       .replace(/\s+/g, ' ')
@@ -457,14 +630,14 @@ export async function fetchRealClubs(
       `State Academy (${cleanState})`
     );
 
-    if (tier2Results.length >= 2) {
+    if (tier2Results.length > 0) {
       return tier2Results;
     }
 
     // =========================================================================
     // TIER 3: ALL-INDIA SEARCH (FALLBACK 2)
     // =========================================================================
-    console.log(`[realPlacesService] Tier 2 (${cleanState}) yielded ${tier2Results.length} clubs. Cascading to Tier 3 (All-India)...`);
+    console.log(`[realPlacesService] Tier 2 (${cleanState}) yielded 0 clubs. Cascading to Tier 3 (All-India)...`);
 
     const nationalQuery = `best premier "${cleanSport}" academy training center high performance India`
       .replace(/\s+/g, ' ')
@@ -480,13 +653,13 @@ export async function fetchRealClubs(
       'Premier National Academy (India)'
     );
 
-    if (tier3Results.length >= 2) {
+    if (tier3Results.length > 0) {
       return tier3Results;
     }
   }
 
-  // Curated national premier academies fallback for known sports (e.g. Hockey, Archery, Badminton)
-  const nationalCurated = PREMIER_NATIONAL_ACADEMIES[cleanSport];
+  // Curated national premier academies fallback for known sports (e.g. Hockey, Archery, Badminton, Football, Cricket, etc.)
+  const nationalCurated = PREMIER_NATIONAL_ACADEMIES[cleanSport] || PREMIER_NATIONAL_ACADEMIES[normalizedSport];
   if (nationalCurated && nationalCurated.length > 0) {
     return nationalCurated.map((c) => ({
       ...c,
