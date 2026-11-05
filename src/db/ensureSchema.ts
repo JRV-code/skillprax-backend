@@ -108,38 +108,97 @@ export async function runSchemaMigration() {
 
     `ALTER TABLE IF EXISTS subgenre_caches ALTER COLUMN id TYPE TEXT USING id::text`,
     
+    // Phase 1: Self-healing Auth & Profile Schema (Nullable password & all required demographic/gamification columns)
+    `ALTER TABLE IF EXISTS users ALTER COLUMN password_hash DROP NOT NULL`,
+    `DO $$ BEGIN 
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'password') THEN 
+        ALTER TABLE users ALTER COLUMN password DROP NOT NULL; 
+      END IF; 
+    END $$;`,
+    `DO $$ BEGIN 
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'user_profiles' AND column_name = 'password_hash') THEN 
+        ALTER TABLE user_profiles ALTER COLUMN password_hash DROP NOT NULL; 
+      END IF; 
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'UserProfile' AND column_name = 'password_hash') THEN 
+        ALTER TABLE "UserProfile" ALTER COLUMN password_hash DROP NOT NULL; 
+      END IF; 
+    END $$;`,
+
     // UserProfile and users additive fields for onboarding, calibration & live quiz telemetry
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS email VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS email_key VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS name VARCHAR(255) DEFAULT 'Explorer'`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS google_id VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS google_sub VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS avatar_url TEXT`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS date_of_birth TEXT`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS dob TEXT`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT 'Ahmedabad'`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat'`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS age_category VARCHAR(50) DEFAULT 'Open'`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(50) DEFAULT 'en'`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS dietary_preference VARCHAR(50) DEFAULT 'Vegetarian'`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS health_conditions TEXT DEFAULT 'None'`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS medical_conditions TEXT DEFAULT 'None'`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS total_xp INT DEFAULT 0`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS level INT DEFAULT 1`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS current_streak INT DEFAULT 1`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS longest_streak INT DEFAULT 1`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS streak_freezes INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS streak_freeze_count INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS last_active_date TIMESTAMP WITH TIME ZONE DEFAULT NOW()`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS total_quizzes_taken INT DEFAULT 0`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS total_questions_attempted INT DEFAULT 0`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS total_questions_correct INT DEFAULT 0`,
     `ALTER TABLE IF EXISTS user_profiles ADD COLUMN IF NOT EXISTS avg_quiz_accuracy DOUBLE PRECISION DEFAULT 0`,
 
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS email VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS email_key VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS "dateOfBirth" TEXT`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS "date_of_birth" TEXT`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS dob TEXT`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT 'Ahmedabad'`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat'`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS age_category VARCHAR(50) DEFAULT 'Open'`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(50) DEFAULT 'en'`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS dietary_preference VARCHAR(50) DEFAULT 'Vegetarian'`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS health_conditions TEXT DEFAULT 'None'`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS medical_conditions TEXT DEFAULT 'None'`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS streak_freeze_count INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS "UserProfile" ADD COLUMN IF NOT EXISTS "streakFreezeCount" INT DEFAULT 0`,
+
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS email VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS email_key VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS name VARCHAR(255) DEFAULT 'Explorer'`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS google_sub VARCHAR(255)`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS avatar_url TEXT`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS date_of_birth DATE`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS dob TEXT`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT 'Ahmedabad'`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat'`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS age_category VARCHAR(50) DEFAULT 'Open'`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(50) DEFAULT 'en'`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS dietary_preference VARCHAR(50) DEFAULT 'Vegetarian'`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS health_conditions TEXT DEFAULT 'None'`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS medical_conditions TEXT DEFAULT 'None'`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS xp INT DEFAULT 0`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS level INT DEFAULT 1`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS current_streak INT DEFAULT 1`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS longest_streak INT DEFAULT 1`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS streak_freezes INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS streak_freeze_count INT DEFAULT 0`,
+    `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS last_active_date DATE DEFAULT CURRENT_DATE`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS total_quizzes_taken INT DEFAULT 0`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS total_questions_attempted INT DEFAULT 0`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS total_questions_correct INT DEFAULT 0`,
     `ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS avg_quiz_accuracy DOUBLE PRECISION DEFAULT 0`,
+
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_lower_email ON users (LOWER(email))`,
 
     // AI Guide & Mentor Chat History Tables
     `CREATE TABLE IF NOT EXISTS ai_chat_sessions (
