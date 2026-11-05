@@ -200,6 +200,134 @@ export async function runSchemaMigration() {
 
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_lower_email ON users (LOWER(email))`,
 
+    // Core Deliberate Practice & Learning Tables (Dual Table & Case Tolerance)
+    `CREATE TABLE IF NOT EXISTS "Workspace" (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      title VARCHAR(255) NOT NULL,
+      "subTitle" VARCHAR(255) DEFAULT '',
+      "subGenre" VARCHAR(100),
+      domain VARCHAR(100),
+      "skillName" VARCHAR(255),
+      "domainCategory" VARCHAR(100) DEFAULT 'General Knowledge',
+      "targetGoal" VARCHAR(100) DEFAULT 'Full Mastery',
+      level VARCHAR(50) DEFAULT 'Beginner',
+      "desiredLevel" VARCHAR(50),
+      "dailyMinutes" INT DEFAULT 30,
+      "experienceLevel" VARCHAR(50),
+      "stepCountReason" TEXT,
+      "currentStep" INT DEFAULT 1,
+      "totalPlannedSteps" INT DEFAULT 5,
+      progress DOUBLE PRECISION DEFAULT 0,
+      "aiEngine" VARCHAR(100) DEFAULT 'llama-3.3-70b-versatile',
+      "isGenerating" BOOLEAN DEFAULT FALSE,
+      "generationStartedAt" TIMESTAMP WITH TIME ZONE,
+      "userProfileId" TEXT,
+      "profileId" TEXT,
+      "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS workspaces (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      title VARCHAR(255) NOT NULL,
+      sub_genre VARCHAR(100),
+      domain VARCHAR(100),
+      level VARCHAR(50) DEFAULT 'Beginner',
+      progress DOUBLE PRECISION DEFAULT 0,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS "SkillStep" (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      "workspaceId" TEXT,
+      "stepIndex" INT DEFAULT 1,
+      title VARCHAR(255) NOT NULL,
+      description TEXT DEFAULT '',
+      status VARCHAR(50) DEFAULT 'IN_PROGRESS',
+      "difficultyTier" VARCHAR(50) DEFAULT 'FOUNDATIONS',
+      intro JSONB,
+      "packStatus" VARCHAR(50) DEFAULT 'NOT_BUILT',
+      "packStage" VARCHAR(50),
+      "approachViewedAt" TIMESTAMP WITH TIME ZONE,
+      "createdAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS skill_steps (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      workspace_id TEXT,
+      skill_id TEXT,
+      step_number INT DEFAULT 1,
+      step_index INT DEFAULT 1,
+      title VARCHAR(255) NOT NULL,
+      description TEXT DEFAULT '',
+      status VARCHAR(50) DEFAULT 'IN_PROGRESS',
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+      updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS "StepChapter" (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      "stepId" TEXT,
+      title VARCHAR(255) NOT NULL,
+      "orderIndex" INT DEFAULT 0,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS step_chapters (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      step_id TEXT,
+      title VARCHAR(255) NOT NULL,
+      order_index INT DEFAULT 0,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS "StepTopic" (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      "chapterId" TEXT,
+      "stepId" TEXT,
+      title VARCHAR(255) NOT NULL,
+      "orderIndex" INT DEFAULT 0,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS step_topics (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      chapter_id TEXT,
+      step_id TEXT,
+      title VARCHAR(255) NOT NULL,
+      order_index INT DEFAULT 0,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS "Resource" (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      "stepId" TEXT,
+      "topicId" TEXT,
+      "chapterId" TEXT,
+      type VARCHAR(50) NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      url TEXT,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS resources (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      step_id TEXT,
+      topic_id TEXT,
+      chapter_id TEXT,
+      type VARCHAR(50) NOT NULL,
+      title VARCHAR(255) NOT NULL,
+      url TEXT,
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS "Quiz" (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      "stepId" TEXT,
+      title VARCHAR(255) NOT NULL,
+      questions JSONB DEFAULT '[]',
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+    `CREATE TABLE IF NOT EXISTS quizzes (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      step_id TEXT,
+      title VARCHAR(255) NOT NULL,
+      questions JSONB DEFAULT '[]',
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    )`,
+
     // AI Guide & Mentor Chat History Tables
     `CREATE TABLE IF NOT EXISTS ai_chat_sessions (
       id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,

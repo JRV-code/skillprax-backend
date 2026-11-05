@@ -5,11 +5,11 @@
   "main": "dist/server.js",
   "scripts": {
     "clean:orphans": "node src/db/cleanOrphanedSteps.js",
-    "build": "tsc",
+    "build": "npx prisma generate && node scripts/safe-db-push.js && tsc",
     "start": "node src/db/cleanOrphanedSteps.js && node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "postinstall": "prisma generate",
-    "render-build": "npx prisma generate && tsc"
+    "render-build": "npx prisma generate && node scripts/safe-db-push.js && tsc"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",

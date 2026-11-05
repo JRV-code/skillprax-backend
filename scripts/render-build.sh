@@ -16,8 +16,8 @@ npm ci || npm install
 echo "==> Generating Prisma client"
 npx prisma generate
 
-echo "==> Synchronizing database schema"
-npx prisma db push --skip-generate
+echo "==> Synchronizing database schema (safe mode)"
+node scripts/safe-db-push.js || true
 
 echo "==> Building application"
 npm run build
