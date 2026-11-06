@@ -1046,112 +1046,158 @@ Return ONLY valid JSON matching:
       buildTrainingPlanBranch(),
     ]);
 
-    // Stage 6: Atomic Database Transaction
-    await prisma.$transaction(async (tx) => {
-      // Clear previous resources, topics and chapters for this step
-      await tx.resource.deleteMany({ where: { stepId } });
-      await tx.stepTopic.deleteMany({ where: { stepId } });
-      await tx.stepChapter.deleteMany({ where: { stepId } });
+    // Stage 6: Standalone Database Persistence (No Transaction Timeout)
+    // Clear previous resources, topics and chapters for this step
+    await prisma.resource.deleteMany({ where: { stepId } });
+    await prisma.stepTopic.deleteMany({ where: { stepId } });
+    await prisma.stepChapter.deleteMany({ where: { stepId } });
 
-      // Save intro with complete training plan and nutrition
-      const finalIntro = {
-        ...((step.intro as any) || {}),
-        hook: `Master ${step.title} through targeted biomechanical understanding, tactical coaching, and daily athletic practice.`,
-        whyItMatters: `High performance in ${sportName} requires both intellectual clarity on rules and kinetic muscle memory.`,
-        trainingPlan: finalTrainingPlan,
-      };
-
-      await tx.skillStep.update({
-        where: { id: stepId },
+    // Persist Chapters, Chapter Videos, Topics, and Topic Doc Links
+    for (let chIdx = 0; chIdx < verifiedChapters.length; chIdx++) {
+      const ch = verifiedChapters[chIdx];
+      const createdCh = await prisma.stepChapter.create({
         data: {
-          intro: finalIntro as any,
-          packStage: 'READY',
-          packStatus: 'READY',
-          packError: null,
-          quizBlueprint: [] as any,
-          quizStatus: 'NOT_BUILT',
-          quizError: null,
-          status: step.status === 'LOCKED' ? 'LOCKED' : 'STUDY_READY',
+          stepId,
+          title: ch.title,
+          order: ch.order,
+          summary: ch.summary,
         },
       });
 
-      // Persist Chapters, Chapter Videos, Topics, and Topic Doc Links
-      for (let chIdx = 0; chIdx < verifiedChapters.length; chIdx++) {
-        const ch = verifiedChapters[chIdx];
-        const createdCh = await tx.stepChapter.create({
-          data: {
-            stepId,
-            title: ch.title,
-            order: ch.order,
-            summary: ch.summary,
-          },
-        });
+      // Chapter Lecture Video resource
+      await prisma.resource.create({
+        data: {
+          stepId,
+          chapterId: createdCh.id,
+          type: 'youtube',
+          title: ch.video.title,
+          url: ch.video.url,
+          videoId: ch.video.videoId,
+          channelName: ch.video.channelName,
+          domain: 'youtube.com',
+          linkStatus: 'VERIFIED',
+        },
+      });
 
-        // Chapter Lecture Video resource
-        await tx.resource.create({
-          data: {
-            stepId,
-            chapterId: createdCh.id,
-            type: 'youtube',
-            title: ch.video.title,
-            url: ch.video.url,
-            videoId: ch.video.videoId,
-            channelName: ch.video.channelName,
+      // Record video in resourceHistory so anti-repetition vault tracks it
+      try {
+        await prisma.resourceHistory.upsert({
+          where: {
+            workspaceId_identifier: {
+              workspaceId: ws.id,
+              identifier: `yt:${ch.video.videoId}`,
+            },
+          },
+          create: {
+            profileId,
+            workspaceId: ws.id,
+            stepIndex: step.stepIndex,
+            resourceType: 'YOUTUBE_VIDEO',
+            identifier: `yt:${ch.video.videoId}`,
             domain: 'youtube.com',
-            linkStatus: 'VERIFIED',
+            title: ch.video.title,
+          },
+          update: {},
+        });
+      } catch (histErr) {
+        console.warn('[runSportsPackBuild] resourceHistory video upsert notice (non-fatal):', histErr);
+      }
+
+      for (let tIdx = 0; tIdx < ch.topics.length; tIdx++) {
+        const t = ch.topics[tIdx];
+        const uniqueKey = `sp_ch${chIdx + 1}_top${tIdx + 1}`;
+        const createdTopic = await prisma.stepTopic.upsert({
+          where: {
+            stepId_key: {
+              stepId,
+              key: uniqueKey,
+            },
+          },
+          update: {
+            chapterId: createdCh.id,
+            title: t.title,
+            order: t.order,
+            covers: t.covers,
+            guide: t.guide as any,
+            status: 'READY',
+          },
+          create: {
+            chapterId: createdCh.id,
+            stepId,
+            title: t.title,
+            key: uniqueKey,
+            order: t.order,
+            covers: t.covers,
+            guide: t.guide as any,
+            status: 'READY',
           },
         });
 
-        for (let tIdx = 0; tIdx < ch.topics.length; tIdx++) {
-          const t = ch.topics[tIdx];
-          const uniqueKey = `sp_ch${chIdx + 1}_top${tIdx + 1}`;
-          const createdTopic = await tx.stepTopic.upsert({
-            where: {
-              stepId_key: {
-                stepId,
-                key: uniqueKey,
-              },
-            },
-            update: {
-              chapterId: createdCh.id,
-              title: t.title,
-              order: t.order,
-              covers: t.covers,
-              guide: t.guide as any,
-              status: 'READY',
-            },
-            create: {
-              chapterId: createdCh.id,
+        // Save doc resources for topic (strictly verified working web articles)
+        for (const doc of t.docs) {
+          if (!doc?.url || !isSpecificArticleUrl(doc.url)) continue;
+
+          await prisma.resource.create({
+            data: {
               stepId,
-              title: t.title,
-              key: uniqueKey,
-              order: t.order,
-              covers: t.covers,
-              guide: t.guide as any,
-              status: 'READY',
+              chapterId: createdCh.id,
+              topicId: createdTopic.id,
+              type: 'doc',
+              title: doc.title,
+              url: doc.url,
+              domain: doc.domain,
+              snippet: doc.snippet,
+              linkStatus: 'VERIFIED',
             },
           });
 
-          // Save doc resources for topic (strictly verified working web articles)
-          for (const doc of t.docs) {
-            if (!doc?.url || !isSpecificArticleUrl(doc.url)) continue;
-
-            await tx.resource.create({
-              data: {
-                stepId,
-                chapterId: createdCh.id,
-                topicId: createdTopic.id,
-                type: 'doc',
-                title: doc.title,
-                url: doc.url,
-                domain: doc.domain,
-                snippet: doc.snippet,
-                linkStatus: 'VERIFIED',
+          // Record documentation in resourceHistory so anti-repetition vault tracks it
+          try {
+            await prisma.resourceHistory.upsert({
+              where: {
+                workspaceId_identifier: {
+                  workspaceId: ws.id,
+                  identifier: doc.url.toLowerCase(),
+                },
               },
+              create: {
+                profileId,
+                workspaceId: ws.id,
+                stepIndex: step.stepIndex,
+                resourceType: 'DOCUMENTATION',
+                identifier: doc.url.toLowerCase(),
+                domain: doc.domain,
+                title: doc.title,
+              },
+              update: {},
             });
+          } catch (histErr) {
+            console.warn('[runSportsPackBuild] resourceHistory doc upsert notice (non-fatal):', histErr);
           }
         }
       }
+    }
+
+    // Save intro with complete training plan and nutrition after chapters & resources are safely in PostgreSQL
+    const finalIntro = {
+      ...((step.intro as any) || {}),
+      hook: `Master ${step.title} through targeted biomechanical understanding, tactical coaching, and daily athletic practice.`,
+      whyItMatters: `High performance in ${sportName} requires both intellectual clarity on rules and kinetic muscle memory.`,
+      trainingPlan: finalTrainingPlan,
+    };
+
+    await prisma.skillStep.update({
+      where: { id: stepId },
+      data: {
+        intro: finalIntro as any,
+        packStage: 'READY',
+        packStatus: 'READY',
+        packError: null,
+        quizBlueprint: [] as any,
+        quizStatus: 'NOT_BUILT',
+        quizError: null,
+        status: step.status === 'LOCKED' ? 'LOCKED' : 'STUDY_READY',
+      },
     });
 
     console.log(`[runSportsPackBuild] Step ${stepId} (${sportName}) chapters and training plan persisted.`);

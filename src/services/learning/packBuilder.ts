@@ -325,67 +325,46 @@ Return ONLY valid JSON:
       data: { packStage: 'VERIFYING' },
     });
 
-    // 5. Atomic Database Persistence
-    await prisma.$transaction(async (tx) => {
-      // Clear previous resources, topics and chapters for this step
-      await tx.resource.deleteMany({ where: { stepId } });
-      await tx.stepTopic.deleteMany({ where: { stepId } });
-      await tx.stepChapter.deleteMany({ where: { stepId } });
+    // 5. Standalone Database Persistence (No Transaction Timeout)
+    // Clear previous resources, topics and chapters for this step
+    await prisma.resource.deleteMany({ where: { stepId } });
+    await prisma.stepTopic.deleteMany({ where: { stepId } });
+    await prisma.stepChapter.deleteMany({ where: { stepId } });
 
-      const introPayload = {
-        goal: `Master core principles and operational execution for ${cleanStepTitle}`,
-        whyNow: `Establishes essential foundation and fluency required for milestone progression.`,
-        studyOrder: allTopics.map((t) => t.key),
-        mistakes: ['Skipping foundational mechanics', 'Rushing execution without proper verification'],
-      };
+    for (let chIdx = 0; chIdx < planning.chapters.length; chIdx++) {
+      const ch = planning.chapters[chIdx];
+      const chVid = chapterVideos[chIdx];
 
-      await tx.skillStep.update({
-        where: { id: stepId },
+      const createdCh = await prisma.stepChapter.create({
         data: {
-          intro: introPayload as any,
-          packStage: 'READY',
-          packStatus: 'READY',
-          packError: null,
-          quizBlueprint: [] as any,
-          quizStatus: 'NOT_BUILT',
-          quizError: null,
-          status: step.status === 'LOCKED' ? 'LOCKED' : 'STUDY_READY',
+          stepId,
+          order: chIdx + 1,
+          title: ch.title,
+          summary: ch.summary || `${ch.title} architectural overview.`,
         },
       });
 
-      for (let chIdx = 0; chIdx < planning.chapters.length; chIdx++) {
-        const ch = planning.chapters[chIdx];
-        const chVid = chapterVideos[chIdx];
-
-        const createdCh = await tx.stepChapter.create({
+      // Save chapter lecture video
+      if (chVid) {
+        await prisma.resource.create({
           data: {
             stepId,
-            order: chIdx + 1,
-            title: ch.title,
-            summary: ch.summary || `${ch.title} architectural overview.`,
+            chapterId: createdCh.id,
+            type: 'youtube',
+            title: chVid.title,
+            url: chVid.url,
+            domain: 'youtube.com',
+            videoId: chVid.videoId,
+            channelName: chVid.channelTitle,
+            videoType: 'tutorial',
+            linkStatus: 'VERIFIED',
+            embeddable: true,
+            checkedAt: new Date(),
           },
         });
 
-        // Save chapter lecture video
-        if (chVid) {
-          await tx.resource.create({
-            data: {
-              stepId,
-              chapterId: createdCh.id,
-              type: 'youtube',
-              title: chVid.title,
-              url: chVid.url,
-              domain: 'youtube.com',
-              videoId: chVid.videoId,
-              channelName: chVid.channelTitle,
-              videoType: 'tutorial',
-              linkStatus: 'VERIFIED',
-              embeddable: true,
-              checkedAt: new Date(),
-            },
-          });
-
-          await tx.resourceHistory.upsert({
+        try {
+          await prisma.resourceHistory.upsert({
             where: {
               workspaceId_identifier: {
                 workspaceId: ws.id,
@@ -403,85 +382,89 @@ Return ONLY valid JSON:
             },
             update: {},
           });
+        } catch (histErr) {
+          console.warn('[runPackBuild] resourceHistory video upsert notice (non-fatal):', histErr);
         }
+      }
 
-        // Save topics and their curated reading links
-        for (let tIdx = 0; tIdx < ch.topics.length; tIdx++) {
-          const t = ch.topics[tIdx];
-          const curated = curationMap.get(t.key);
-          const docs = curated?.docs || [];
-          const guide = curated?.guide || {
-            overview: `${t.title} core operational concepts.`,
-            keyMechanics: ['Establish clean base posture', 'Execute core sequence deliberately'],
-            commonMistakes: ['Rushing form without verification'],
-            realWorldApplication: `Essential competency in ${skillName}.`,
-            howToApproach: `Review the curated articles and execute hands-on practice.`,
-            lookFor: ['Consistent rhythm', 'Accurate invariants'],
-            doThis: 'Execute deliberate reps before full integration.',
-          };
+      // Save topics and their curated reading links
+      for (let tIdx = 0; tIdx < ch.topics.length; tIdx++) {
+        const t = ch.topics[tIdx];
+        const curated = curationMap.get(t.key);
+        const docs = curated?.docs || [];
+        const guide = curated?.guide || {
+          overview: `${t.title} core operational concepts.`,
+          keyMechanics: ['Establish clean base posture', 'Execute core sequence deliberately'],
+          commonMistakes: ['Rushing form without verification'],
+          realWorldApplication: `Essential competency in ${skillName}.`,
+          howToApproach: `Review the curated articles and execute hands-on practice.`,
+          lookFor: ['Consistent rhythm', 'Accurate invariants'],
+          doThis: 'Execute deliberate reps before full integration.',
+        };
 
-          const uniqueTopicKey = t.key || `ch${chIdx + 1}_top${tIdx + 1}`;
-          const createdTopic = await tx.stepTopic.upsert({
-            where: {
-              stepId_key: {
-                stepId,
-                key: uniqueTopicKey,
-              },
+        const uniqueTopicKey = t.key || `ch${chIdx + 1}_top${tIdx + 1}`;
+        const createdTopic = await prisma.stepTopic.upsert({
+          where: {
+            stepId_key: {
+              stepId,
+              key: uniqueTopicKey,
             },
-            update: {
-              chapterId: createdCh.id,
-              order: tIdx + 1,
-              title: t.title,
-              covers: t.covers,
-              minutes: t.minutes || 15,
-              acuIds: [`${uniqueTopicKey}-acu`] as any,
-              guide: guide as any,
-              facts: [
-                `${t.title} requires disciplined operational coordination and precise form.`,
-                `Proper implementation of ${t.title} prevents downstream errors in ${skillName}.`,
-                ...(guide.keyMechanics || []).slice(0, 3),
-              ] as any,
-              status: 'READY',
-            },
-            create: {
+          },
+          update: {
+            chapterId: createdCh.id,
+            order: tIdx + 1,
+            title: t.title,
+            covers: t.covers,
+            minutes: t.minutes || 15,
+            acuIds: [`${uniqueTopicKey}-acu`] as any,
+            guide: guide as any,
+            facts: [
+              `${t.title} requires disciplined operational coordination and precise form.`,
+              `Proper implementation of ${t.title} prevents downstream errors in ${skillName}.`,
+              ...(guide.keyMechanics || []).slice(0, 3),
+            ] as any,
+            status: 'READY',
+          },
+          create: {
+            stepId,
+            chapterId: createdCh.id,
+            key: uniqueTopicKey,
+            order: tIdx + 1,
+            title: t.title,
+            covers: t.covers,
+            minutes: t.minutes || 15,
+            acuIds: [`${uniqueTopicKey}-acu`] as any,
+            guide: guide as any,
+            facts: [
+              `${t.title} requires disciplined operational coordination and precise form.`,
+              `Proper implementation of ${t.title} prevents downstream errors in ${skillName}.`,
+              ...(guide.keyMechanics || []).slice(0, 3),
+            ] as any,
+            status: 'READY',
+          },
+        });
+
+        // Save curated doc resources for this topic (strictly validated working web articles)
+        for (const doc of docs) {
+          if (!doc?.url || !isSpecificArticleUrl(doc.url)) continue;
+
+          await prisma.resource.create({
+            data: {
               stepId,
               chapterId: createdCh.id,
-              key: uniqueTopicKey,
-              order: tIdx + 1,
-              title: t.title,
-              covers: t.covers,
-              minutes: t.minutes || 15,
-              acuIds: [`${uniqueTopicKey}-acu`] as any,
-              guide: guide as any,
-              facts: [
-                `${t.title} requires disciplined operational coordination and precise form.`,
-                `Proper implementation of ${t.title} prevents downstream errors in ${skillName}.`,
-                ...(guide.keyMechanics || []).slice(0, 3),
-              ] as any,
-              status: 'READY',
+              topicId: createdTopic.id,
+              type: 'doc',
+              title: doc.title,
+              url: doc.url,
+              domain: doc.domain,
+              snippet: doc.takeaway ? `[${doc.platform || 'Guide'}] ${doc.takeaway}` : doc.snippet,
+              linkStatus: 'VERIFIED',
+              checkedAt: new Date(),
             },
           });
 
-          // Save curated doc resources for this topic (strictly validated working web articles)
-          for (const doc of docs) {
-            if (!doc?.url || !isSpecificArticleUrl(doc.url)) continue;
-
-            await tx.resource.create({
-              data: {
-                stepId,
-                chapterId: createdCh.id,
-                topicId: createdTopic.id,
-                type: 'doc',
-                title: doc.title,
-                url: doc.url,
-                domain: doc.domain,
-                snippet: doc.takeaway ? `[${doc.platform || 'Guide'}] ${doc.takeaway}` : doc.snippet,
-                linkStatus: 'VERIFIED',
-                checkedAt: new Date(),
-              },
-            });
-
-            await tx.resourceHistory.upsert({
+          try {
+            await prisma.resourceHistory.upsert({
               where: {
                 workspaceId_identifier: {
                   workspaceId: ws.id,
@@ -499,9 +482,32 @@ Return ONLY valid JSON:
               },
               update: {},
             });
+          } catch (histErr) {
+            console.warn('[runPackBuild] resourceHistory doc upsert notice (non-fatal):', histErr);
           }
         }
       }
+    }
+
+    const introPayload = {
+      goal: `Master core principles and operational execution for ${cleanStepTitle}`,
+      whyNow: `Establishes essential foundation and fluency required for milestone progression.`,
+      studyOrder: allTopics.map((t) => t.key),
+      mistakes: ['Skipping foundational mechanics', 'Rushing execution without proper verification'],
+    };
+
+    await prisma.skillStep.update({
+      where: { id: stepId },
+      data: {
+        intro: introPayload as any,
+        packStage: 'READY',
+        packStatus: 'READY',
+        packError: null,
+        quizBlueprint: [] as any,
+        quizStatus: 'NOT_BUILT',
+        quizError: null,
+        status: step.status === 'LOCKED' ? 'LOCKED' : 'STUDY_READY',
+      },
     });
 
     activeBuildProgress.set(stepId, {
