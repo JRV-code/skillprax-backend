@@ -104,30 +104,21 @@ export async function ensureDatabaseSchema() {
     try {
       await prisma.$executeRawUnsafe(`
         ALTER TABLE users 
-        ALTER COLUMN password_hash DROP NOT NULL,
         ADD COLUMN IF NOT EXISTS xp INT DEFAULT 0,
         ADD COLUMN IF NOT EXISTS date_of_birth DATE,
-        ADD COLUMN IF NOT EXISTS dob TEXT,
         ADD COLUMN IF NOT EXISTS guardian_name VARCHAR(150),
         ADD COLUMN IF NOT EXISTS guardian_phone VARCHAR(30),
         ADD COLUMN IF NOT EXISTS guardian_email VARCHAR(150),
         ADD COLUMN IF NOT EXISTS dietary_preference VARCHAR(50) DEFAULT 'Vegetarian',
-        ADD COLUMN IF NOT EXISTS health_conditions TEXT DEFAULT 'None',
         ADD COLUMN IF NOT EXISTS medical_conditions TEXT DEFAULT 'None',
         ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(20) DEFAULT 'en',
         ADD COLUMN IF NOT EXISTS total_skills_completed INT DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS current_streak INT DEFAULT 1,
-        ADD COLUMN IF NOT EXISTS longest_streak INT DEFAULT 1,
-        ADD COLUMN IF NOT EXISTS streak_freezes INT DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS streak_freeze_count INT DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS current_streak INT DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS longest_streak INT DEFAULT 0,
         ADD COLUMN IF NOT EXISTS last_active_date DATE DEFAULT CURRENT_DATE,
         ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT 'Ahmedabad',
         ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat',
-        ADD COLUMN IF NOT EXISTS age_category VARCHAR(50) DEFAULT 'Open',
         ADD COLUMN IF NOT EXISTS google_id VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS google_sub VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS avatar_url TEXT,
-        ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE,
         ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
       `);
     } catch (err) {
@@ -137,51 +128,8 @@ export async function ensureDatabaseSchema() {
     try {
       await prisma.$executeRawUnsafe(`
         ALTER TABLE user_profiles
-        ALTER COLUMN password_hash DROP NOT NULL,
-        ADD COLUMN IF NOT EXISTS email VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS email_key VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS name VARCHAR(255) DEFAULT 'Explorer',
-        ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS google_id VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS google_sub VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS avatar_url TEXT,
-        ADD COLUMN IF NOT EXISTS date_of_birth TEXT,
-        ADD COLUMN IF NOT EXISTS dob TEXT,
         ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT 'Ahmedabad',
-        ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat',
-        ADD COLUMN IF NOT EXISTS age_category VARCHAR(50) DEFAULT 'Open',
-        ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(50) DEFAULT 'en',
-        ADD COLUMN IF NOT EXISTS dietary_preference VARCHAR(50) DEFAULT 'Vegetarian',
-        ADD COLUMN IF NOT EXISTS health_conditions TEXT DEFAULT 'None',
-        ADD COLUMN IF NOT EXISTS medical_conditions TEXT DEFAULT 'None',
-        ADD COLUMN IF NOT EXISTS onboarding_completed BOOLEAN DEFAULT FALSE,
-        ADD COLUMN IF NOT EXISTS total_xp INT DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS level INT DEFAULT 1,
-        ADD COLUMN IF NOT EXISTS current_streak INT DEFAULT 1,
-        ADD COLUMN IF NOT EXISTS longest_streak INT DEFAULT 1,
-        ADD COLUMN IF NOT EXISTS streak_freezes INT DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS streak_freeze_count INT DEFAULT 0;
-      `);
-    } catch (_) {}
-
-    try {
-      await prisma.$executeRawUnsafe(`
-        ALTER TABLE "UserProfile"
-        ALTER COLUMN password_hash DROP NOT NULL,
-        ADD COLUMN IF NOT EXISTS email VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS email_key VARCHAR(255),
-        ADD COLUMN IF NOT EXISTS "dateOfBirth" TEXT,
-        ADD COLUMN IF NOT EXISTS "date_of_birth" TEXT,
-        ADD COLUMN IF NOT EXISTS dob TEXT,
-        ADD COLUMN IF NOT EXISTS city VARCHAR(100) DEFAULT 'Ahmedabad',
-        ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat',
-        ADD COLUMN IF NOT EXISTS age_category VARCHAR(50) DEFAULT 'Open',
-        ADD COLUMN IF NOT EXISTS preferred_language VARCHAR(50) DEFAULT 'en',
-        ADD COLUMN IF NOT EXISTS dietary_preference VARCHAR(50) DEFAULT 'Vegetarian',
-        ADD COLUMN IF NOT EXISTS health_conditions TEXT DEFAULT 'None',
-        ADD COLUMN IF NOT EXISTS medical_conditions TEXT DEFAULT 'None',
-        ADD COLUMN IF NOT EXISTS streak_freeze_count INT DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS "streakFreezeCount" INT DEFAULT 0;
+        ADD COLUMN IF NOT EXISTS state VARCHAR(100) DEFAULT 'Gujarat';
       `);
     } catch (_) {}
 

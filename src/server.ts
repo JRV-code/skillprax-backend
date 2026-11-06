@@ -18,7 +18,6 @@ import skillsRoutes from './routes/skills';
 import { sportsWorkspaceRoutes } from './routes/sports/sportsWorkspace';
 import assistantRoutes from './routes/assistant';
 import { ensureDatabaseSchema } from './lib/ensureSchema';
-import { prisma } from './lib/prisma';
 import { initializeReminderCron } from './jobs/reminderCron';
 import { sendDailyPracticeReminderEmail } from './services/emailService';
 
@@ -45,52 +44,9 @@ server.addContentTypeParser('application/json', { parseAs: 'string' }, (req, bod
 
 const start = async () => {
   try {
-    // 1. Database Connection Retry Loop (3 retries with exponential backoff: 2s, 4s, 6s)
-    const maxRetries = 3;
-    let isConnected = false;
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        await prisma.$queryRawUnsafe('SELECT 1');
-        isConnected = true;
-        console.log('[DB Connect] Database connection verified.');
-        break;
-      } catch (err: any) {
-        console.warn(`[DB Connect] Connection attempt ${attempt}/${maxRetries} failed: ${err.message}`);
-        if (attempt < maxRetries) {
-          const waitTimeMs = attempt * 2000;
-          console.log(`[DB Connect] Waiting ${waitTimeMs}ms for database to awaken...`);
-          await new Promise((r) => setTimeout(r, waitTimeMs));
-        }
-      }
-    }
-
-    if (isConnected) {
-      // 2. Self-Healing Schema Verification
-      try {
-        await ensureDatabaseSchema();
-      } catch (err: any) {
-        console.warn('[SchemaMigration] Notice on ensureDatabaseSchema:', err.message);
-      }
-      try {
-        const { runSchemaMigration } = await import('./db/ensureSchema');
-        await runSchemaMigration();
-      } catch (err: any) {
-        console.warn('[SchemaMigration] Notice on runSchemaMigration:', err.message);
-      }
-
-      // 3. Non-Blocking Background Prisma DB Push
-      import('child_process').then(({ exec }) => {
-        exec('npx prisma db push --accept-data-loss --skip-generate', (pushErr) => {
-          if (pushErr) {
-            console.warn('[Startup DB Push Notice]:', pushErr.message);
-          } else {
-            console.log('[Startup DB Push] Background schema push completed successfully.');
-          }
-        });
-      }).catch(() => {});
-    } else {
-      console.warn('[DB Connect Warning] Database unverified after retries. Booting server with fault-tolerant handlers.');
-    }
+    // Initialize Module 7 Database Schema & Safe Migration
+    await ensureDatabaseSchema();
+    await import('./db/ensureSchema').then(m => m.runSchemaMigration()).catch(e => console.warn('[SchemaMigration] Startup notice:', e));
 
     const allowedOrigins = [
       'http://localhost:3000',

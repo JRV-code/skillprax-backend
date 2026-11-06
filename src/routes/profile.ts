@@ -7,20 +7,7 @@ import { hashPassword, verifyPassword } from "../lib/authCrypto";
 const googleClientId = process.env.GOOGLE_CLIENT_ID;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 const oauth2Client = new OAuth2Client(googleClientId, googleClientSecret);
-const JWT_SECRET = process.env.JWT_SECRET || "skillprax-production-secret-key";
-const FALLBACK_JWT_SECRET = "skilltrack_enterprise_jwt_secret_2026";
-
-function verifyProfileJwt(token: string): any {
-  try {
-    return jwt.verify(token, JWT_SECRET);
-  } catch (err1) {
-    try {
-      return jwt.verify(token, FALLBACK_JWT_SECRET);
-    } catch (err2) {
-      return null;
-    }
-  }
-}
+const JWT_SECRET = process.env.JWT_SECRET || "skilltrack_enterprise_jwt_secret_2026";
 
 export function emailKey(raw: string): string {
   const e = raw.trim().toLowerCase();
@@ -37,7 +24,7 @@ function checkRateLimit(ip: string, email: string): { allowed: boolean; message?
   const now = Date.now();
   const ipEntry = ipRateMap.get(ip);
   if (ipEntry && ipEntry.resetAt > now) {
-    if (ipEntry.count >= 20) {
+    if (ipEntry.count >= 10) {
       return { allowed: false, message: 'Too many authentication attempts. Please try again in 1 minute.' };
     }
     ipEntry.count++;
@@ -63,20 +50,12 @@ function formatProfilePayload(profile: any, userRecord?: any) {
   const diffDays = Math.max(1, Math.floor((now.getTime() - joinedDate.getTime()) / (1000 * 60 * 60 * 24)));
   const activeMonths = Math.max(1, Math.floor(diffDays / 30));
 
-  const effectiveDob = profile.dateOfBirth || profile.dob || (userRecord?.date_of_birth ? new Date(userRecord.date_of_birth).toISOString().split('T')[0] : null) || userRecord?.dob || null;
-  const effectiveDiet = profile.dietaryPreference || userRecord?.dietary_preference || "Vegetarian";
-  const effectiveHealth = profile.healthConditions || profile.medicalConditions || userRecord?.health_conditions || userRecord?.medical_conditions || "None";
-  const currentStreak = userRecord?.current_streak ?? profile.currentStreak ?? profile.streakDays ?? 1;
-  const longestStreak = userRecord?.longest_streak ?? profile.longestStreak ?? profile.streakDays ?? 1;
-  const streakFreezes = profile.streakFreezes ?? profile.freezeShields ?? userRecord?.streak_freezes ?? userRecord?.streak_freeze_count ?? 0;
-
   return {
     id: profile.id,
     userId: userRecord?.id || profile.id,
     name: profile.name || userRecord?.name || "Explorer",
     email: profile.email || userRecord?.email || null,
     avatarUrl: profile.avatarUrl || userRecord?.avatar_url || null,
-    avatar: profile.avatarUrl || userRecord?.avatar_url || null,
     googleId: profile.googleId || userRecord?.google_id || null,
     isEmailVerified: profile.isEmailVerified ?? Boolean(profile.email),
     gender: profile.gender || userRecord?.gender || "Prefer not to say",
@@ -86,25 +65,19 @@ function formatProfilePayload(profile: any, userRecord?: any) {
     grade: profile.grade || "Class 12",
     city: userRecord?.city || profile.city || "Ahmedabad",
     state: userRecord?.state || profile.state || "Gujarat",
-    dateOfBirth: effectiveDob,
-    dob: effectiveDob,
     ageCategory: userRecord?.age_category || profile.ageCategory || "Open",
-    dietaryPreference: effectiveDiet,
-    foodPreference: effectiveDiet,
-    medicalConditions: effectiveHealth,
-    healthConditions: effectiveHealth,
+    dietaryPreference: userRecord?.dietary_preference || profile.dietaryPreference || "Vegetarian",
+    medicalConditions: userRecord?.medical_conditions || userRecord?.health_conditions || profile.healthConditions || "None",
+    healthConditions: userRecord?.health_conditions || userRecord?.medical_conditions || profile.healthConditions || "None",
     onboardingCompleted: profile.onboardingCompleted ?? userRecord?.onboarding_completed ?? false,
     preferredLanguage: userRecord?.preferred_language || profile.preferredLanguage || "en",
-    language: userRecord?.preferred_language || profile.preferredLanguage || "en",
     totalSkillsCompleted: userRecord?.total_skills_completed || profile.totalSkillsCompleted || 0,
-    currentStreak: currentStreak,
-    longestStreak: longestStreak,
+    currentStreak: userRecord?.current_streak ?? profile.currentStreak ?? profile.streakDays ?? 1,
+    longestStreak: userRecord?.longest_streak ?? profile.longestStreak ?? profile.streakDays ?? 1,
     lastActiveDate: userRecord?.last_active_date ? new Date(userRecord.last_active_date).toISOString().split('T')[0] : getTodayString(),
     activeMonths,
-    streakDays: currentStreak,
-    freezeShields: streakFreezes,
-    streakFreezes: streakFreezes,
-    streakFreezeCount: streakFreezes,
+    streakDays: userRecord?.current_streak ?? profile.currentStreak ?? profile.streakDays ?? 1,
+    freezeShields: profile.streakFreezes ?? profile.freezeShields ?? 0,
     targetHours: profile.targetDailyHours || profile.targetHours || 1,
     targetMinutes: profile.targetDailyMinutes || profile.targetMinutes || 50,
     alertNotification: profile.preferredReminderTime || profile.reminderTime || "19:00",
@@ -712,17 +685,17 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
   }
 
   // 9. GET /api/profile — Module 2.1 Complete Profile with Live Telemetry & Skills Categories
-  const handleGetProfile = async (req: any, reply: any) => {
+  fastify.get("/api/profile", async (req, reply) => {
     try {
       const authHeader = req.headers.authorization;
       let emailFromToken = "";
       let profileIdFromToken = "";
       if (authHeader && authHeader.startsWith("Bearer ")) {
-        const decoded: any = verifyProfileJwt(authHeader.split(" ")[1]);
-        if (decoded) {
+        try {
+          const decoded: any = jwt.verify(authHeader.split(" ")[1], JWT_SECRET);
           emailFromToken = decoded.email?.toLowerCase();
           profileIdFromToken = decoded.id || decoded.userId;
-        }
+        } catch (_) {}
       }
 
       const query = (req.query || {}) as { profileId?: string; email?: string; userId?: string };
@@ -732,12 +705,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       let profile: any = null;
       if (targetEmail) {
         profile = await prisma.userProfile.findFirst({
-          where: {
-            OR: [
-              { email: { equals: targetEmail, mode: "insensitive" } },
-              { emailKey: emailKey(targetEmail) },
-            ],
-          },
+          where: { email: { equals: targetEmail, mode: "insensitive" } },
         });
       }
       if (!profile && targetId) {
@@ -745,42 +713,19 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
           where: { id: targetId },
         });
       }
+      if (!profile) {
+        profile = await getOrCreateProfile("default-profile");
+      }
 
       let dbUser: any = null;
-      if (targetEmail) {
+      if (profile.email) {
         try {
           const rows: any[] = await prisma.$queryRawUnsafe(
-            `SELECT * FROM users WHERE email_key = $1 OR LOWER(email) = $2 LIMIT 1;`,
-            emailKey(targetEmail),
-            targetEmail
+            `SELECT * FROM users WHERE LOWER(email) = $1 LIMIT 1;`,
+            profile.email.toLowerCase().trim()
           );
           if (rows && rows.length > 0) dbUser = rows[0];
         } catch (_) {}
-      }
-
-      if (!profile) {
-        if (targetEmail) {
-          profile = await prisma.userProfile.create({
-            data: {
-              name: dbUser?.name || targetEmail.split('@')[0],
-              email: targetEmail,
-              emailKey: emailKey(targetEmail),
-              city: dbUser?.city || 'Ahmedabad',
-              state: dbUser?.state || 'Gujarat',
-              dietaryPreference: dbUser?.dietary_preference || 'Vegetarian',
-              healthConditions: dbUser?.health_conditions || 'None',
-              medicalConditions: dbUser?.medical_conditions || 'None',
-              dateOfBirth: dbUser?.date_of_birth ? String(dbUser.date_of_birth) : null,
-              ageCategory: dbUser?.age_category || 'Open',
-              preferredLanguage: dbUser?.preferred_language || 'en',
-              currentStreak: dbUser?.current_streak || 1,
-              longestStreak: dbUser?.longest_streak || 1,
-              onboardingCompleted: dbUser?.onboarding_completed || false,
-            },
-          });
-        } else {
-          profile = await getOrCreateProfile("default-profile");
-        }
       }
 
       const formattedProfile = formatProfilePayload(profile, dbUser);
@@ -796,23 +741,20 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       fastify.log.error(err, "[GET /api/profile] Failed");
       return reply.status(500).send({ error: "Failed to retrieve profile data" });
     }
-  };
+  });
 
-  fastify.get("/api/profile", handleGetProfile);
-  fastify.get("/profile", handleGetProfile);
-
-  // 10. PUT & PATCH /api/profile — Module 2.1 Profile Calibration & Demographics Update
-  const handleUpdateProfile = async (req: any, reply: any) => {
+  // 10. PUT /api/profile — Module 2.1 Profile Calibration & Demographics Update
+  fastify.put("/api/profile", async (req, reply) => {
     try {
       const authHeader = req.headers.authorization;
       let emailFromToken = "";
       let profileIdFromToken = "";
       if (authHeader && authHeader.startsWith("Bearer ")) {
-        const decoded: any = verifyProfileJwt(authHeader.split(" ")[1]);
-        if (decoded) {
+        try {
+          const decoded: any = jwt.verify(authHeader.split(" ")[1], JWT_SECRET);
           emailFromToken = decoded.email?.toLowerCase();
           profileIdFromToken = decoded.id || decoded.userId;
-        }
+        } catch (_) {}
       }
 
       const body = (req.body || {}) as {
@@ -831,15 +773,6 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
         gender?: string;
         profession?: string;
         age?: number;
-        dateOfBirth?: string;
-        dob?: string;
-        avatarUrl?: string;
-        targetHours?: number;
-        targetMinutes?: number;
-        alertNotification?: string;
-        dailyReminderEnabled?: boolean;
-        educationBoard?: string;
-        grade?: string;
       };
 
       const targetEmail = (body.email || emailFromToken || "").trim().toLowerCase();
@@ -847,12 +780,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
 
       let profile = targetEmail
         ? await prisma.userProfile.findFirst({
-            where: {
-              OR: [
-                { email: { equals: targetEmail, mode: "insensitive" } },
-                { emailKey: emailKey(targetEmail) },
-              ],
-            },
+            where: { email: { equals: targetEmail, mode: "insensitive" } },
           })
         : null;
 
@@ -863,32 +791,10 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       }
 
       if (!profile) {
-        if (targetEmail) {
-          profile = await prisma.userProfile.create({
-            data: {
-              name: body.name || targetEmail.split('@')[0],
-              email: targetEmail,
-              emailKey: emailKey(targetEmail),
-              city: body.city || 'Ahmedabad',
-              state: body.state || 'Gujarat',
-              onboardingCompleted: true,
-            },
-          });
-        } else {
-          profile = await getOrCreateProfile("default-profile");
-        }
+        profile = await getOrCreateProfile("default-profile");
       }
 
       const effectiveHealthConditions = (body.healthConditions || body.medicalConditions || '').trim() || null;
-      const effectiveDob = body.dateOfBirth || body.dob || null;
-
-      let computedAge: number | undefined = body.age;
-      if (effectiveDob) {
-        const birthDate = new Date(effectiveDob);
-        if (!isNaN(birthDate.getTime())) {
-          computedAge = Math.floor((Date.now() - birthDate.getTime()) / (365.25 * 24 * 60 * 60 * 1000));
-        }
-      }
 
       const updateData: any = {};
       if (body.name) updateData.name = body.name.trim();
@@ -898,24 +804,10 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       if (body.preferredLanguage) updateData.preferredLanguage = body.preferredLanguage.trim();
       if (body.dietaryPreference) updateData.dietaryPreference = body.dietaryPreference.trim();
       if (effectiveHealthConditions) updateData.healthConditions = effectiveHealthConditions;
-      if (effectiveDob) updateData.dateOfBirth = effectiveDob;
       if (body.onboardingCompleted !== undefined) updateData.onboardingCompleted = Boolean(body.onboardingCompleted);
       if (body.gender) updateData.gender = body.gender.trim();
       if (body.profession) updateData.profession = body.profession.trim();
-      if (body.educationBoard) updateData.educationBoard = body.educationBoard.trim();
-      if (body.grade) updateData.grade = body.grade.trim();
-      if (body.avatarUrl) updateData.avatarUrl = body.avatarUrl;
-      if (computedAge !== undefined) updateData.age = computedAge;
-      if (body.targetHours !== undefined) updateData.targetDailyHours = Math.max(0, Number(body.targetHours));
-      if (body.targetMinutes !== undefined) updateData.targetDailyMinutes = Math.max(0, Number(body.targetMinutes));
-      if (body.alertNotification) {
-        updateData.reminderTime = body.alertNotification;
-        updateData.preferredReminderTime = body.alertNotification;
-      }
-      if (body.dailyReminderEnabled !== undefined) {
-        updateData.dailyReminderEnabled = Boolean(body.dailyReminderEnabled);
-        updateData.remindersEnabled = Boolean(body.dailyReminderEnabled);
-      }
+      if (typeof body.age === "number") updateData.age = body.age;
 
       const updatedProfile = await prisma.userProfile.update({
         where: { id: profile.id },
@@ -937,13 +829,11 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
               dietary_preference = COALESCE($6, dietary_preference),
               health_conditions = COALESCE($7, health_conditions),
               medical_conditions = COALESCE($7, medical_conditions),
-              date_of_birth = COALESCE($8::date, date_of_birth),
-              onboarding_completed = COALESCE($9, onboarding_completed),
-              gender = COALESCE($10, gender),
-              profession = COALESCE($11, profession),
-              avatar_url = COALESCE($12, avatar_url),
+              onboarding_completed = COALESCE($8, onboarding_completed),
+              gender = COALESCE($9, gender),
+              profession = COALESCE($10, profession),
               updated_at = NOW()
-            WHERE LOWER(email) = $13 OR id = $14
+            WHERE LOWER(email) = $11
             RETURNING *;`,
             body.name || null,
             body.city || null,
@@ -952,13 +842,10 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
             body.preferredLanguage || null,
             body.dietaryPreference || null,
             effectiveHealthConditions,
-            effectiveDob,
             body.onboardingCompleted !== undefined ? body.onboardingCompleted : null,
             body.gender || null,
             body.profession || null,
-            body.avatarUrl || null,
-            syncEmail,
-            targetId || 'no-id'
+            syncEmail
           );
           if (rows && rows.length > 0) dbUser = rows[0];
         } catch (_) {}
@@ -977,12 +864,7 @@ export const profileRoutes: FastifyPluginAsync = async (fastify: FastifyInstance
       fastify.log.error(err, "[PUT /api/profile] Failed");
       return reply.status(500).send({ error: "Failed to update profile data" });
     }
-  };
-
-  fastify.put("/api/profile", handleUpdateProfile);
-  fastify.patch("/api/profile", handleUpdateProfile);
-  fastify.put("/profile", handleUpdateProfile);
-  fastify.patch("/profile", handleUpdateProfile);
+  });
 };
 
 export default profileRoutes;
